@@ -1,0 +1,109 @@
+// СКРИПТ-СТОРОНА примера. Хост (RpgSimulation.cs) владеет боем и поднимает
+// события; здесь — вся «режиссура». Файл можно править прямо во время Play:
+// сохранение перекомпилирует модуль на лету, при ошибке продолжит работать
+// старая версия (ошибки — в консоли Unity с файлом и строкой).
+
+// ---------------------------------------------------------------------------
+// Комментатор: озвучивает бой и объявляет победителя.
+// ---------------------------------------------------------------------------
+trigger BattleAnnouncer
+{
+    event OnBattleStarted()
+    {
+        Engine.Log("=== Бой начинается! ===");
+    }
+
+    event OnUnitSpawned(Unit u)
+    {
+        Engine.Log($"В бой вступает {u.name} (hp {u.health})");
+    }
+
+    event OnUnitDamageTaken(Unit source, Unit target, float amount, DamageType type)
+    {
+        // комментируем только тяжёлые удары, чтобы не заспамить лог
+        if (amount >= 15.0)
+        {
+            Engine.Log($"{source.name} наносит {amount} урона ({type}) по {target.name}, осталось {target.health}");
+        }
+    }
+
+    event OnUnitDied(Unit unit, Unit killer)
+    {
+        // хэндлы валидны внутри обработчика: хост инвалидирует ПОСЛЕ события
+        Engine.Log($"*** {unit.name} пал от руки {killer.name} ***");
+
+        if (BattleApi.AliveCount(Team.Heroes) == 0)
+        {
+            Engine.Log("=== ПОБЕДА МОНСТРОВ ===");
+            Engine.DisableTrigger(BattleAnnouncer);
+        }
+        if (BattleApi.AliveCount(Team.Monsters) == 0)
+        {
+            Engine.Log("=== ПОБЕДА ГЕРОЕВ ===");
+            Engine.DisableTrigger(BattleAnnouncer);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Ярость босса: ниже 40% hp — двойной урон и реген в параллельном файбере.
+// Файбер живёт через wait и сам гаснет, когда босс умирает (IsValid).
+// ---------------------------------------------------------------------------
+trigger BossRage
+{
+    bool raging = false;
+
+    event OnUnitDamageTaken(Unit source, Unit target, float amount, DamageType type)
+    {
+        if (raging) { return; }
+        if (!UnitApi.IsBoss(target)) { return; }
+        if (target.health / target.maxHealth > 0.4) { return; }
+
+        raging = true;
+        Engine.Log($"!!! {target.name} впадает в ЯРОСТЬ — урон удвоен !!!");
+        UnitApi.Buff(target, 2.0);
+        spawn RegenLoop(target);
+    }
+
+    func RegenLoop(Unit boss)
+    {
+        while (Engine.IsValid(boss))
+        {
+            UnitApi.Heal(boss, 12.0);
+            Engine.Log($"{boss.name} регенерирует (hp {boss.health})");
+            wait 2.0;
+        }
+        Engine.Log("Ярость угасла вместе с боссом.");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Подкрепление: когда монстров остаётся мало — один раз активируется action,
+// который волнами (с паузами) заводит гоблинов. action = отдельный файбер,
+// поэтому wait внутри допустим.
+// ---------------------------------------------------------------------------
+trigger Reinforcements
+{
+    bool called = false;
+
+    action Do()
+    {
+        Engine.Log(">>> Рог трубит: подкрепление на подходе...");
+        for i in 0..3
+        {
+            wait 1.5;
+            BattleApi.SpawnUnit($"Гоблин-новобранец-{i}", Team.Monsters, 45.0, 6.0);
+        }
+        Engine.Log(">>> Подкрепление прибыло полностью.");
+    }
+
+    event OnUnitDied(Unit unit, Unit killer)
+    {
+        if (called) { return; }
+        if (UnitApi.Team(unit) == Team.Monsters && BattleApi.AliveCount(Team.Monsters) <= 2)
+        {
+            called = true;
+            Engine.ActivateTrigger(Reinforcements);
+        }
+    }
+}

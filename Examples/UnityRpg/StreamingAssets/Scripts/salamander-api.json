@@ -1,0 +1,111 @@
+{
+  "apiVersion": 1,
+  "enums": [
+    { "name": "Team", "summary": "Сторона в бою.", "members": ["Heroes", "Monsters"] },
+    { "name": "DamageType", "summary": "Тип наносимого урона.", "members": ["Physical", "Fire", "Ice"] }
+  ],
+  "classes": [
+    {
+      "name": "Unit",
+      "summary": "Боевой юнит.",
+      "props": [
+        { "name": "name", "type": "string", "readOnly": true, "doc": "имя юнита" },
+        { "name": "health", "type": "float", "readOnly": true, "doc": "текущее HP" },
+        { "name": "maxHealth", "type": "float", "readOnly": true, "doc": "максимальное HP" }
+      ]
+    }
+  ],
+  "apis": [
+    {
+      "name": "UnitApi",
+      "methods": [
+        {
+          "name": "IsBoss",
+          "summary": "Является ли юнит боссом.",
+          "params": [ { "name": "unit", "type": "Unit", "doc": "проверяемый юнит" } ],
+          "returns": "bool"
+        },
+        {
+          "name": "Team",
+          "summary": "Сторона, за которую сражается юнит.",
+          "params": [ { "name": "unit", "type": "Unit" } ],
+          "returns": "Team"
+        },
+        {
+          "name": "Heal",
+          "summary": "Восстанавливает здоровье юниту (не выше максимума).",
+          "params": [
+            { "name": "target", "type": "Unit", "doc": "кого лечить" },
+            { "name": "amount", "type": "float", "doc": "сколько HP вернуть" }
+          ],
+          "returns": "void"
+        },
+        {
+          "name": "Buff",
+          "summary": "Устанавливает множитель урона юнита.",
+          "params": [
+            { "name": "target", "type": "Unit" },
+            { "name": "damageMult", "type": "float", "doc": "множитель урона (1.0 — базовый)" }
+          ],
+          "returns": "void"
+        }
+      ]
+    },
+    {
+      "name": "BattleApi",
+      "methods": [
+        {
+          "name": "SpawnUnit",
+          "summary": "Создаёт юнита и вводит его в бой.",
+          "params": [
+            { "name": "name", "type": "string", "doc": "имя нового юнита" },
+            { "name": "team", "type": "Team", "doc": "сторона" },
+            { "name": "hp", "type": "float", "doc": "стартовое и максимальное HP" },
+            { "name": "damage", "type": "float", "doc": "базовый урон" }
+          ],
+          "returns": "Unit"
+        },
+        {
+          "name": "AliveCount",
+          "summary": "Сколько живых юнитов у стороны.",
+          "params": [ { "name": "team", "type": "Team" } ],
+          "returns": "int"
+        }
+      ]
+    }
+  ],
+  "events": [
+    {
+      "name": "Update",
+      "summary": "Каждый тик сервера.",
+      "params": [
+        { "name": "time", "type": "float", "doc": "время с загрузки, сек" },
+        { "name": "dt", "type": "float", "doc": "длительность тика, сек" }
+      ]
+    },
+    { "name": "OnBattleStarted", "summary": "Бой начался.", "params": [] },
+    {
+      "name": "OnUnitSpawned",
+      "summary": "Юнит введён в бой.",
+      "params": [ { "name": "unit", "type": "Unit", "doc": "появившийся юнит" } ]
+    },
+    {
+      "name": "OnUnitDamageTaken",
+      "summary": "Юнит получил урон.",
+      "params": [
+        { "name": "source", "type": "Unit", "doc": "кто ударил" },
+        { "name": "target", "type": "Unit", "doc": "кого ударили" },
+        { "name": "amount", "type": "float", "doc": "нанесённый урон" },
+        { "name": "type", "type": "DamageType", "doc": "тип урона" }
+      ]
+    },
+    {
+      "name": "OnUnitDied",
+      "summary": "Юнит погиб (хэндлы ещё валидны внутри обработчика).",
+      "params": [
+        { "name": "unit", "type": "Unit", "doc": "погибший" },
+        { "name": "killer", "type": "Unit", "doc": "добивший" }
+      ]
+    }
+  ]
+}

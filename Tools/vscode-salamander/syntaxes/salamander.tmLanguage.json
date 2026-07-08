@@ -1,0 +1,338 @@
+{
+    "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+    "name": "Salamander",
+    "scopeName": "source.salamander",
+    "patterns": [
+        {
+            "include": "#comments"
+        },
+        {
+            "include": "#declarations"
+        },
+        {
+            "include": "#code"
+        }
+    ],
+    "repository": {
+        "comments": {
+            "patterns": [
+                {
+                    "name": "comment.line.double-slash.salamander",
+                    "match": "//.*$"
+                },
+                {
+                    "name": "comment.block.salamander",
+                    "begin": "/\\*",
+                    "end": "\\*/"
+                }
+            ]
+        },
+        "declarations": {
+            "patterns": [
+                {
+                    "match": "\\b(disabled)\\s+(trigger)\\s+([A-Za-z_]\\w*)",
+                    "captures": {
+                        "1": {
+                            "name": "storage.modifier.salamander"
+                        },
+                        "2": {
+                            "name": "storage.type.salamander"
+                        },
+                        "3": {
+                            "name": "entity.name.type.trigger.salamander"
+                        }
+                    }
+                },
+                {
+                    "match": "\\b(trigger|class|enum|listener)\\s+([A-Za-z_]\\w*)",
+                    "captures": {
+                        "1": {
+                            "name": "storage.type.salamander"
+                        },
+                        "2": {
+                            "name": "entity.name.type.salamander"
+                        }
+                    }
+                },
+                {
+                    "match": "\\b(func|action|event)\\s+([A-Za-z_]\\w*)",
+                    "captures": {
+                        "1": {
+                            "name": "storage.type.function.salamander"
+                        },
+                        "2": {
+                            "name": "entity.name.function.salamander"
+                        }
+                    }
+                }
+            ]
+        },
+        "code": {
+            "patterns": [
+                {
+                    "include": "#interp-string"
+                },
+                {
+                    "include": "#string"
+                },
+                {
+                    "include": "#keywords"
+                },
+                {
+                    "include": "#archetype-decl"
+                },
+                {
+                    "include": "#self"
+                },
+                {
+                    "include": "#constants"
+                },
+                {
+                    "include": "#types"
+                },
+                {
+                    "include": "#module-qualifier"
+                },
+                {
+                    "include": "#numbers"
+                },
+                {
+                    "include": "#qualified-call"
+                },
+                {
+                    "include": "#enum-access"
+                },
+                {
+                    "include": "#static-field"
+                },
+                {
+                    "include": "#pascal-call"
+                },
+                {
+                    "include": "#call"
+                },
+                {
+                    "include": "#member"
+                },
+                {
+                    "include": "#operators"
+                }
+            ]
+        },
+        "keywords": {
+            "patterns": [
+                {
+                    "name": "keyword.control.salamander",
+                    "match": "\\b(if|else|while|for|in|break|continue|return|pass|wait|until)\\b"
+                },
+                {
+                    "name": "keyword.other.salamander",
+                    "match": "\\b(spawn|new|const|var|disabled)\\b"
+                }
+            ]
+        },
+        "constants": {
+            "name": "constant.language.salamander",
+            "match": "\\b(true|false|null)\\b"
+        },
+        "types": {
+            "name": "support.type.primitive.salamander",
+            "match": "\\b(int|float|bool|string|void|Fiber|Subscription|List|Map)\\b"
+        },
+        "module-qualifier": {
+            "match": "\\b([A-Za-z_]\\w*)(::)",
+            "captures": {
+                "1": {
+                    "name": "entity.name.namespace.salamander"
+                },
+                "2": {
+                    "name": "punctuation.separator.namespace.salamander"
+                }
+            }
+        },
+        "numbers": {
+            "patterns": [
+                {
+                    "name": "constant.numeric.float.salamander",
+                    "match": "\\b\\d+\\.\\d+\\b"
+                },
+                {
+                    "name": "constant.numeric.integer.salamander",
+                    "match": "\\b\\d+\\b"
+                }
+            ]
+        },
+        "call": {
+            "comment": "Вызов простой функции: doThing(...)",
+            "match": "\\b([a-z_]\\w*)\\s*(?=\\()",
+            "captures": {
+                "1": {
+                    "name": "entity.name.function.salamander"
+                }
+            }
+        },
+        "member": {
+            "comment": "Свойство у переменной-сущности: unit.health",
+            "match": "(\\.)([a-z_]\\w*)\\b(?!\\s*\\()",
+            "captures": {
+                "1": {
+                    "name": "punctuation.accessor.salamander"
+                },
+                "2": {
+                    "name": "variable.other.property.salamander"
+                }
+            }
+        },
+        "operators": {
+            "name": "keyword.operator.salamander",
+            "match": "->|\\.\\.|==|!=|<=|>=|&&|\\|\\||[+\\-*/%<>=!]"
+        },
+        "string": {
+            "name": "string.quoted.double.salamander",
+            "begin": "\"",
+            "end": "\"",
+            "patterns": [
+                {
+                    "name": "constant.character.escape.salamander",
+                    "match": "\\\\."
+                }
+            ]
+        },
+        "interp-string": {
+            "name": "string.interpolated.salamander",
+            "begin": "\\$\"",
+            "end": "\"",
+            "beginCaptures": {
+                "0": {
+                    "name": "punctuation.definition.string.begin.salamander"
+                }
+            },
+            "patterns": [
+                {
+                    "name": "constant.character.escape.salamander",
+                    "match": "\\\\."
+                },
+                {
+                    "name": "meta.interpolation.salamander",
+                    "begin": "\\{",
+                    "end": "\\}",
+                    "beginCaptures": {
+                        "0": {
+                            "name": "punctuation.section.interpolation.begin.salamander"
+                        }
+                    },
+                    "endCaptures": {
+                        "0": {
+                            "name": "punctuation.section.interpolation.end.salamander"
+                        }
+                    },
+                    "patterns": [
+                        {
+                            "include": "#keywords"
+                        },
+                        {
+                            "include": "#self"
+                        },
+                        {
+                            "include": "#constants"
+                        },
+                        {
+                            "include": "#numbers"
+                        },
+                        {
+                            "include": "#qualified-call"
+                        },
+                        {
+                            "include": "#enum-access"
+                        },
+                        {
+                            "include": "#static-field"
+                        },
+                        {
+                            "include": "#pascal-call"
+                        },
+                        {
+                            "include": "#call"
+                        },
+                        {
+                            "include": "#member"
+                        },
+                        {
+                            "include": "#operators"
+                        }
+                    ]
+                }
+            ]
+        },
+        "qualified-call": {
+            "comment": "Вызов метода класса/API: UnitApi.Heal(...), Engine.Log(...)",
+            "match": "\\b([A-Z]\\w*)\\s*(\\.)\\s*([A-Za-z_]\\w*)\\s*(?=\\()",
+            "captures": {
+                "1": {
+                    "name": "support.class.salamander"
+                },
+                "2": {
+                    "name": "punctuation.accessor.salamander"
+                },
+                "3": {
+                    "name": "entity.name.function.salamander"
+                }
+            }
+        },
+        "enum-access": {
+            "comment": "Элемент енума или константа класса: Team.Heroes, Balance.MAX_HP",
+            "match": "\\b([A-Z]\\w*)\\s*(\\.)\\s*([A-Z]\\w*)\\b",
+            "captures": {
+                "1": {
+                    "name": "support.class.salamander"
+                },
+                "2": {
+                    "name": "punctuation.accessor.salamander"
+                },
+                "3": {
+                    "name": "constant.other.enum.salamander"
+                }
+            }
+        },
+        "static-field": {
+            "comment": "Поле класса: Balance.counter",
+            "match": "\\b([A-Z]\\w*)\\s*(\\.)\\s*([a-z_]\\w*)\\b",
+            "captures": {
+                "1": {
+                    "name": "support.class.salamander"
+                },
+                "2": {
+                    "name": "punctuation.accessor.salamander"
+                },
+                "3": {
+                    "name": "variable.other.property.salamander"
+                }
+            }
+        },
+        "pascal-call": {
+            "comment": "Вызов функции с заглавной: RegenLoop(...), spawn Work()",
+            "match": "\\b([A-Z]\\w*)\\s*(?=\\()",
+            "captures": {
+                "1": {
+                    "name": "entity.name.function.salamander"
+                }
+            }
+        },
+        "self": {
+            "name": "variable.language.self.salamander",
+            "match": "\\bself\\b"
+        },
+        "archetype-decl": {
+            "comment": "Блок-архетип: вид (объявлен хостом) + id. spell fireball { / item \"sword.v2\" {",
+            "match": "^\\s*(?!(?:trigger|class|enum|listener|func|action|event|if|else|while|for|in|break|continue|return|wait|until|spawn|new|const|var|disabled|true|false|null|int|float|bool|string|void|pass|self)\\b)([A-Za-z_]\\w*)\\s+(\"[^\"]*\"|[A-Za-z_]\\w*)\\s*(?=\\{)",
+            "captures": {
+                "1": {
+                    "name": "storage.type.archetype.salamander"
+                },
+                "2": {
+                    "name": "entity.name.type.salamander"
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,10 @@
+{
+    "name": "example_mod",
+    "version": "1.0.0",
+    "apiVersion": 1,
+    "execution": "cooperative",
+    "dependencies": [],
+    "sources": [
+        "src/hello.sal"
+    ]
+}

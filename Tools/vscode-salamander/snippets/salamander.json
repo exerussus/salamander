@@ -1,0 +1,164 @@
+{
+    "trigger": {
+        "prefix": "trigger",
+        "body": [
+            "trigger ${1:Name}",
+            "{",
+            "\tevent ${2:OnEvent}($3)",
+            "\t{",
+            "\t\t$0",
+            "\t}",
+            "}"
+        ],
+        "description": "Триггер с обработчиком события (триггер обязан иметь хотя бы один event)"
+    },
+    "disabled trigger": {
+        "prefix": "disabled",
+        "body": [
+            "disabled trigger ${1:Name}",
+            "{",
+            "\tevent ${2:OnEvent}($3)",
+            "\t{",
+            "\t\t$0",
+            "\t}",
+            "}"
+        ],
+        "description": "Триггер, стартующий выключенным (Engine.EnableTrigger включит)"
+    },
+    "class": {
+        "prefix": "class",
+        "body": [
+            "class ${1:Name}",
+            "{",
+            "\t$0",
+            "}"
+        ],
+        "description": "Статический класс: константы, поля, функции"
+    },
+    "enum": {
+        "prefix": "enum",
+        "body": [
+            "enum ${1:Name} { ${2:A}, ${3:B} }"
+        ],
+        "description": "Скриптовый енум"
+    },
+    "event": {
+        "prefix": "event",
+        "body": [
+            "event ${1:OnEvent}($2)",
+            "{",
+            "\t$0",
+            "}"
+        ],
+        "description": "Обработчик события (сигнатура должна совпадать с хостовой — см. автодополнение после 'event ')"
+    },
+    "action Do": {
+        "prefix": "action",
+        "body": [
+            "action Do()",
+            "{",
+            "\t$0",
+            "}"
+        ],
+        "description": "Точка входа триггера: Engine.ActivateTrigger запускает её отдельным файбером"
+    },
+    "func": {
+        "prefix": "func",
+        "body": [
+            "func ${1:Name}($2)${3: -> ${4:float}}",
+            "{",
+            "\t$0",
+            "}"
+        ],
+        "description": "Функция (опустите '-> тип' для void)"
+    },
+    "wait": {
+        "prefix": "wait",
+        "body": [
+            "wait ${1:1.0};"
+        ],
+        "description": "Приостановить файбер на N секунд"
+    },
+    "wait until": {
+        "prefix": "waituntil",
+        "body": [
+            "wait until ${1:condition};"
+        ],
+        "description": "Ждать условия (проверка раз в тик)"
+    },
+    "spawn": {
+        "prefix": "spawn",
+        "body": [
+            "spawn ${1:Func}($2);"
+        ],
+        "description": "Запустить функцию параллельным файбером"
+    },
+    "for range": {
+        "prefix": "for",
+        "body": [
+            "for ${1:i} in ${2:0}..${3:n}",
+            "{",
+            "\t$0",
+            "}"
+        ],
+        "description": "Цикл по диапазону (верхняя граница исключается)"
+    },
+    "for each": {
+        "prefix": "foreach",
+        "body": [
+            "for ${1:item} in ${2:collection}",
+            "{",
+            "\t$0",
+            "}"
+        ],
+        "description": "Цикл по массиву/списку"
+    },
+    "if": {
+        "prefix": "if",
+        "body": [
+            "if (${1:condition})",
+            "{",
+            "\t$0",
+            "}"
+        ],
+        "description": "Условие"
+    },
+    "while": {
+        "prefix": "while",
+        "body": [
+            "while (${1:condition})",
+            "{",
+            "\t$0",
+            "}"
+        ],
+        "description": "Цикл"
+    },
+    "listener": {
+        "prefix": "listener",
+        "body": [
+            "listener ${1:Name}",
+            "{",
+            "\tevent OnSubscribe() { $2 }",
+            "\tevent ${3:OnHostEvent}(${4:Unit} ${5:u}$6)",
+            "\t{",
+            "\t\t$0",
+            "\t}",
+            "\tevent OnUnsubscribe() { }",
+            "}"
+        ],
+        "description": "Подписка на события конкретной сущности: Engine.Attach(Name, entity); субъект — первый параметр события; self и поля — свои у каждой подписки"
+    },
+    "archetype": {
+        "prefix": "arch",
+        "body": [
+            "${1:spell} ${2:entity_id}",
+            "{",
+            "\tevent ${3:OnCast}($4)",
+            "\t{",
+            "\t\t$0",
+            "\t}",
+            "}"
+        ],
+        "description": "Блок-архетип: механика сущности по шаблону вида (виды и события объявляет игра; поздний блок переопределяет ранний по-событийно)"
+    }
+}

@@ -1,0 +1,16 @@
+// Первый мод. Реагирует на события, которые поднимает игра.
+// Проверьте автодополнение: наберите "event " внутри триггера, поставьте точку
+// после "Engine", "UnitApi" или "Team" — подсказки берутся из salamander-api.json.
+
+trigger HelloMod
+{
+    event OnBattleStarted()
+    {
+        Engine.Log("Привет из мода!");
+    }
+
+    event OnUnitDied(Unit unit, Unit killer)
+    {
+        Engine.Log($"{killer.name} одолел {unit.name}");
+    }
+}

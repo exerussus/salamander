@@ -1,0 +1,89 @@
+{
+    "name": "salamander",
+    "displayName": "Salamander (игровой скриптовый язык)",
+    "description": "Подсветка синтаксиса, ошибки компиляции и автодополнение для .sal — триггеры, события, файберы.",
+    "version": "0.1.0",
+    "publisher": "local",
+    "license": "MIT",
+    "engines": {
+        "vscode": "^1.85.0"
+    },
+    "categories": [
+        "Programming Languages",
+        "Linters",
+        "Snippets"
+    ],
+    "main": "./out/extension.js",
+    "activationEvents": [
+        "onLanguage:salamander",
+        "workspaceContains:**/salamander-api.json"
+    ],
+    "contributes": {
+        "languages": [
+            {
+                "id": "salamander",
+                "aliases": [
+                    "Salamander",
+                    "salamander"
+                ],
+                "extensions": [
+                    ".sal"
+                ],
+                "configuration": "./language-configuration.json"
+            }
+        ],
+        "grammars": [
+            {
+                "language": "salamander",
+                "scopeName": "source.salamander",
+                "path": "./syntaxes/salamander.tmLanguage.json"
+            }
+        ],
+        "snippets": [
+            {
+                "language": "salamander",
+                "path": "./snippets/salamander.json"
+            }
+        ],
+        "commands": [
+            {
+                "command": "salamander.check",
+                "title": "Salamander: проверить скрипты (компиляция)"
+            }
+        ],
+        "configuration": {
+            "title": "Salamander",
+            "properties": {
+                "salamander.checkerPath": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Путь к DslCheck.dll (или исполняемому файлу). Пусто — проверка на сохранение выключена. Пример: /repo/Tools/DslCheck/bin/Debug/net8.0/DslCheck.dll"
+                },
+                "salamander.modsRoot": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Корневая папка модулей (с подкаталогами module.json). Пусто — папка, где найден script-api.json, иначе корень воркспейса."
+                },
+                "salamander.apiManifest": {
+                    "type": "string",
+                    "default": "",
+                    "description": "Путь к script-api.json (манифест API хоста; игра выгружает его при Play). Пусто — авто-поиск по воркспейсу."
+                },
+                "salamander.checkOnSave": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Запускать компиляцию при сохранении .sal и module.json."
+                }
+            }
+        }
+    },
+    "scripts": {
+        "compile": "tsc -p ./",
+        "watch": "tsc -w -p ./"
+    },
+    "devDependencies": {
+        "@types/node": "^20.11.0",
+        "@types/vscode": "^1.85.0",
+        "typescript": "^5.4.0"
+    }
+}

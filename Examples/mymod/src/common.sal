@@ -1,0 +1,26 @@
+// Общие определения модуля: скриптовый енум и класс-библиотека.
+// Классы статичны: только поля, константы и функции. Экземпляров нет —
+// сущности игры приходят из хоста хэндлами (Unit и т.п.).
+
+enum Phase { Intro, Combat, Boss }
+
+class Balance
+{
+    const float BOSS_HP_THRESHOLD = 0.35;
+    const int WAVE_SIZE = 6;
+
+    int wavesSpawned = 0;
+
+    func NextWaveSize() -> int
+    {
+        wavesSpawned = wavesSpawned + 1;
+        // каждая третья волна больше
+        if (wavesSpawned % 3 == 0) { return WAVE_SIZE * 2; }
+        return WAVE_SIZE;
+    }
+
+    func Lerp(float a, float b, float t) -> float
+    {
+        return a + (b - a) * t;
+    }
+}

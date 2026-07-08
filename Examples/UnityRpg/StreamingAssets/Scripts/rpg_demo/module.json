@@ -1,0 +1,9 @@
+{
+    "name": "rpg_demo",
+    "version": "1.0.0",
+    "apiVersion": 1,
+    "dependencies": [],
+    "sources": [
+        "src/battle.sal"
+    ]
+}

@@ -1,0 +1,100 @@
+{
+    "salamander.modsRoot": "${workspaceFolder}/mods",
+    "salamander.apiManifest": "${workspaceFolder}/mods/salamander-api.json",
+    "salamander.checkerPath": "${workspaceFolder}/bin/DslCheck.dll",
+    "salamander.checkOnSave": true,
+    "files.associations": {
+        "*.sal": "salamander"
+    },
+    "//": "Цвета Salamander в стиле Rider (JetBrains Darcula). Скоупы сверены с грамматикой.",
+    "editor.tokenColorCustomizations": {
+        "textMateRules": [
+            // Ключевые слова: управляющие, storage (trigger/class/enum/func/action/event),
+            // new/var/const/disabled/spawn, примитивы (int/float/...), true/false/null —
+            // всё оранжевое, как в Darcula
+            {
+                "scope": [
+                    "keyword.control.salamander",
+                    "storage.modifier.salamander",
+                    "storage.type.salamander",
+                    "storage.type.function.salamander",
+                    "keyword.other.salamander",
+                    "support.type.primitive.salamander",
+                    "constant.language.salamander"
+                ],
+                "settings": { "foreground": "#CC7832" }
+            },
+            // Типы (объявления trigger/class/enum), API-классы, namespace-квалификатор — лавандовый
+            {
+                "scope": [
+                    "entity.name.type.salamander",
+                    "entity.name.type.trigger.salamander",
+                    "support.class.salamander"
+                ],
+                "settings": { "foreground": "#B5B6E3" }
+            },
+            // Функции / методы — золотой (FFC66D — фирменный «метод» Rider)
+            {
+                "scope": "entity.name.function.salamander",
+                "settings": { "foreground": "#FFC66D" }
+            },
+            // Свойства / поля (unit.health, Balance.counter) — фиолетовый (instance field)
+            {
+                "scope": "variable.other.property.salamander",
+                "settings": { "foreground": "#9876AA" }
+            },
+            // Элементы енумов / константы класса (Team.Heroes, Balance.MAX_HP) — фиолетовый курсив (constant)
+            {
+                "scope": "constant.other.enum.salamander",
+                "settings": { "foreground": "#9876AA", "fontStyle": "italic" }
+            },
+            // Числа — синий
+            {
+                "scope": [
+                    "constant.numeric.integer.salamander",
+                    "constant.numeric.float.salamander"
+                ],
+                "settings": { "foreground": "#6897BB" }
+            },
+            // Строки (обычные и интерполированные) + начальный $" — зелёный
+            {
+                "scope": [
+                    "string.quoted.double.salamander",
+                    "string.interpolated.salamander",
+                    "punctuation.definition.string.begin.salamander"
+                ],
+                "settings": { "foreground": "#6A8759" }
+            },
+            // Escape-последовательности (\n, \t) — оранжевые, как в Darcula
+            {
+                "scope": "constant.character.escape.salamander",
+                "settings": { "foreground": "#CC7832" }
+            },
+            // Комментарии — серые (Darcula line/block comment)
+            {
+                "scope": [
+                    "comment.line.double-slash.salamander",
+                    "comment.block.salamander"
+                ],
+                "settings": { "foreground": "#808080" }
+            },
+            // Операторы, точки-аксессоры, ::, скобки интерполяции — цвет текста по умолчанию
+            // self внутри listener — фиолетовый курсив (как this/self в Rider)
+            {
+                "scope": "variable.language.self.salamander",
+                "settings": { "foreground": "#94558D", "fontStyle": "italic" }
+            },
+            {
+                "scope": [
+                    "keyword.operator.salamander",
+                    "punctuation.accessor.salamander",
+                    "punctuation.separator.namespace.salamander",
+                    "entity.name.namespace.salamander",
+                    "punctuation.section.interpolation.begin.salamander",
+                    "punctuation.section.interpolation.end.salamander"
+                ],
+                "settings": { "foreground": "#A9B7C6" }
+            }
+        ]
+    }
+}

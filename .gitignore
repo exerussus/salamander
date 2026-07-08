@@ -1,0 +1,16 @@
+# сборки инструментов — не в репозиторий
+bin/
+obj/
+out/
+node_modules/
+*.vsix
+modkit/bin/*
+!modkit/bin/README.md
+
+# служебное Unity (если репозиторий = проект)
+[Ll]ibrary/
+[Tt]emp/
+[Oo]bj/
+[Bb]uild/
+[Ll]ogs/
+*.csproj.user

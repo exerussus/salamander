@@ -1,0 +1,77 @@
+// Триггеры. Правила:
+//  - триггер обязан содержать хотя бы один event (иначе это class);
+//  - event соответствует событию, зарегистрированному игрой;
+//  - action Do() — точка входа для Engine.ActivateTrigger: запускается
+//    ОТДЕЛЬНЫМ файбером, внутри можно wait;
+//  - каждый сработавший event — отдельный файбер (параллельные wait не мешают).
+
+trigger AmbushCutscene
+{
+    bool sprung = false;
+
+    // запускается снаружи: Engine.ActivateTrigger(AmbushCutscene)
+    action Do()
+    {
+        if (sprung) { return; }
+        sprung = true;
+
+        Engine.Log("Засада!");
+        SpawnApi.SpawnWave(Balance.NextWaveSize());
+        wait 2.0;
+        UnitApi.PlayAnimation(SpawnApi.Boss(), "emerge");
+        wait 1.5;
+        Engine.Log($"Босс появился, hp: {UnitApi.Health(SpawnApi.Boss())}");
+    }
+
+    event OnUnitDamageTaken(Unit source, Unit target, float amount, DamageType type)
+    {
+        if (!sprung && UnitApi.IsPlayer(target))
+        {
+            Engine.ActivateTrigger(AmbushCutscene);
+        }
+    }
+}
+
+trigger BossRage
+{
+    bool raging = false;
+
+    event OnUnitDamageTaken(Unit source, Unit target, float amount, DamageType type)
+    {
+        if (raging) { return; }
+        if (!UnitApi.IsBoss(target)) { return; }
+
+        float hp = UnitApi.Health(target);
+        float max = UnitApi.MaxHealth(target);
+        if (hp / max > Balance.BOSS_HP_THRESHOLD) { return; }
+
+        raging = true;
+        Engine.Log("Босс в ярости!");
+        spawn RageLoop(target);
+    }
+
+    func RageLoop(Unit boss)
+    {
+        while (Engine.IsValid(boss) && UnitApi.Health(boss) > 0.0)
+        {
+            UnitApi.PlayAnimation(boss, "roar");
+            SpawnApi.SpawnWave(3);
+            wait 5.0;
+        }
+        Engine.Log("Ярость угасла.");
+        Engine.DisableTrigger(BossRage);
+    }
+}
+
+// Стартует выключенным: включается извне (Engine.EnableTrigger) или из скрипта.
+disabled trigger DebugHeartbeat
+{
+    float last = 0.0;
+
+    event Update(float time, float dt)
+    {
+        if (time - last < 1.0) { return; }
+        last = time;
+        Engine.Log($"heartbeat t={time}");
+    }
+}
