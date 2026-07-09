@@ -88,5 +88,75 @@ namespace Dsl.Codegen
         public HashSet<string> ClassNames;
 
         public const int InitFuncIndex = 0;
+
+        // ===== отпечаток программы (для сейвов) ============================
+        // Файберы в сейве хранят (funcIndex, ip) — они валидны только против
+        // ТОГО ЖЕ байткода. FNV-1a 64 по коду, литералам и таблицам; номера
+        // строк исключены (правка форматирования исходника сейв не ломает).
+
+        private ulong _fingerprint;
+        private bool _fingerprintDone;
+
+        public ulong Fingerprint
+        {
+            get
+            {
+                if (!_fingerprintDone)
+                {
+                    _fingerprint = ComputeFingerprint();
+                    _fingerprintDone = true;
+                }
+                return _fingerprint;
+            }
+        }
+
+        private ulong ComputeFingerprint()
+        {
+            ulong h = 14695981039346656037UL; // FNV offset basis
+            void Mix(long v) { h ^= (ulong)v; h *= 1099511628211UL; }
+            void MixStr(string s)
+            {
+                if (s == null) { Mix(-1); return; }
+                Mix(s.Length);
+                foreach (char c in s) Mix(c);
+            }
+
+            Mix(Functions.Length);
+            foreach (var ch in Functions)
+            {
+                Mix(ch.ParamCount); Mix(ch.LocalCount); Mix(ch.Code.Length);
+                foreach (var ins in ch.Code) { Mix((byte)ins.Op); Mix(ins.A); Mix(ins.B); }
+            }
+            Mix(StaticCount);
+            Mix(StringLiterals.Length);
+            foreach (var s in StringLiterals) MixStr(s);
+            Mix(Triggers.Length);
+            foreach (var t in Triggers) { MixStr(t.Name); MixStr(t.Module); Mix(t.ActionFuncIndex); }
+            Mix(EventHandlers.Length);
+            foreach (var row in EventHandlers)
+            {
+                Mix(row.Length);
+                foreach (var hr in row) { Mix(hr.TriggerId); Mix(hr.FuncIndex); }
+            }
+            Mix(Listeners.Length);
+            foreach (var l in Listeners)
+            {
+                MixStr(l.Name); Mix(l.FieldCount); Mix(l.InitFuncIndex);
+                Mix(l.OnSubscribeFunc); Mix(l.OnUnsubscribeFunc);
+            }
+            foreach (var row in ListenerHandlerFunc)
+                foreach (var f in row) Mix(f);
+            Mix(ArchetypeKinds.Length);
+            foreach (var k in ArchetypeKinds)
+            {
+                MixStr(k.Name); Mix(k.EventCount); Mix(k.Ids.Length);
+                foreach (var id in k.Ids) MixStr(id);
+                foreach (var row in k.Handlers)
+                    foreach (var ah in row) { Mix(ah.Func); Mix(ah.ModuleIndex); }
+            }
+            Mix(Modules.Length);
+            foreach (var mname in Modules) MixStr(mname);
+            return h;
+        }
     }
 }

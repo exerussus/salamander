@@ -17,7 +17,7 @@ namespace Dsl.Runtime
     ///    того, как текущий приостановится (без реентерабельности);
     ///  - Tick(dt) будит таймеры и «wait until»-файберы.
     /// </summary>
-    public sealed class ScriptEngine : IHostContext
+    public sealed partial class ScriptEngine : IHostContext
     {
         public HostRegistry Host { get; }
         public StringTable Strings { get; private set; }

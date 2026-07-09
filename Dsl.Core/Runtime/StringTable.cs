@@ -40,6 +40,8 @@ namespace Dsl.Runtime
 
         public int Count => _count;
         public int DynamicCount => _count - _staticCount;
+        /// <summary>Граница статического сегмента (id ниже — литералы программы, стабильны при том же отпечатке).</summary>
+        public int StaticCount => _staticCount;
 
         /// <summary>Зафиксировать статический сегмент (после интернирования литералов).</summary>
         public void FreezeStatics() => _staticCount = _count;

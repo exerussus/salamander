@@ -53,6 +53,17 @@ namespace Dsl.Runtime
             return Variant.Entity(idx, _versions[idx]);
         }
 
+        /// <summary>Объект по хэндлу без исключений (для сериализации). false — хэндл протух.</summary>
+        public bool TryResolveObject(Variant v, out object o)
+        {
+            o = null;
+            if (v.Type != VariantType.Entity) return false;
+            int idx = v.Index;
+            if ((uint)idx >= (uint)_count || _versions[idx] != v.Version || _objs[idx] == null) return false;
+            o = _objs[idx];
+            return true;
+        }
+
         /// <summary>Хэндл живого объекта, если он зарегистрирован (для авто-detach подписок).</summary>
         public bool TryGetHandle(object o, out Variant v)
         {

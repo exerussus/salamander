@@ -180,6 +180,44 @@ namespace Dsl.Runtime
 
         public void MapRemove(Variant coll, Variant key) => MapOf(coll).Remove(key);
 
+        // ===== сериализация ================================================
+        // Доступ для SaveState/LoadState: перечисление живых коллекций и
+        // прямое чтение/заполнение содержимого (минуя скриптовые операции).
+
+        internal void CollectLive(List<(VariantType kind, int id)> into)
+        {
+            into.Clear();
+            var freeA = new HashSet<int>(_freeArrays);
+            for (int i = 0; i < _arrayCount; i++)
+                if (!freeA.Contains(i) && _arrays[i] != null) into.Add((VariantType.Array, i));
+            var freeL = new HashSet<int>(_freeLists);
+            for (int i = 0; i < _listCount; i++)
+                if (!freeL.Contains(i) && _lists[i] != null) into.Add((VariantType.List, i));
+            var freeM = new HashSet<int>(_freeMaps);
+            for (int i = 0; i < _mapCount; i++)
+                if (!freeM.Contains(i) && _maps[i] != null) into.Add((VariantType.Map, i));
+        }
+
+        internal Variant[] GetArrayData(int id) => _arrays[id];
+
+        internal void GetListData(int id, out Variant[] buf, out int count)
+        {
+            var l = _lists[id];
+            buf = l.Buf;
+            count = l.Count;
+        }
+
+        internal Dictionary<Variant, Variant> GetMapData(int id) => _maps[id];
+
+        internal void LoadListAdd(int id, Variant v)
+        {
+            var l = _lists[id];
+            if (l.Count >= l.Buf.Length) System.Array.Resize(ref l.Buf, l.Buf.Length * 2);
+            l.Buf[l.Count++] = v;
+        }
+
+        internal void LoadMapSet(int id, Variant k, Variant v) => _maps[id][k] = v;
+
         // ===== датчики =====================================================
 
         /// <summary>Приблизительное число живых коллекций (для статистики).</summary>
