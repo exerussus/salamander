@@ -119,6 +119,86 @@ namespace Dsl.Runtime
                         case OpCode.LoadStatic: Push(Statics[ins.A]); break;
                         case OpCode.StoreStatic: Statics[ins.A] = stack[--sp]; break;
 
+                        // ----- снапшот-итерация for-in (буферы на файбере) -----
+                        case OpCode.IterBegin:
+                        {
+                            var coll = stack[--sp];
+                            int bufId = f.IterDepth;
+                            int n;
+                            switch (coll.Type)
+                            {
+                                case VariantType.Array:
+                                {
+                                    var a = _engine.Collections.GetArrayData(coll.CollId);
+                                    n = a.Length;
+                                    f.EnsureIter(bufId, n);
+                                    Array.Copy(a, f.IterBufs[bufId], n);
+                                    break;
+                                }
+                                case VariantType.List:
+                                {
+                                    _engine.Collections.GetListData(coll.CollId, out var b, out n);
+                                    f.EnsureIter(bufId, n);
+                                    Array.Copy(b, f.IterBufs[bufId], n);
+                                    break;
+                                }
+                                case VariantType.Map:
+                                {
+                                    var m = _engine.Collections.GetMapData(coll.CollId);
+                                    n = m.Count;
+                                    f.EnsureIter(bufId, n);
+                                    int im = 0;
+                                    foreach (var k in m.Keys) f.IterBufs[bufId][im++] = k;
+                                    break;
+                                }
+                                case VariantType.Nil:
+                                    throw new ScriptError("Итерация по null-коллекции.");
+                                default:
+                                    throw new ScriptError($"for-in ожидает коллекцию, получен {coll.Type}.");
+                            }
+                            f.IterCounts[bufId] = n;
+                            f.IterDepth++;
+                            stack[frame.Base + ins.A] = Variant.Int(bufId);
+                            break;
+                        }
+
+                        case OpCode.IterNext:
+                        {
+                            int iterBase = frame.Base;
+                            int idx = stack[iterBase + ins.A].AsInt;      // A   = idx
+                            var src = stack[iterBase + ins.A + 1];        // A+1 = coll
+                            int bufId = stack[iterBase + ins.A + 2].AsInt; // A+2 = bufId
+                            var buf = f.IterBufs[bufId];
+                            int cnt = f.IterCounts[bufId];
+
+                            bool has = false;
+                            Variant elem = default;
+                            if (src.Type == VariantType.Map)
+                            {
+                                // ключи, удалённые после входа в цикл, молча пропускаются
+                                var m = _engine.Collections.GetMapData(src.CollId);
+                                while (idx < cnt)
+                                {
+                                    var k = buf[idx++];
+                                    if (m.ContainsKey(k)) { elem = k; has = true; break; }
+                                }
+                            }
+                            else if (idx < cnt)
+                            {
+                                elem = buf[idx++];
+                                has = true;
+                            }
+
+                            stack[iterBase + ins.A] = Variant.Int(idx);
+                            if (has) stack[iterBase + ins.B] = elem;
+                            Push(Variant.Bool(has));
+                            break;
+                        }
+
+                        case OpCode.IterEnd:
+                            if (f.IterDepth > 0) f.IterDepth--;
+                            break;
+
                         // поля текущей подписки listener (блок висит на файбере)
                         case OpCode.LoadAttach: Push(f.AttachFields[ins.A]); break;
                         case OpCode.StoreAttach: f.AttachFields[ins.A] = stack[--sp]; break;

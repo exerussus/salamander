@@ -43,6 +43,26 @@ namespace Dsl.Runtime
         public bool KillRequested;        // самоубийство через Engine.Kill(self)
         public int BudgetHits;            // сколько тиков подряд файбер упирался в бюджет
 
+        // снапшоты активных for-in (map/list/array): цикл видит коллекцию на
+        // момент входа, менять её в теле безопасно. Буферы принадлежат файберу
+        // (grow-only, как Stack) — переживают wait, освобождаются на IterEnd и
+        // гарантированно на любой смерти файбера (Reset). Путей утечки нет.
+        public Variant[][] IterBufs = new Variant[2][];
+        public int[] IterCounts = new int[2];
+        public int IterDepth;
+
+        public void EnsureIter(int depth, int size)
+        {
+            if (depth >= IterBufs.Length)
+            {
+                int cap = System.Math.Max(depth + 1, IterBufs.Length * 2);
+                System.Array.Resize(ref IterBufs, cap);
+                System.Array.Resize(ref IterCounts, cap);
+            }
+            if (IterBufs[depth] == null || IterBufs[depth].Length < size)
+                IterBufs[depth] = new Variant[System.Math.Max(8, size)];
+        }
+
         // контекст подписки listener (наследуется в spawn и вызовы функций)
         public int AttachIndex = -1;      // слот подписки в движке (-1 — нет)
         public Variant[] AttachFields;    // блок полей этой подписки
@@ -65,6 +85,7 @@ namespace Dsl.Runtime
             AttachIndex = -1;
             AttachFields = null;
             AttachSelf = Variant.Nil;
+            IterDepth = 0; // буферы остаются под переиспользование
             PendingWaitSeconds = 0f;
             WakeTime = 0;
         }

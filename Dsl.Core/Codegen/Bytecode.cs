@@ -15,6 +15,9 @@ namespace Dsl.Codegen
         LoadLocal, StoreLocal,     // A = slot
         LoadStatic, StoreStatic,   // A = static slot
         LoadAttach, StoreAttach,   // A = attach slot (поле текущей подписки listener)
+        IterBegin,                 // стек: [coll]->[]; снапшот в буфер файбера; locals[A] = bufId
+        IterNext,                  // A = база скрытой тройки (idx,coll,buf), B = слот переменной; push bool
+        IterEnd,                   // закрыть верхний буфер итерации файбера
         PushSelf,                  // сущность-цель текущей подписки
 
         // хостовые свойства

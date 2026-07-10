@@ -188,12 +188,18 @@ namespace Dsl.Syntax
     public sealed class ForEachStmt : Stmt
     {
         public string Var;
+        public string Var2;        // for k, v in map — имя второй переменной (или null)
         public Expr Coll;
         public Block Body;
         public int VarSlot = -1;
-        public int IndexSlot = -1; // скрытый слот-счётчик
-        public int CollSlot = -1;  // скрытый слот под коллекцию
-        public TypeRef ElemType;
+        public int Var2Slot = -1;
+        // скрытая ТРОЙКА слотов подряд (VM адресует базой): idx, coll, bufId
+        public int IndexSlot = -1;
+        public int CollSlot = -1;
+        public int BufSlot = -1;
+        public bool IsMap;
+        public TypeRef ElemType;   // тип первой переменной (элемент / ключ)
+        public TypeRef Elem2Type;  // тип второй (значение Map)
     }
 
     public sealed class BreakStmt : Stmt { }

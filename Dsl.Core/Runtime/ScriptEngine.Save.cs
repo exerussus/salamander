@@ -185,6 +185,9 @@ namespace Dsl.Runtime
                     w.Write(f.Frames[i].Ip);
                     w.Write(f.Frames[i].Base);
                 }
+                // активные снапшоты for-in (переживают wait — значит и сейв)
+                w.Write(f.IterDepth);
+                for (int i = 0; i < f.IterDepth; i++) w.Write(f.IterCounts[i]);
             }
 
             // --- содержимое: статики ---
@@ -232,6 +235,9 @@ namespace Dsl.Runtime
             {
                 w.Write(f.Sp);
                 for (int i = 0; i < f.Sp; i++) WriteVariant(w, f.Stack[i], resolver);
+                for (int d = 0; d < f.IterDepth; d++)
+                    for (int i = 0; i < f.IterCounts[d]; i++)
+                        WriteVariant(w, f.IterBufs[d][i], resolver);
             }
 
             // --- очереди/таймеры (хэндлы файберов как index+version) ---
@@ -446,7 +452,7 @@ namespace Dsl.Runtime
 
             // --- шапки файберов: материализуем, строим ремап ---
             int fibCount = r.ReadInt32();
-            var fibOrder = new (Fiber f, bool dropped)[fibCount];
+            var fibOrder = new (Fiber f, bool dropped, int[] iterCounts)[fibCount];
             for (int i = 0; i < fibCount; i++)
             {
                 int oldIdx = r.ReadInt32();
@@ -466,9 +472,12 @@ namespace Dsl.Runtime
 
                 if (dropped)
                 {
-                    // кадры прочитать и выбросить (выравнивание потока)
+                    // кадры и шапку итераций прочитать и выбросить (выравнивание потока)
                     for (int k = 0; k < frameCount; k++) { r.ReadInt32(); r.ReadInt32(); r.ReadInt32(); }
-                    fibOrder[i] = (null, true);
+                    int dDepth = r.ReadInt32();
+                    var dCounts = new int[dDepth];
+                    for (int k = 0; k < dDepth; k++) dCounts[k] = r.ReadInt32();
+                    fibOrder[i] = (null, true, dCounts);
                     continue;
                 }
 
@@ -493,8 +502,12 @@ namespace Dsl.Runtime
                     f.Frames[k].Base = r.ReadInt32();
                 }
 
+                int iterDepth = r.ReadInt32();
+                var iterCounts = new int[iterDepth];
+                for (int k = 0; k < iterDepth; k++) iterCounts[k] = r.ReadInt32();
+
                 ctx.FiberMap[Pack(oldIdx, oldVer)] = f.Handle;
-                fibOrder[i] = (f, false);
+                fibOrder[i] = (f, false, iterCounts);
             }
 
             // --- содержимое: статики ---
@@ -539,17 +552,26 @@ namespace Dsl.Runtime
             }
 
             // --- содержимое: стеки файберов ---
-            foreach (var (f, dropped) in fibOrder)
+            foreach (var (f, dropped, iterCounts) in fibOrder)
             {
                 int sp = r.ReadInt32();
                 if (dropped)
                 {
                     for (int i = 0; i < sp; i++) ReadVariant(r, ctx);
+                    foreach (var cnt in iterCounts)
+                        for (int i = 0; i < cnt; i++) ReadVariant(r, ctx);
                     continue;
                 }
                 f.EnsureStack(sp);
                 for (int i = 0; i < sp; i++) f.Stack[i] = ReadVariant(r, ctx);
                 f.Sp = sp;
+                for (int d = 0; d < iterCounts.Length; d++)
+                {
+                    f.EnsureIter(d, iterCounts[d]);
+                    for (int i = 0; i < iterCounts[d]; i++) f.IterBufs[d][i] = ReadVariant(r, ctx);
+                    f.IterCounts[d] = iterCounts[d];
+                }
+                f.IterDepth = iterCounts.Length;
             }
 
             // --- очереди/таймеры ---

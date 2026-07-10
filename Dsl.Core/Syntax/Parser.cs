@@ -397,10 +397,15 @@ namespace Dsl.Syntax
         {
             var pos = Advance().Pos; // 'for'
             var varName = Expect(TokenKind.Ident, "E0039", "имя переменной цикла").Text;
+            string var2 = null;
+            if (Match(TokenKind.Comma))
+                var2 = Expect(TokenKind.Ident, "E0071", "имя второй переменной цикла").Text;
             Expect(TokenKind.KwIn, "E0040", "'in'");
             var first = ParseExpr();
             if (Match(TokenKind.DotDot))
             {
+                if (var2 != null)
+                    _diag.Error("E0072", "Две переменные цикла допустимы только при обходе Map.", pos);
                 var to = ParseExpr();
                 var body = ParseBlock();
                 return new ForRangeStmt { Var = varName, From = first, To = to, Body = body, Pos = pos };
@@ -408,7 +413,7 @@ namespace Dsl.Syntax
             else
             {
                 var body = ParseBlock();
-                return new ForEachStmt { Var = varName, Coll = first, Body = body, Pos = pos };
+                return new ForEachStmt { Var = varName, Var2 = var2, Coll = first, Body = body, Pos = pos };
             }
         }
 

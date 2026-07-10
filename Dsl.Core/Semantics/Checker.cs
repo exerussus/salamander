@@ -904,18 +904,39 @@ namespace Dsl.Semantics
                 {
                     var ct = CheckExpr(ref fe.Coll);
                     TypeRef elem = TypeRef.Error;
-                    if (ct.Kind == TypeKind.Array || ct.Kind == TypeKind.List) elem = ct.Elem;
+                    TypeRef elem2 = TypeRef.Error;
+                    if (ct.Kind == TypeKind.Array || ct.Kind == TypeKind.List)
+                    {
+                        elem = ct.Elem;
+                        if (fe.Var2 != null)
+                            _diag.Error("E0206",
+                                "Вторая переменная цикла допустима только для Map (ключ, значение).", fe.Pos);
+                    }
+                    else if (ct.Kind == TypeKind.Map)
+                    {
+                        // снапшот КЛЮЧЕЙ на входе; удалённые в теле — пропускаются;
+                        // значения (вторая переменная) читаются живыми через map[k]
+                        fe.IsMap = true;
+                        elem = ct.Key;
+                        elem2 = ct.Val;
+                    }
                     else if (!ct.IsError)
-                        _diag.Error("E0136", "for-in обходит массивы и List (Map — в следующих версиях).", fe.Coll.Pos);
+                        _diag.Error("E0136", "for-in обходит массивы, List и Map.", fe.Coll.Pos);
 
                     fe.ElemType = elem;
+                    fe.Elem2Type = elem2;
                     fe.VarSlot = _localCount++;
+                    if (fe.Var2 != null) fe.Var2Slot = _localCount++;
+                    // скрытая тройка ПОДРЯД — VM адресует базой IndexSlot
                     fe.IndexSlot = _localCount++;
                     fe.CollSlot = _localCount++;
+                    fe.BufSlot = _localCount++;
 
                     PushScope();
                     if (!DeclareLocal(fe.Var, fe.VarSlot, elem))
                         _diag.Error("E0137", $"Переменная '{fe.Var}' уже объявлена.", fe.Pos);
+                    if (fe.Var2 != null && !DeclareLocal(fe.Var2, fe.Var2Slot, elem2))
+                        _diag.Error("E0137", $"Переменная '{fe.Var2}' уже объявлена.", fe.Pos);
                     _loopDepth++;
                     CheckBlock(fe.Body);
                     _loopDepth--;

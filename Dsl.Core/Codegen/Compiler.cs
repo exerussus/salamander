@@ -31,6 +31,7 @@ namespace Dsl.Codegen
         {
             public readonly List<int> Breaks = new List<int>();
             public readonly List<int> Continues = new List<int>();
+            public bool OwnsIter; // for-in держит буфер снапшота — break/return обязаны IterEnd
         }
         private readonly List<LoopCtx> _loops = new List<LoopCtx>();
 
@@ -376,6 +377,9 @@ namespace Dsl.Codegen
                     break;
 
                 case ReturnStmt r:
+                    // выходим из функции насквозь через все for-in — закрываем их буферы
+                    foreach (var lc in _loops)
+                        if (lc.OwnsIter) Emit(OpCode.IterEnd);
                     if (r.Value != null) { EmitExpr(r.Value); Emit(OpCode.Return, 1); }
                     else Emit(OpCode.Return, 0);
                     break;
@@ -506,39 +510,40 @@ namespace Dsl.Codegen
 
         private void EmitForEach(ForEachStmt fe)
         {
-            // coll = <expr>; idx = 0;
+            // Снапшот-итерация: коллекция копируется в буфер ФАЙБЕРА на входе —
+            // менять её в теле безопасно. Map: снапшотятся ключи, удалённые
+            // пропускаются (проверка в IterNext), значения читаются живыми.
             EmitExpr(fe.Coll);
-            Emit(OpCode.StoreLocal, fe.CollSlot);
+            Emit(OpCode.StoreLocal, fe.CollSlot);   // источник: map[k] и скип удалённых
+            Emit(OpCode.LoadLocal, fe.CollSlot);
+            Emit(OpCode.IterBegin, fe.BufSlot);     // pop coll → снапшот; locals[Buf] = bufId
             Emit(OpCode.PushInt, 0);
             Emit(OpCode.StoreLocal, fe.IndexSlot);
 
-            int start = HereLabel;
-            Emit(OpCode.LoadLocal, fe.IndexSlot);
-            Emit(OpCode.LoadLocal, fe.CollSlot);
-            Emit(OpCode.Len);
-            Emit(OpCode.Lt);
+            int start = HereLabel; // continue приходит сюда (инкремент внутри IterNext)
+            Emit(OpCode.IterNext, fe.IndexSlot, fe.VarSlot);
             int exit = EmitJump(OpCode.JumpIfFalse);
 
-            Emit(OpCode.LoadLocal, fe.CollSlot);
-            Emit(OpCode.LoadLocal, fe.IndexSlot);
-            Emit(OpCode.Index);
-            Emit(OpCode.StoreLocal, fe.VarSlot);
+            if (fe.Var2 != null)
+            {
+                // v = coll[k] — живое значение; ключ гарантированно жив (IterNext проверил)
+                Emit(OpCode.LoadLocal, fe.CollSlot);
+                Emit(OpCode.LoadLocal, fe.VarSlot);
+                Emit(OpCode.Index);
+                Emit(OpCode.StoreLocal, fe.Var2Slot);
+            }
 
-            var ctx = new LoopCtx();
+            var ctx = new LoopCtx { OwnsIter = true };
             _loops.Add(ctx);
             EmitBlock(fe.Body);
             _loops.RemoveAt(_loops.Count - 1);
 
-            int inc = HereLabel; // continue приходит сюда
-            Emit(OpCode.LoadLocal, fe.IndexSlot);
-            Emit(OpCode.PushInt, 1);
-            Emit(OpCode.Add);
-            Emit(OpCode.StoreLocal, fe.IndexSlot);
             Emit(OpCode.Jump, start);
 
             Patch(exit, HereLabel);
-            foreach (var br in ctx.Breaks) Patch(br, HereLabel);
-            foreach (var co in ctx.Continues) Patch(co, inc);
+            foreach (var br in ctx.Breaks) Patch(br, HereLabel); // break сюда — до IterEnd
+            Emit(OpCode.IterEnd);
+            foreach (var co in ctx.Continues) Patch(co, start);
         }
 
         // ===================================================================
