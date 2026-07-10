@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using Dsl.Compilation;
+using Dsl.Runtime;
 using Dsl.Semantics;
 using NUnit.Framework;
 

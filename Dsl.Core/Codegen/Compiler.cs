@@ -137,7 +137,7 @@ namespace Dsl.Codegen
                 {
                     Name = info.Name,
                     EventCount = info.Events.Count,
-                    IdIndex = new Dictionary<string, int>(StringComparer.Ordinal),
+                    IdIndex = new Dictionary<string, int>(System.StringComparer.Ordinal),
                 };
                 archIdLists[k] = new List<string>();
                 archHandlerLists[k] = new List<ArchHandler[]>();

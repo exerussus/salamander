@@ -69,7 +69,6 @@ namespace Dsl.Compilation
             [JsonProperty("summary", NullValueHandling = NullValueHandling.Ignore)] public string Summary;
             [JsonProperty("knownIds", NullValueHandling = NullValueHandling.Ignore)] public string[] KnownIds;
             [JsonProperty("events")] public EventDef[] Events = Array.Empty<EventDef>();
-        [JsonProperty("archetypes", NullValueHandling = NullValueHandling.Ignore)] public ArchetypeKindDef[] Archetypes;
         }
 
         public sealed class EventDef
@@ -84,6 +83,7 @@ namespace Dsl.Compilation
         [JsonProperty("classes")] public ClassDef[] Classes = Array.Empty<ClassDef>();
         [JsonProperty("apis")] public ApiDef[] Apis = Array.Empty<ApiDef>();
         [JsonProperty("events")] public EventDef[] Events = Array.Empty<EventDef>();
+        [JsonProperty("archetypes", NullValueHandling = NullValueHandling.Ignore)] public ArchetypeKindDef[] Archetypes;
 
         // ===================================================================
         // Экспорт: HostRegistry → json

@@ -45,28 +45,28 @@ namespace Dsl.Hosting
             new ArchEventRef(KindId, Define(name, doc));
 
         public ArchEventRef<T1> Event<T1>(string name, MethodDoc doc = null) =>
-            new ArchEventRef<T1>(KindId, Define(name, doc, Types.RefOf<T1>()), Types.Writer<T1>());
+            new ArchEventRef<T1>(KindId, Define(name, doc, _host.Types.RefOf<T1>()), _host.Types.Writer<T1>());
 
         public ArchEventRef<T1, T2> Event<T1, T2>(string name, MethodDoc doc = null) =>
-            new ArchEventRef<T1, T2>(KindId, Define(name, doc, Types.RefOf<T1>(), Types.RefOf<T2>()), Types.Writer<T1>(), Types.Writer<T2>());
+            new ArchEventRef<T1, T2>(KindId, Define(name, doc, _host.Types.RefOf<T1>(), _host.Types.RefOf<T2>()), _host.Types.Writer<T1>(), _host.Types.Writer<T2>());
 
         public ArchEventRef<T1, T2, T3> Event<T1, T2, T3>(string name, MethodDoc doc = null) =>
-            new ArchEventRef<T1, T2, T3>(KindId, Define(name, doc, Types.RefOf<T1>(), Types.RefOf<T2>(), Types.RefOf<T3>()), Types.Writer<T1>(), Types.Writer<T2>(), Types.Writer<T3>());
+            new ArchEventRef<T1, T2, T3>(KindId, Define(name, doc, _host.Types.RefOf<T1>(), _host.Types.RefOf<T2>(), _host.Types.RefOf<T3>()), _host.Types.Writer<T1>(), _host.Types.Writer<T2>(), _host.Types.Writer<T3>());
 
         public ArchEventRef<T1, T2, T3, T4> Event<T1, T2, T3, T4>(string name, MethodDoc doc = null) =>
-            new ArchEventRef<T1, T2, T3, T4>(KindId, Define(name, doc, Types.RefOf<T1>(), Types.RefOf<T2>(), Types.RefOf<T3>(), Types.RefOf<T4>()), Types.Writer<T1>(), Types.Writer<T2>(), Types.Writer<T3>(), Types.Writer<T4>());
+            new ArchEventRef<T1, T2, T3, T4>(KindId, Define(name, doc, _host.Types.RefOf<T1>(), _host.Types.RefOf<T2>(), _host.Types.RefOf<T3>(), _host.Types.RefOf<T4>()), _host.Types.Writer<T1>(), _host.Types.Writer<T2>(), _host.Types.Writer<T3>(), _host.Types.Writer<T4>());
 
         public ArchEventRef<T1, T2, T3, T4, T5> Event<T1, T2, T3, T4, T5>(string name, MethodDoc doc = null) =>
-            new ArchEventRef<T1, T2, T3, T4, T5>(KindId, Define(name, doc, Types.RefOf<T1>(), Types.RefOf<T2>(), Types.RefOf<T3>(), Types.RefOf<T4>(), Types.RefOf<T5>()), Types.Writer<T1>(), Types.Writer<T2>(), Types.Writer<T3>(), Types.Writer<T4>(), Types.Writer<T5>());
+            new ArchEventRef<T1, T2, T3, T4, T5>(KindId, Define(name, doc, _host.Types.RefOf<T1>(), _host.Types.RefOf<T2>(), _host.Types.RefOf<T3>(), _host.Types.RefOf<T4>(), _host.Types.RefOf<T5>()), _host.Types.Writer<T1>(), _host.Types.Writer<T2>(), _host.Types.Writer<T3>(), _host.Types.Writer<T4>(), _host.Types.Writer<T5>());
 
         public ArchEventRef<T1, T2, T3, T4, T5, T6> Event<T1, T2, T3, T4, T5, T6>(string name, MethodDoc doc = null) =>
-            new ArchEventRef<T1, T2, T3, T4, T5, T6>(KindId, Define(name, doc, Types.RefOf<T1>(), Types.RefOf<T2>(), Types.RefOf<T3>(), Types.RefOf<T4>(), Types.RefOf<T5>(), Types.RefOf<T6>()), Types.Writer<T1>(), Types.Writer<T2>(), Types.Writer<T3>(), Types.Writer<T4>(), Types.Writer<T5>(), Types.Writer<T6>());
+            new ArchEventRef<T1, T2, T3, T4, T5, T6>(KindId, Define(name, doc, _host.Types.RefOf<T1>(), _host.Types.RefOf<T2>(), _host.Types.RefOf<T3>(), _host.Types.RefOf<T4>(), _host.Types.RefOf<T5>(), _host.Types.RefOf<T6>()), _host.Types.Writer<T1>(), _host.Types.Writer<T2>(), _host.Types.Writer<T3>(), _host.Types.Writer<T4>(), _host.Types.Writer<T5>(), _host.Types.Writer<T6>());
 
         public ArchEventRef<T1, T2, T3, T4, T5, T6, T7> Event<T1, T2, T3, T4, T5, T6, T7>(string name, MethodDoc doc = null) =>
-            new ArchEventRef<T1, T2, T3, T4, T5, T6, T7>(KindId, Define(name, doc, Types.RefOf<T1>(), Types.RefOf<T2>(), Types.RefOf<T3>(), Types.RefOf<T4>(), Types.RefOf<T5>(), Types.RefOf<T6>(), Types.RefOf<T7>()), Types.Writer<T1>(), Types.Writer<T2>(), Types.Writer<T3>(), Types.Writer<T4>(), Types.Writer<T5>(), Types.Writer<T6>(), Types.Writer<T7>());
+            new ArchEventRef<T1, T2, T3, T4, T5, T6, T7>(KindId, Define(name, doc, _host.Types.RefOf<T1>(), _host.Types.RefOf<T2>(), _host.Types.RefOf<T3>(), _host.Types.RefOf<T4>(), _host.Types.RefOf<T5>(), _host.Types.RefOf<T6>(), _host.Types.RefOf<T7>()), _host.Types.Writer<T1>(), _host.Types.Writer<T2>(), _host.Types.Writer<T3>(), _host.Types.Writer<T4>(), _host.Types.Writer<T5>(), _host.Types.Writer<T6>(), _host.Types.Writer<T7>());
 
         public ArchEventRef<T1, T2, T3, T4, T5, T6, T7, T8> Event<T1, T2, T3, T4, T5, T6, T7, T8>(string name, MethodDoc doc = null) =>
-            new ArchEventRef<T1, T2, T3, T4, T5, T6, T7, T8>(KindId, Define(name, doc, Types.RefOf<T1>(), Types.RefOf<T2>(), Types.RefOf<T3>(), Types.RefOf<T4>(), Types.RefOf<T5>(), Types.RefOf<T6>(), Types.RefOf<T7>(), Types.RefOf<T8>()), Types.Writer<T1>(), Types.Writer<T2>(), Types.Writer<T3>(), Types.Writer<T4>(), Types.Writer<T5>(), Types.Writer<T6>(), Types.Writer<T7>(), Types.Writer<T8>());
+            new ArchEventRef<T1, T2, T3, T4, T5, T6, T7, T8>(KindId, Define(name, doc, _host.Types.RefOf<T1>(), _host.Types.RefOf<T2>(), _host.Types.RefOf<T3>(), _host.Types.RefOf<T4>(), _host.Types.RefOf<T5>(), _host.Types.RefOf<T6>(), _host.Types.RefOf<T7>(), _host.Types.RefOf<T8>()), _host.Types.Writer<T1>(), _host.Types.Writer<T2>(), _host.Types.Writer<T3>(), _host.Types.Writer<T4>(), _host.Types.Writer<T5>(), _host.Types.Writer<T6>(), _host.Types.Writer<T7>(), _host.Types.Writer<T8>());
 
     }
 
