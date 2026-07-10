@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Dsl.Codegen;
 using Dsl.Compilation;
 using Dsl.Hosting;
 using Dsl.Runtime;
