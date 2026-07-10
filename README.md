@@ -197,6 +197,17 @@ OnCast, остальное живёт; убить реализацию — `pass
 API сборщика: `HasArchetype`/`GetArchetypeIds`; опциональные KnownIds ловят
 опечатки в id на компиляции. Подробности — в скилле (language.md §9.6).
 
+## Как гонять тесты
+
+Два пути, тесты одни и те же:
+
+- **Быстрый (без Unity):** `dotnet test Tools/DslTests` из корня репозитория.
+  Ядро engine-agnostic, харнесс подключает Dsl.Core и Dsl.Tests исходниками.
+  Один класс: `dotnet test Tools/DslTests --filter FullyQualifiedName~ListenerTests`.
+- **В Unity:** скопируйте `Dsl.Tests` в `Assets/` рядом с ядром (зона B, в билд
+  не входит) → Window → General → Test Runner → вкладка EditMode → Run All.
+  Требуется пакет com.unity.test-framework (обычно установлен по умолчанию).
+
 ## Поддержка VS Code: подсветка, ошибки, автодополнение
 
 В `Tools/` лежат два инструмента, связанных одним файлом — `salamander-api.json`

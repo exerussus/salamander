@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Харнесс для запуска Dsl.Tests БЕЗ Unity: ядро engine-agnostic, поэтому
+    те же тесты, что гоняет Unity Test Runner, бегут обычным `dotnet test`
+    (быстрая петля для разработки ядра). Исходники подключаются напрямую,
+    как в DslCheck — сборка всегда против текущего кода.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>Dsl.Tests</RootNamespace>
+    <AssemblyName>DslTests</AssemblyName>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="../../Dsl.Core/**/*.cs" />
+    <Compile Include="../../Dsl.Tests/**/*.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <PackageReference Include="NUnit" Version="3.14.0" />
+    <PackageReference Include="NUnit3TestAdapter" Version="4.5.0" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.9.0" />
+  </ItemGroup>
+
+</Project>
