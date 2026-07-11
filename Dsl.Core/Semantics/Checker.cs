@@ -1037,6 +1037,7 @@ namespace Dsl.Semantics
                     var e = (Expr)id;
                     var t = CheckExpr(ref e); // Ident не подменяется
                     if (id.IdKind == IdentKind.Local) return t;
+                    if (id.IdKind == IdentKind.AttachField) return t; // поле подписки listener
                     if (id.IdKind == IdentKind.StaticField)
                     {
                         if (id.Sym is FieldSymbol fs && fs.IsConst)
@@ -1655,7 +1656,16 @@ namespace Dsl.Semantics
                 if (me.Target is IdentExpr tid)
                 {
                     var te = (Expr)tid;
-                    CheckExpr(ref te);
+                    var tvt = CheckExpr(ref te);
+                    // идентификатор-ЗНАЧЕНИЕ (локаль, поле) типа-коллекции —
+                    // это встроенные методы (.Add/.Clear/.Has/.Remove), не namespace
+                    if (tid.IdKind == IdentKind.Local
+                        || tid.IdKind == IdentKind.StaticField
+                        || tid.IdKind == IdentKind.AttachField)
+                    {
+                        me.Target = te;
+                        return BindBuiltinCall(call, me, tvt);
+                    }
                     return DispatchDottedCall(call, me, tid.IdKind, tid.Sym, tid.Name);
                 }
                 if (me.Target is QualifiedExpr tq)

@@ -164,7 +164,7 @@ namespace Dsl.Syntax
         {
             var kindTok = Advance(); // вид (spell/item/...)
             string id;
-            if (Is(TokenKind.String)) id = Advance().Text;
+            if (Is(TokenKind.String)) id = (string)Advance().Value; // у строкового токена значение в Value
             else id = Expect(TokenKind.Ident, "E0069", "id сущности (идентификатор или строка)").Text;
 
             var a = new ArchetypeDecl { Kind = kindTok.Text, Name = id, Pos = kindTok.Pos };

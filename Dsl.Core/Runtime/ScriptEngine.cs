@@ -173,6 +173,9 @@ namespace Dsl.Runtime
             for (int i = 0; i < _trigStats.Length; i++) _trigStats[i] = new TriggerRuntimeStats();
             _aliveByTrigger = new int[prog.Triggers.Length];
             _tick = default;
+            // Raise до первого Tick обязан исполняться немедленно (контракт событий):
+            // выдаём полный бюджет сразу, первый Tick пополнит его как обычно
+            _tickInstrLeft = TickInstructionBudget;
 
             // подписки принадлежат программе — при (пере)загрузке всё сбрасывается жёстко
             _subsByEntity.Clear();
@@ -369,7 +372,9 @@ namespace Dsl.Runtime
             if ((uint)eventId >= (uint)_prog.EventHandlers.Length) return;
             _tick.EventsRaisedThisTick++;
             var handlers = _prog.EventHandlers[eventId];
-            if (handlers.Length == 0)
+            bool hasListeners = _prog.EventHasListenerHandlers.Length > eventId
+                                && _prog.EventHasListenerHandlers[eventId];
+            if (handlers.Length == 0 && !hasListeners)
             {
                 if (_current == null) DrainRunQueue();
                 return;
