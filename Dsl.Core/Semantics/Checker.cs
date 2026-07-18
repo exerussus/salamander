@@ -22,7 +22,8 @@ namespace Dsl.Semantics
         public List<FuncMember> Funcs;          // [0] = null (место под <init>)
         public List<TriggerSymbol> Triggers;    // индекс = runtime id триггера
         public List<ListenerSymbol> Listeners;  // индекс = runtime id listener
-        public List<ArchetypeSymbol> Archetypes; // блоки-архетипы в порядке объявления (мерж later-wins)
+        public List<ArchetypeSymbol> Archetypes; // мерж-сущности в порядке первого появления
+        public List<FieldSymbol> StaticInitOverrides; // поздние инициализаторы переопределённых полей (по порядку)
         public List<EnumSymbol> ScriptEnums;
         public List<FieldSymbol> StaticFields;  // индекс = static slot; порядок = порядок инициализации
         public HashSet<string> ClassNames;
@@ -45,6 +46,11 @@ namespace Dsl.Semantics
         private readonly List<TriggerSymbol> _triggers = new List<TriggerSymbol>();
         private readonly List<ListenerSymbol> _listeners = new List<ListenerSymbol>();
         private readonly List<ArchetypeSymbol> _archetypes = new List<ArchetypeSymbol>();
+        private readonly Dictionary<string, ArchetypeSymbol> _archByKey = new Dictionary<string, ArchetypeSymbol>();
+        private readonly List<FieldSymbol> _staticInitOverrides = new List<FieldSymbol>();
+        private readonly Dictionary<string, TriggerSymbol> _trigByName = new Dictionary<string, TriggerSymbol>();
+        private readonly Dictionary<string, ListenerSymbol> _lsnByName = new Dictionary<string, ListenerSymbol>();
+        private readonly Dictionary<string, ClassSymbol> _clsByName = new Dictionary<string, ClassSymbol>();
         private readonly List<EnumSymbol> _scriptEnums = new List<EnumSymbol>();
         private readonly List<FieldSymbol> _staticFields = new List<FieldSymbol>();
         private readonly HashSet<string> _classNames = new HashSet<string>();
@@ -108,6 +114,26 @@ namespace Dsl.Semantics
                         CheckDeclBodies(d);
             }
 
+            // мерж-сущность обязана иметь хотя бы одно событие; отдельный блок
+            // может быть и чистым патчем полей — проверяем итог, а не блок
+            foreach (var asym in _archetypes)
+                if (asym.Events.Count == 0 && asym.Decls.Count > 0)
+                    _diag.Error("E0199",
+                        $"'{asym.Kind} {asym.Id}' не содержит ни одного события вида (ни в одном из блоков).",
+                        asym.Decls[0].Pos);
+
+            foreach (var tr in _triggers)
+                if (tr.Events.Count == 0 && tr.Decls.Count > 0)
+                    _diag.Error("E0109",
+                        $"Триггер '{tr.Name}' не содержит ни одного обработчика event (ни в одном из блоков). " +
+                        "Триггер обязан на что-то реагировать; если это набор функций/данных — объявите class.",
+                        tr.Decls[0].Pos);
+            foreach (var lsn in _listeners)
+                if (lsn.Events.Count == 0 && lsn.Decls.Count > 0)
+                    _diag.Error("E0171",
+                        $"listener '{lsn.Name}' должен обрабатывать хотя бы одно хостовое событие " +
+                        "(по его первому параметру выводится тип цели подписки).", lsn.Decls[0].Pos);
+
             return new CheckResult
             {
                 Globals = _globals,
@@ -115,6 +141,7 @@ namespace Dsl.Semantics
                 Triggers = _triggers,
                 Listeners = _listeners,
                 Archetypes = _archetypes,
+                StaticInitOverrides = _staticInitOverrides,
                 ScriptEnums = _scriptEnums,
                 StaticFields = _staticFields,
                 ClassNames = _classNames,
@@ -173,20 +200,27 @@ namespace Dsl.Semantics
 
         private void CollectClass(ClassDecl c)
         {
-            var sym = new ClassSymbol { Name = c.Name, Module = c.Module, Decl = c };
-            if (!_globals.Add(sym))
+            if (!_clsByName.TryGetValue(c.Name, out var sym))
             {
-                _diag.Error("E0104", $"Имя '{c.Name}' уже объявлено в модуле '{c.Module}'.", c.Pos);
-                return;
+                sym = new ClassSymbol { Name = c.Name, Module = c.Module, Decl = c };
+                if (!_globals.Add(sym))
+                {
+                    _diag.Error("E0104", $"Имя '{c.Name}' уже объявлено в модуле '{c.Module}'.", c.Pos);
+                    return;
+                }
+                _clsByName[c.Name] = sym;
+                _classNames.Add(c.Name);
             }
-            _classNames.Add(c.Name);
+            sym.Decls.Add(c);
 
+            var blockFields = new HashSet<string>();
+            var blockFuncs = new HashSet<string>();
             foreach (var m in c.Members)
             {
                 switch (m)
                 {
                     case FieldMember f:
-                        CollectField(sym.Fields, f, c);
+                        CollectMergedField(sym.Fields, sym.FieldDecls, f, blockFields);
                         break;
                     case FuncMember fn when fn.Kind == FuncKind.Event:
                         _diag.Error("E0105", "'event' разрешён только внутри trigger.", fn.Pos);
@@ -195,7 +229,7 @@ namespace Dsl.Semantics
                         _diag.Error("E0106", "'action' разрешён только внутри trigger.", fn.Pos);
                         break;
                     case FuncMember fn:
-                        CollectFunc(sym.Funcs, fn, c);
+                        CollectMergedFunc(sym.Funcs, sym.AllFuncDecls, fn, c, blockFuncs);
                         break;
                 }
             }
@@ -203,20 +237,34 @@ namespace Dsl.Semantics
 
         private void CollectTrigger(TriggerDecl t)
         {
-            var sym = new TriggerSymbol
+            if (!_trigByName.TryGetValue(t.Name, out var sym))
             {
-                Name = t.Name,
-                Module = t.Module,
-                Decl = t,
-                RuntimeId = _triggers.Count,
-                StartDisabled = t.StartDisabled,
-            };
-            if (!_globals.Add(sym))
-            {
-                _diag.Error("E0107", $"Имя '{t.Name}' уже объявлено в модуле '{t.Module}'.", t.Pos);
-                return;
+                sym = new TriggerSymbol
+                {
+                    Name = t.Name,
+                    Module = t.Module,
+                    Decl = t,
+                    RuntimeId = _triggers.Count,
+                    StartDisabled = t.StartDisabled,
+                };
+                if (!_globals.Add(sym))
+                {
+                    _diag.Error("E0107", $"Имя '{t.Name}' уже объявлено в модуле '{t.Module}'.", t.Pos);
+                    return;
+                }
+                _trigByName[t.Name] = sym;
+                _triggers.Add(sym);
             }
-            _triggers.Add(sym);
+            else
+            {
+                sym.StartDisabled = t.StartDisabled; // поздний блок решает стартовый флаг
+            }
+            sym.Decls.Add(t);
+
+            var blockFields = new HashSet<string>();
+            var blockEvents = new HashSet<string>();
+            var blockFuncs = new HashSet<string>();
+            bool blockHasAction = false;
 
             foreach (var m in t.Members)
             {
@@ -226,37 +274,32 @@ namespace Dsl.Semantics
                         if (f.IsConst)
                             _diag.Error("E0108", "const внутри trigger не поддерживается — вынесите в class.", f.Pos);
                         else
-                            CollectField(sym.Fields, f, t);
+                            CollectMergedField(sym.Fields, sym.FieldDecls, f, blockFields);
                         break;
 
                     case FuncMember fn when fn.Kind == FuncKind.Event:
-                        CollectEvent(sym, fn, t);
+                        CollectEvent(sym, fn, t, blockEvents);
                         break;
 
                     case FuncMember fn when fn.Kind == FuncKind.Action:
+                        if (blockHasAction)
+                        {
+                            _diag.Error("E0118", $"Триггер '{t.Name}' уже содержит action Do.", fn.Pos);
+                            break;
+                        }
+                        blockHasAction = true;
                         CollectAction(sym, fn, t);
                         break;
 
                     case FuncMember fn:
-                        CollectFunc(sym.Funcs, fn, t);
+                        CollectMergedFunc(sym.Funcs, sym.AllFuncDecls, fn, t, blockFuncs);
                         break;
                 }
-            }
-
-            // ключевое правило: триггер без единого event — ошибка
-            if (sym.Events.Count == 0)
-            {
-                _diag.Error("E0109",
-                    $"Триггер '{t.Name}' не содержит ни одного обработчика event. " +
-                    "Триггер обязан на что-то реагировать; если это набор функций/данных — объявите class.",
-                    t.Pos);
             }
         }
 
         private void CollectArchetype(ArchetypeDecl a)
         {
-            var sym = new ArchetypeSymbol { Kind = a.Kind, Id = a.Name, Module = a.Module, Decl = a };
-
             if (!_host.TryGetArchetypeKind(a.Kind, out var kind))
             {
                 _diag.Error("E0198",
@@ -264,13 +307,27 @@ namespace Dsl.Semantics
                     a.Pos);
                 return; // без вида проверять события не по чему
             }
-            sym.KindId = kind.Id;
 
             // опциональная валидация id по списку известных игре (ловит опечатки)
             if (kind.KnownIds != null && kind.KnownIds.Count > 0 && !kind.KnownIds.Contains(a.Name))
                 _diag.Error("E0202",
                     $"У игры нет сущности вида '{a.Kind}' с id '{a.Name}' (проверьте манифест контента).",
                     a.Pos);
+
+            // все блоки одного (вид, id) сливаются в ОДНУ сущность: переопределение
+            // по-членно, поздний выигрывает; дубли ловим только ВНУТРИ блока
+            string key = kind.Id + ":" + a.Name;
+            if (!_archByKey.TryGetValue(key, out var sym))
+            {
+                sym = new ArchetypeSymbol { Kind = a.Kind, Id = a.Name, Module = a.Module, Decl = a, KindId = kind.Id };
+                _archByKey[key] = sym;
+                _archetypes.Add(sym); // порядок первого появления
+            }
+            sym.Decls.Add(a);
+
+            var blockFields = new HashSet<string>();
+            var blockEvents = new HashSet<string>();
+            var blockFuncs = new HashSet<string>();
 
             foreach (var m in a.Members)
             {
@@ -280,11 +337,11 @@ namespace Dsl.Semantics
                         if (f.IsConst)
                             _diag.Error("E0205", "const внутри блока-архетипа не поддерживается — вынесите в class.", f.Pos);
                         else
-                            CollectField(sym.Fields, f, a); // поля — обычные статики, как у class
+                            CollectMergedField(sym.Fields, sym.FieldDecls, f, blockFields);
                         break;
 
                     case FuncMember fn when fn.Kind == FuncKind.Event:
-                        CollectArchetypeEvent(sym, kind, fn, a);
+                        CollectArchetypeEvent(sym, kind, fn, a, blockEvents);
                         break;
 
                     case FuncMember fn when fn.Kind == FuncKind.Action:
@@ -292,19 +349,15 @@ namespace Dsl.Semantics
                         break;
 
                     case FuncMember fn:
-                        CollectFunc(sym.Funcs, fn, a);
+                        CollectMergedFunc(sym.Funcs, sym.AllFuncDecls, fn, a, blockFuncs);
                         break;
                 }
             }
-
-            // блок без событий бесполезен, но не вреден: молчаливо допускать не будем
-            if (sym.Events.Count == 0)
-                _diag.Error("E0199", $"Блок '{a.Kind} {a.Name}' не содержит ни одного события вида.", a.Pos);
-
-            _archetypes.Add(sym); // порядок объявления = порядок мержа (поздний переопределяет по-событийно)
         }
 
-        private void CollectArchetypeEvent(ArchetypeSymbol sym, ArchetypeKindInfo kind, FuncMember fn, ArchetypeDecl a)
+
+
+        private void CollectArchetypeEvent(ArchetypeSymbol sym, ArchetypeKindInfo kind, FuncMember fn, ArchetypeDecl a, HashSet<string> blockNames)
         {
             fn.Owner = a;
             fn.ReturnType = TypeRef.Void;
@@ -317,12 +370,12 @@ namespace Dsl.Semantics
                     fn.Pos);
                 return;
             }
-            foreach (var other in sym.Events)
-                if (other.Name == fn.Name)
-                {
-                    _diag.Error("E0113", $"Повторное объявление '{fn.Name}' в этом блоке.", fn.Pos);
-                    return;
-                }
+            if (!blockNames.Add(fn.Name))
+            {
+                _diag.Error("E0113", $"Повторное объявление '{fn.Name}' в этом блоке.", fn.Pos);
+                return;
+            }
+            // одноимённое событие в ДРУГОМ блоке — переопределение (later-wins в мерже)
             if (ev.Params.Length != fn.Params.Count)
             {
                 _diag.Error("E0200",
@@ -346,19 +399,28 @@ namespace Dsl.Semantics
 
         private void CollectListener(ListenerDecl l)
         {
-            var sym = new ListenerSymbol
+            if (!_lsnByName.TryGetValue(l.Name, out var sym))
             {
-                Name = l.Name,
-                Module = l.Module,
-                Decl = l,
-                RuntimeId = _listeners.Count,
-            };
-            if (!_globals.Add(sym))
-            {
-                _diag.Error("E0107", $"Имя '{l.Name}' уже объявлено в модуле '{l.Module}'.", l.Pos);
-                return;
+                sym = new ListenerSymbol
+                {
+                    Name = l.Name,
+                    Module = l.Module,
+                    Decl = l,
+                    RuntimeId = _listeners.Count,
+                };
+                if (!_globals.Add(sym))
+                {
+                    _diag.Error("E0107", $"Имя '{l.Name}' уже объявлено в модуле '{l.Module}'.", l.Pos);
+                    return;
+                }
+                _lsnByName[l.Name] = sym;
+                _listeners.Add(sym);
             }
-            _listeners.Add(sym);
+            sym.Decls.Add(l);
+
+            var blockFields = new HashSet<string>();
+            var blockEvents = new HashSet<string>();
+            var blockFuncs = new HashSet<string>();
 
             foreach (var m in l.Members)
             {
@@ -368,11 +430,11 @@ namespace Dsl.Semantics
                         if (f.IsConst)
                             _diag.Error("E0108", "const внутри listener не поддерживается — вынесите в class.", f.Pos);
                         else
-                            CollectAttachField(sym, f);
+                            CollectListenerField(sym, f, blockFields);
                         break;
 
                     case FuncMember fn when fn.Kind == FuncKind.Event:
-                        CollectListenerEvent(sym, fn, l);
+                        CollectListenerEvent(sym, fn, l, blockEvents);
                         break;
 
                     case FuncMember fn when fn.Kind == FuncKind.Action:
@@ -381,36 +443,52 @@ namespace Dsl.Semantics
                         break;
 
                     case FuncMember fn:
-                        CollectFunc(sym.Funcs, fn, l);
+                        CollectMergedFunc(sym.Funcs, sym.AllFuncDecls, fn, l, blockFuncs);
                         break;
                 }
             }
 
-            // тип цели выводится из хостовых событий; без них подписка бессмысленна
-            if (sym.Events.Count == 0)
-            {
-                _diag.Error("E0171",
-                    $"listener '{l.Name}' должен обрабатывать хотя бы одно хостовое событие " +
-                    "(по его первому параметру выводится тип цели подписки).", l.Pos);
-            }
         }
 
-        private void CollectAttachField(ListenerSymbol sym, FieldMember f)
+        private void CollectListenerField(ListenerSymbol sym, FieldMember f, HashSet<string> blockNames)
         {
-            if (sym.Fields.ContainsKey(f.Name))
+            if (!blockNames.Add(f.Name))
             {
                 _diag.Error("E0111", $"Повторное объявление поля '{f.Name}'.", f.Pos);
                 return;
             }
             var type = ResolveType(f.DeclType);
             f.Type = type;
+
+            if (sym.Fields.TryGetValue(f.Name, out var existing))
+            {
+                // переопределение из другого блока: ТОТ ЖЕ слот подписки;
+                // init-чанк сброса собирается по итоговым Decl → поздний инициализатор побеждает
+                if (!existing.Type.Same(type))
+                {
+                    _diag.Error("E0207",
+                        $"Переопределение поля '{f.Name}' с другим типом: было {existing.Type}, стало {type}.", f.Pos);
+                    return;
+                }
+                if (f.Init != null)
+                    sym.Fields[f.Name] = new FieldSymbol { Name = f.Name, IsConst = false, Type = type, Decl = f, Slot = existing.Slot };
+                sym.FieldDecls.Add(f);
+                return;
+            }
+
             // слот в блоке ПОДПИСКИ (не статик): у каждой подписки свой массив полей
             var fs = new FieldSymbol { Name = f.Name, IsConst = false, Type = type, Decl = f, Slot = sym.FieldCount++ };
             sym.Fields[f.Name] = fs;
+            sym.FieldDecls.Add(f);
         }
 
-        private void CollectListenerEvent(ListenerSymbol sym, FuncMember fn, ListenerDecl l)
+        private void CollectListenerEvent(ListenerSymbol sym, FuncMember fn, ListenerDecl l, HashSet<string> blockNames)
         {
+            if (!blockNames.Add(fn.Name))
+            {
+                _diag.Error("E0113", $"Повторное объявление '{fn.Name}' в этом блоке.", fn.Pos);
+                return;
+            }
             fn.Owner = l;
             fn.ReturnType = TypeRef.Void;
             foreach (var p in fn.Params) p.Type = ResolveType(p.DeclType);
@@ -420,15 +498,11 @@ namespace Dsl.Semantics
             {
                 if (fn.Params.Count > 0)
                     _diag.Error("E0172", $"'{fn.Name}' не принимает параметров.", fn.Pos);
-                bool dup = fn.Name == "OnSubscribe" ? sym.OnSubscribe != null : sym.OnUnsubscribe != null;
-                if (dup)
-                {
-                    _diag.Error("E0113", $"Повторное объявление '{fn.Name}'.", fn.Pos);
-                    return;
-                }
                 fn.FuncIndex = _funcs.Count;
                 _funcs.Add(fn);
-                if (fn.Name == "OnSubscribe") sym.OnSubscribe = fn; else sym.OnUnsubscribe = fn;
+                sym.AllFuncDecls.Add(fn); // вытесненная версия тоже проверяется и компилируется
+                if (fn.Name == "OnSubscribe") sym.OnSubscribe = fn;
+                else sym.OnUnsubscribe = fn; // поздний блок заменяет
                 return;
             }
 
@@ -479,31 +553,100 @@ namespace Dsl.Semantics
             sym.Events.Add(fn);
         }
 
-        private void CollectField(Dictionary<string, FieldSymbol> into, FieldMember f, Decl owner)
+        // ===================================================================
+        // Мерж-семантика: блоки с одним именем (trigger/class/listener) или
+        // одним (вид, id) у архетипов — ОДНА сущность; члены переопределяются
+        // по-имённо, поздний выигрывает, дубли ловим только внутри блока
+        // ===================================================================
+
+        private void CollectMergedField(Dictionary<string, FieldSymbol> fields, List<FieldMember> fieldDecls,
+                                        FieldMember f, HashSet<string> blockNames)
         {
-            if (into.ContainsKey(f.Name))
+            if (!blockNames.Add(f.Name))
             {
                 _diag.Error("E0111", $"Повторное объявление поля '{f.Name}'.", f.Pos);
                 return;
             }
-
             var type = ResolveType(f.DeclType);
             f.Type = type;
 
-            var sym = new FieldSymbol { Name = f.Name, IsConst = f.IsConst, Type = type, Decl = f };
+            if (fields.TryGetValue(f.Name, out var existing))
+            {
+                // переопределение из другого блока
+                if (existing.IsConst != f.IsConst)
+                {
+                    _diag.Error("E0207", $"Переопределение '{f.Name}': нельзя менять const и обычное поле местами.", f.Pos);
+                    return;
+                }
+                if (!existing.Type.Same(type))
+                {
+                    _diag.Error("E0207",
+                        $"Переопределение поля '{f.Name}' с другим типом: было {existing.Type}, стало {type}.", f.Pos);
+                    return;
+                }
+                if (f.IsConst)
+                {
+                    // позднее значение константы видят ВСЕ использования:
+                    // тела проверяются после полного сбора деклараций
+                    var ns = new FieldSymbol { Name = f.Name, IsConst = true, Type = type, Decl = f };
+                    FoldConst(f, ns);
+                    fields[f.Name] = ns;
+                }
+                else
+                {
+                    // тот же статик-слот; поздний инициализатор перезапишет в <init>
+                    f.StaticSlot = existing.Slot;
+                    if (f.Init != null)
+                        _staticInitOverrides.Add(new FieldSymbol { Name = f.Name, Type = type, Decl = f, Slot = existing.Slot });
+                }
+                fieldDecls.Add(f);
+                return;
+            }
 
+            var nsym = new FieldSymbol { Name = f.Name, IsConst = f.IsConst, Type = type, Decl = f };
             if (f.IsConst)
             {
-                FoldConst(f, sym);
+                FoldConst(f, nsym);
             }
             else
             {
-                sym.Slot = _staticFields.Count;
-                f.StaticSlot = sym.Slot;
-                _staticFields.Add(sym);
+                nsym.Slot = _staticFields.Count;
+                f.StaticSlot = nsym.Slot;
+                _staticFields.Add(nsym);
             }
-            into[f.Name] = sym;
+            fields[f.Name] = nsym;
+            fieldDecls.Add(f);
         }
+
+        private void CollectMergedFunc(Dictionary<string, FuncMember> funcs, List<FuncMember> all,
+                                       FuncMember fn, Decl owner, HashSet<string> blockNames)
+        {
+            if (!blockNames.Add(fn.Name))
+            {
+                _diag.Error("E0113", $"Повторное объявление функции '{fn.Name}'.", fn.Pos);
+                return;
+            }
+            fn.Owner = owner;
+            fn.ReturnType = fn.RetType == null ? TypeRef.Void : ResolveType(fn.RetType);
+            foreach (var p in fn.Params) p.Type = ResolveType(p.DeclType);
+            fn.FuncIndex = _funcs.Count;
+            _funcs.Add(fn);
+            funcs[fn.Name] = fn;   // поздний блок заменяет — все вызовы вяжутся на итог
+            all.Add(fn);           // вытесненные версии тоже проверяются и компилируются
+        }
+
+        private void CheckMergedInits(List<FieldMember> decls)
+        {
+            foreach (var fm in decls)
+            {
+                if (fm.IsConst || fm.Init == null) continue;
+                _inInitializer = true;
+                var ti = CheckExpr(ref fm.Init);
+                _inInitializer = false;
+                CoerceAssign(ref fm.Init, fm.Type, ti, fm.Pos, "инициализатор поля");
+            }
+        }
+
 
         /// <summary>const: только литерал или элемент енума (v1).</summary>
         private void FoldConst(FieldMember f, FieldSymbol sym)
@@ -537,23 +680,15 @@ namespace Dsl.Semantics
                 "const в v1 принимает только литерал или элемент енума соответствующего типа.", f.Pos);
         }
 
-        private void CollectFunc(Dictionary<string, FuncMember> into, FuncMember fn, Decl owner)
+
+        private void CollectEvent(TriggerSymbol sym, FuncMember fn, TriggerDecl t, HashSet<string> blockNames)
         {
-            if (into.ContainsKey(fn.Name))
+            if (!blockNames.Add(fn.Name))
             {
-                _diag.Error("E0113", $"Повторное объявление функции '{fn.Name}'.", fn.Pos);
+                _diag.Error("E0113", $"Повторное объявление обработчика '{fn.Name}' в этом блоке.", fn.Pos);
                 return;
             }
-            fn.Owner = owner;
-            fn.ReturnType = fn.RetType == null ? TypeRef.Void : ResolveType(fn.RetType);
-            foreach (var p in fn.Params) p.Type = ResolveType(p.DeclType);
-            fn.FuncIndex = _funcs.Count;
-            _funcs.Add(fn);
-            into[fn.Name] = fn;
-        }
-
-        private void CollectEvent(TriggerSymbol sym, FuncMember fn, TriggerDecl t)
-        {
+            // одноимённый обработчик в ДРУГОМ блоке — переопределение (later-wins в мерже)
             fn.Owner = t;
             fn.ReturnType = TypeRef.Void;
             foreach (var p in fn.Params) p.Type = ResolveType(p.DeclType);
@@ -592,8 +727,6 @@ namespace Dsl.Semantics
             fn.ReturnType = TypeRef.Void;
             if (fn.Name != "Do")
                 _diag.Error("E0117", "В v1 у триггера ровно одно действие и оно называется 'Do'.", fn.Pos);
-            if (sym.Action != null)
-                _diag.Error("E0118", $"Триггер '{t.Name}' уже содержит action Do.", fn.Pos);
             if (fn.Params.Count > 0)
                 _diag.Error("E0119", "action Do() не принимает параметров.", fn.Pos);
             if (fn.RetType != null)
@@ -601,7 +734,8 @@ namespace Dsl.Semantics
 
             fn.FuncIndex = _funcs.Count;
             _funcs.Add(fn);
-            if (sym.Action == null) sym.Action = fn;
+            sym.AllFuncDecls.Add(fn);   // вытесненные версии тоже компилируются
+            sym.Action = fn;            // поздний блок заменяет
         }
 
         // ===================================================================
@@ -685,24 +819,40 @@ namespace Dsl.Semantics
             {
                 case ClassDecl c:
                 {
-                    if (_globals.TryResolveQualified(c.Module, c.Name, out var s) && s is ClassSymbol cs)
-                        CheckOwnerBodies(cs.Fields, cs.Funcs, null, c);
+                    // мерж-сущность: тела один раз (на первом блоке), против итоговых таблиц
+                    if (_clsByName.TryGetValue(c.Name, out var cs) && cs.Decls.Count > 0 && cs.Decls[0] == c)
+                    {
+                        _ownerFields = cs.Fields;
+                        _ownerFuncs = cs.Funcs;
+                        CheckMergedInits(cs.FieldDecls);
+                        foreach (var fn in cs.AllFuncDecls) CheckFuncBody(fn);
+                    }
                     break;
                 }
                 case TriggerDecl t:
                 {
-                    if (_globals.TryResolveQualified(t.Module, t.Name, out var s) && s is TriggerSymbol tr)
-                        CheckOwnerBodies(tr.Fields, tr.Funcs, tr, t);
+                    if (_trigByName.TryGetValue(t.Name, out var tr) && tr.Decls.Count > 0 && tr.Decls[0] == t)
+                    {
+                        _ownerFields = tr.Fields;
+                        _ownerFuncs = tr.Funcs;
+                        CheckMergedInits(tr.FieldDecls);
+                        foreach (var fn in tr.AllFuncDecls) CheckFuncBody(fn); // funcs + все версии action
+                        foreach (var ev in tr.Events) CheckFuncBody(ev);       // все версии обработчиков
+                    }
                     break;
                 }
                 case ArchetypeDecl a:
                 {
-                    // символ не в глобальном пространстве имён (блоки адресуются хостом
-                    // по (вид, id), дубликаты легальны — мерж) — ищем по узлу
+                    // блоки одного (вид, id) — одна мерж-сущность; тела проверяем ОДИН
+                    // раз (на первом блоке), когда все члены уже собраны: ранние
+                    // обработчики видят поля/функции, объявленные в поздних блоках
                     foreach (var asym in _archetypes)
                     {
-                        if (asym.Decl != a) continue;
-                        CheckOwnerBodies(asym.Fields, asym.Funcs, null, a);
+                        if (asym.Decls.Count == 0 || asym.Decls[0] != a) continue;
+                        _ownerFields = asym.Fields;
+                        _ownerFuncs = asym.Funcs;
+                        CheckMergedInits(asym.FieldDecls);
+                        foreach (var fn in asym.AllFuncDecls) CheckFuncBody(fn); // и вытесненные — они компилируются
                         foreach (var ev in asym.Events) CheckFuncBody(ev);
                         break;
                     }
@@ -710,20 +860,21 @@ namespace Dsl.Semantics
                 }
                 case ListenerDecl l:
                 {
-                    if (_globals.TryResolveQualified(l.Module, l.Name, out var s) && s is ListenerSymbol ls)
+                    if (_lsnByName.TryGetValue(l.Name, out var ls) && ls.Decls.Count > 0 && ls.Decls[0] == l)
                     {
                         _listener = ls; // включает self и attach-адресацию полей
-                        CheckOwnerBodies(ls.Fields, ls.Funcs, null, l);
-                        foreach (var ev in ls.Events) CheckFuncBody(ev);
-                        if (ls.OnSubscribe != null) CheckFuncBody(ls.OnSubscribe);
-                        if (ls.OnUnsubscribe != null)
+                        _ownerFields = ls.Fields;
+                        _ownerFuncs = ls.Funcs;
+                        CheckMergedInits(ls.FieldDecls);
+                        foreach (var fn in ls.AllFuncDecls)
                         {
-                            // блок полей возвращается в пул сразу после OnUnsubscribe —
-                            // ждать/спавнить в нём нечем и незачем
-                            _noWaitHandler = true;
-                            CheckFuncBody(ls.OnUnsubscribe);
-                            _noWaitHandler = false;
+                            // блок полей уходит в пул сразу после OnUnsubscribe —
+                            // wait/spawn в нём запрещены (в любой версии)
+                            _noWaitHandler = fn.Kind == FuncKind.Event && fn.Name == "OnUnsubscribe";
+                            CheckFuncBody(fn);
                         }
+                        _noWaitHandler = false;
+                        foreach (var ev in ls.Events) CheckFuncBody(ev);
                         _listener = null;
                     }
                     break;
@@ -731,31 +882,6 @@ namespace Dsl.Semantics
             }
         }
 
-        private void CheckOwnerBodies(Dictionary<string, FieldSymbol> fields,
-                                      Dictionary<string, FuncMember> funcs,
-                                      TriggerSymbol trigger, Decl owner)
-        {
-            _ownerFields = fields;
-            _ownerFuncs = funcs;
-
-            // инициализаторы полей (войдут в <init>)
-            foreach (var fs in fields.Values)
-            {
-                var f = fs.Decl;
-                if (f.IsConst || f.Init == null) continue;
-                _inInitializer = true;
-                var t = CheckExpr(ref f.Init);
-                _inInitializer = false;
-                CoerceAssign(ref f.Init, fs.Type, t, f.Pos, "инициализатор поля");
-            }
-
-            foreach (var fn in funcs.Values) CheckFuncBody(fn);
-            if (trigger != null)
-            {
-                foreach (var ev in trigger.Events) CheckFuncBody(ev);
-                if (trigger.Action != null) CheckFuncBody(trigger.Action);
-            }
-        }
 
         private void CheckFuncBody(FuncMember fn)
         {
@@ -1465,7 +1591,7 @@ namespace Dsl.Semantics
         {
             if (al.Elems.Count == 0)
             {
-                _diag.Error("E0171", "Пустой литерал массива: тип неопределим — используйте new T[0].", al.Pos);
+                _diag.Error("E0208", "Пустой литерал массива: тип неопределим — используйте new T[0].", al.Pos);
                 return al.Type = TypeRef.Error;
             }
             var first = al.Elems[0];

@@ -77,10 +77,18 @@ namespace Dsl.Codegen
             // таблица обработчиков: [eventId] -> в детерминированном порядке
             var perEvent = new List<EventHandlerRef>[_host.EventCount];
             for (int e = 0; e < perEvent.Length; e++) perEvent[e] = new List<EventHandlerRef>();
+            // блоки одного триггера слиты: одноимённые обработчики — переопределение,
+            // в диспатч попадает только ПОЗДНЯЯ версия каждого события
+            var trigEventWinner = new Dictionary<int, int>(); // eventId -> funcIndex
             foreach (var t in _sem.Triggers)
+            {
+                trigEventWinner.Clear();
                 foreach (var ev in t.Events)
                     if (ev.EventId >= 0)
-                        perEvent[ev.EventId].Add(new EventHandlerRef { TriggerId = t.RuntimeId, FuncIndex = ev.FuncIndex });
+                        trigEventWinner[ev.EventId] = ev.FuncIndex; // поздний блок побеждает
+                foreach (var kv in trigEventWinner)
+                    perEvent[kv.Key].Add(new EventHandlerRef { TriggerId = t.RuntimeId, FuncIndex = kv.Value });
+            }
 
             var handlers = new EventHandlerRef[perEvent.Length][];
             for (int e = 0; e < perEvent.Length; e++) handlers[e] = perEvent[e].ToArray();
@@ -124,9 +132,9 @@ namespace Dsl.Codegen
                 listenerHandlerFunc[i] = map;
             }
 
-            // архетипы: интернируем id в плотные индексы; мерж later-wins ПО-СОБЫТИЙНО
-            // (поздний блок переопределяет только те события, что объявил; порядок
-            // _sem.Archetypes = топологический порядок модулей + порядок файлов)
+            // архетипы: интернируем id в плотные индексы. Блоки одного (вид, id)
+            // уже слиты чекером в одну сущность; события в списке идут в порядке
+            // объявления — поздний обработчик перезаписывает слот (later-wins)
             var archKinds = new ArchetypeKindRuntime[_host.ArchetypeKindCount];
             var archIdLists = new List<string>[archKinds.Length];
             var archHandlerLists = new List<ArchHandler[]>[archKinds.Length];
@@ -155,10 +163,15 @@ namespace Dsl.Codegen
                     for (int e = 0; e < fresh.Length; e++) fresh[e] = new ArchHandler { Func = -1, ModuleIndex = 0 };
                     archHandlerLists[asym.KindId].Add(fresh);
                 }
-                int ami = moduleIndex.TryGetValue(asym.Module, out var amiv) ? amiv : 0;
                 var slot = archHandlerLists[asym.KindId][ai];
                 foreach (var ev in asym.Events)
+                {
+                    // мерж-сущность собирает обработчики из разных модулей —
+                    // гейт Enable/DisableModule должен бить по владельцу события
+                    var evModule = ev.Owner is ArchetypeDecl ad ? ad.Module : asym.Module;
+                    int ami = moduleIndex.TryGetValue(evModule, out var amiv) ? amiv : 0;
                     slot[ev.EventId] = new ArchHandler { Func = ev.FuncIndex, ModuleIndex = ami };
+                }
             }
             for (int k = 0; k < archKinds.Length; k++)
             {
@@ -211,6 +224,17 @@ namespace Dsl.Codegen
             {
                 var f = fs.Decl;
                 if (f.Init == null) continue; // дефолт — Nil (читается как 0/false/null)
+                SetLine(f.Pos);
+                EmitExpr(f.Init);
+                Emit(OpCode.StoreStatic, fs.Slot);
+            }
+
+            // переопределения полей архетипов: тот же слот, поздний блок
+            // перезаписывает значение (порядок объявления сохранён)
+            foreach (var fs in _sem.StaticInitOverrides)
+            {
+                var f = fs.Decl;
+                if (f.Init == null) continue;
                 SetLine(f.Pos);
                 EmitExpr(f.Init);
                 Emit(OpCode.StoreStatic, fs.Slot);

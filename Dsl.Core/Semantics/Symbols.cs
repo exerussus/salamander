@@ -30,9 +30,12 @@ namespace Dsl.Semantics
 
     public sealed class ClassSymbol : Symbol
     {
-        public ClassDecl Decl;
+        public ClassDecl Decl;                     // первый блок
+        public readonly List<ClassDecl> Decls = new List<ClassDecl>();
         public readonly Dictionary<string, FieldSymbol> Fields = new Dictionary<string, FieldSymbol>();
-        public readonly Dictionary<string, FuncMember> Funcs = new Dictionary<string, FuncMember>();
+        public readonly Dictionary<string, FuncMember> Funcs = new Dictionary<string, FuncMember>();   // победители
+        public readonly List<FieldMember> FieldDecls = new List<FieldMember>();  // все объявления полей
+        public readonly List<FuncMember> AllFuncDecls = new List<FuncMember>();  // все версии функций
     }
 
     public sealed class TriggerSymbol : Symbol
@@ -42,8 +45,11 @@ namespace Dsl.Semantics
         public bool StartDisabled;
         public readonly Dictionary<string, FieldSymbol> Fields = new Dictionary<string, FieldSymbol>();
         public readonly Dictionary<string, FuncMember> Funcs = new Dictionary<string, FuncMember>();
-        public FuncMember Action;                 // безымянное действие Do (или null)
-        public readonly List<FuncMember> Events = new List<FuncMember>();
+        public FuncMember Action;                 // безымянное действие Do (или null; поздний блок заменяет)
+        public readonly List<FuncMember> Events = new List<FuncMember>();        // все версии (мерж later-wins)
+        public readonly List<TriggerDecl> Decls = new List<TriggerDecl>();
+        public readonly List<FieldMember> FieldDecls = new List<FieldMember>();
+        public readonly List<FuncMember> AllFuncDecls = new List<FuncMember>();  // funcs + все версии action
     }
 
     public sealed class ListenerSymbol : Symbol
@@ -55,26 +61,35 @@ namespace Dsl.Semantics
         public readonly Dictionary<string, FieldSymbol> Fields = new Dictionary<string, FieldSymbol>();
         public readonly Dictionary<string, FuncMember> Funcs = new Dictionary<string, FuncMember>();
         public readonly List<FuncMember> Events = new List<FuncMember>();   // только хостовые
-        public FuncMember OnSubscribe;    // опционально
-        public FuncMember OnUnsubscribe;  // опционально (без wait/spawn)
+        public FuncMember OnSubscribe;    // опционально (поздний блок заменяет)
+        public FuncMember OnUnsubscribe;  // опционально (без wait/spawn; поздний блок заменяет)
+        public readonly List<ListenerDecl> Decls = new List<ListenerDecl>();
+        public readonly List<FieldMember> FieldDecls = new List<FieldMember>();
+        public readonly List<FuncMember> AllFuncDecls = new List<FuncMember>();  // funcs + вытесненные OnSub/OnUnsub
     }
 
     /// <summary>
-    /// Блок-архетип. НЕ живёт в глобальном пространстве имён: адресуется хостом
-    /// по (вид, id), дубликаты id легальны — поздний блок переопределяет ранний
-    /// ПО-СОБЫТИЙНО (мерж на уровне диспатч-таблицы). Поля/функции у каждого
-    /// блока свои (статики), переопределяющий блок исходных не видит.
+    /// МЕРЖ-сущность архетипа: ВСЕ блоки с одним (вид, id) — хоть в одном файле,
+    /// хоть в разных модулях — сливаются в одну сущность. Переопределение
+    /// по-членно, поздний выигрывает: событие заменяет обработчик, поле — тот же
+    /// статик-слот с поздним инициализатором, функция — позднюю версию видят все.
+    /// Ранние обработчики видят итоговые поля/функции. Блок может состоять из
+    /// одних полей (патч значений). Не живёт в глобальном пространстве имён:
+    /// адресуется хостом по (вид, id).
     /// </summary>
     public sealed class ArchetypeSymbol
     {
         public string Kind;
         public int KindId = -1;
         public string Id;
-        public string Module;
-        public ArchetypeDecl Decl;
+        public string Module;                 // модуль ПЕРВОГО блока
+        public ArchetypeDecl Decl;            // первый блок (для диагностик)
+        public readonly List<ArchetypeDecl> Decls = new List<ArchetypeDecl>();
         public readonly Dictionary<string, FieldSymbol> Fields = new Dictionary<string, FieldSymbol>();
-        public readonly Dictionary<string, FuncMember> Funcs = new Dictionary<string, FuncMember>();
-        public readonly List<FuncMember> Events = new List<FuncMember>();
+        public readonly Dictionary<string, FuncMember> Funcs = new Dictionary<string, FuncMember>();   // победители
+        public readonly List<FuncMember> AllFuncDecls = new List<FuncMember>();  // все версии (для проверки/компиляции тел)
+        public readonly List<FuncMember> Events = new List<FuncMember>();        // все, в порядке объявления (мерж later-wins)
+        public readonly List<FieldMember> FieldDecls = new List<FieldMember>();  // все объявления полей (иниты по порядку)
     }
 
     public enum ResolveResult : byte { NotFound, Found, Ambiguous }

@@ -10,7 +10,9 @@ namespace Dsl.Tests
     /// <summary>
     /// Контракт блоков-архетипов: механики игровых сущностей по шаблону вида
     /// (spell/item/...), объявленного хостом. Адресный диспатч по (вид, id),
-    /// id интернированы в int; поздний блок переопределяет ранний ПО-СОБЫТИЙНО.
+    /// id интернированы в int. Блоки одного (вид, id) — ОДНА мерж-сущность:
+    /// переопределение по-членно (события, поля, функции), поздний выигрывает,
+    /// ранние обработчики видят итоговое состояние.
     /// </summary>
     public sealed class ArchetypeTests
     {
@@ -186,6 +188,58 @@ namespace Dsl.Tests
             var ids = new List<string>();
             engine.GetArchetypeIds("spell", ids);
             Assert.AreEqual(new[] { "fireball", "icebolt" }, ids);
+        }
+
+        // Сценарий по-членного мержа В ОДНОМ ФАЙЛЕ: второй блок переопределяет
+        // событие (и видит поле без переобъявления), третий — только поле.
+        [Test]
+        public void SameFile_MergesPerMember_FieldsShared()
+        {
+            var r = Compile(Mod("game", @"
+                spell ""arcane_missile"" {
+                    int damage = 3;
+                    event OnCast(Unit c, float p) { Api.Note($""cast {damage}""); }
+                    event OnObtain(Unit u) { Api.Note($""obtain {damage}""); }
+                }
+                spell ""arcane_missile"" {
+                    event OnCast(Unit c, float p) { Api.Note($""cast2 {damage}""); }
+                }
+                spell ""arcane_missile"" {
+                    int damage = 5;
+                }"));
+            var engine = Load(r);
+            int am = engine.ResolveArchetype("spell", "arcane_missile");
+
+            _onCast.Raise(engine, am, new Unit(), 1f);   // переопределён вторым блоком
+            _onObtain.Raise(engine, am, new Unit());     // остался от первого
+
+            // оба видят damage == 5 (третий блок-патч перезаписал инициализатор)
+            Assert.AreEqual(new[] { "cast2 5", "obtain 5" }, _log);
+        }
+
+        // Кросс-модульный патч поля: мод меняет только значение, механика базы
+        // читает уже новое (общее состояние мерж-сущности).
+        [Test]
+        public void CrossModule_FieldPatch_SharedState()
+        {
+            var baseMod = Mod("base", @"
+                spell fb { int dmg = 3; event OnCast(Unit c, float p) { Api.Note($""{dmg}""); } }");
+            var patch = Mod("patch", @"spell fb { int dmg = 7; }", "base");
+
+            var engine = Load(Compile(baseMod, patch));
+            int fb = engine.ResolveArchetype("spell", "fb");
+            _onCast.Raise(engine, fb, new Unit(), 1f);
+
+            Assert.AreEqual(new[] { "7" }, _log, "обработчик базы видит патчёное значение");
+        }
+
+        [Test]
+        public void FieldOverride_TypeMismatch_IsError()
+        {
+            var r = Compile(Mod("game", @"
+                spell fb { int dmg = 3; event OnObtain(Unit u) { } }
+                spell fb { float dmg = 5.0; }"));
+            Assert.IsTrue(Has(r, "E0207"), Dump(r));
         }
 
         [Test]
