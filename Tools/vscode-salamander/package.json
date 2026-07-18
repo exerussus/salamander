@@ -54,25 +54,10 @@
         "configuration": {
             "title": "Salamander",
             "properties": {
-                "salamander.checkerPath": {
+                "salamander.server.path": {
                     "type": "string",
                     "default": "",
-                    "description": "Путь к DslCheck.dll (или исполняемому файлу). Пусто — проверка на сохранение выключена. Пример: /repo/Tools/DslCheck/bin/Debug/net8.0/DslCheck.dll"
-                },
-                "salamander.modsRoot": {
-                    "type": "string",
-                    "default": "",
-                    "description": "Корневая папка модулей (с подкаталогами module.json). Пусто — папка, где найден script-api.json, иначе корень воркспейса."
-                },
-                "salamander.apiManifest": {
-                    "type": "string",
-                    "default": "",
-                    "description": "Путь к script-api.json (манифест API хоста; игра выгружает его при Play). Пусто — авто-поиск по воркспейсу."
-                },
-                "salamander.checkOnSave": {
-                    "type": "boolean",
-                    "default": true,
-                    "description": "Запускать компиляцию при сохранении .sal и module.json."
+                    "description": "Путь к DslLsp.dll (LSP-сервер). Пусто — искать в воркспейсе (Tools/DslLsp/bin/...)."
                 }
             }
         }
@@ -85,5 +70,8 @@
         "@types/node": "^20.11.0",
         "@types/vscode": "^1.85.0",
         "typescript": "^5.4.0"
+    },
+    "dependencies": {
+        "vscode-languageclient": "^9.0.1"
     }
 }

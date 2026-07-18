@@ -321,6 +321,21 @@ listener Burn  { event OnUnitDamageTaken(Unit t, Unit s, float a, DamageType d);
   не входит) → Window → General → Test Runner → вкладка EditMode → Run All.
   Требуется пакет com.unity.test-framework (обычно установлен по умолчанию).
 
+## LSP: одна поддержка для VS Code, Rider и любого редактора
+
+Языковой сервер (`Tools/DslLsp`) — тот же компилятор, что в игре, живущий
+процессом и отвечающий редакторам по LSP: диагностика на лету, автодополнение
+(Engine, API игры, события по контексту — внутри `spell`-блока предложатся
+события именно этого вида), hover с доками из `salamander-api.json`, переход к
+определению, символы файла и воркспейса. Ноль зависимостей, рукописный
+JSON-RPC.
+
+- Сборка (один раз): `dotnet publish Tools/DslLsp -c Release -o Tools/DslLsp/publish`
+- **VS Code**: расширение — тонкий клиент, находит сервер само (или настройка
+  `salamander.server.path`).
+- **Rider / IDE JetBrains**: через плагин LSP4IJ + TextMate-подсветка из нашей
+  же грамматики — пошагово в `Tools/rider/README-Rider.md`.
+
 ## Поддержка VS Code: подсветка, ошибки, автодополнение
 
 В `Tools/` лежат два инструмента, связанных одним файлом — `salamander-api.json`
@@ -387,7 +402,7 @@ listener Burn  { event OnUnitDamageTaken(Unit t, Unit s, float a, DamageType d);
 - **Безопасность рантайма**: протухающие хэндлы (`Engine.IsValid`), ошибка
   убивает файбер, а не движок; в горячих структурах нет managed-ссылок —
   GC-давления нет.
-- **Инструменты**: VS Code-расширение (подсветка, ошибки на лету,
-  автодополнение по манифесту, go-to, сниппеты), CLI-чекер DslCheck,
-  `.sal`-импортер Unity, модкит.
+- **Инструменты**: LSP-сервер (VS Code, Rider через LSP4IJ, любой
+  LSP-клиент — диагностика, автодополнение, hover, go-to, символы), CLI-чекер
+  DslCheck, TextMate-грамматика и сниппеты, `.sal`-импортер Unity, модкит.
 - **Диагностика** компилятора на русском с кодами E0xxx.
