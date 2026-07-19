@@ -499,6 +499,24 @@ namespace Dsl.Tools.Lsp
                                     snippet: ch.Kind == "func");
                             return items;
                         }
+
+                // цель — ЗНАЧЕНИЕ (локаль/параметр/поле). Тип угадываем по
+                // объявлению «Тип имя» выше по файлу (event OnDeath(Unit killer...)
+                // или Unit u = ...); нашли класс хоста — его свойства, нет —
+                // объединение свойств всех сущностей (лучше, чем тишина)
+                if (_api?.Classes != null && _api.Classes.Length > 0)
+                {
+                    var cls = GuessValueClass(GetText(path), line1, col1, target);
+                    if (cls != null)
+                    {
+                        foreach (var pr in cls.Props)
+                            Add(pr.Name, 10, $"{cls.Name}.{pr.Name}: {pr.Type}", pr.Doc);
+                        return items;
+                    }
+                    foreach (var c in _api.Classes)
+                        foreach (var pr in c.Props)
+                            Add(pr.Name, 10, $"{c.Name}: {pr.Type}", pr.Doc);
+                }
                 return items;
             }
 
@@ -533,6 +551,39 @@ namespace Dsl.Tools.Lsp
                 foreach (var d in fi.Decls)
                     Add(d.Name, d.Kind == "enum" ? 13 : 7, d.Kind);
             return items;
+        }
+
+        /// <summary>
+        /// Тип значения по ближайшему объявлению «Тип имя» выше курсора:
+        /// параметры событий/функций и локали с явным типом. Возвращает класс
+        /// хоста из манифеста или null.
+        /// </summary>
+        private ApiManifest.ClassDef GuessValueClass(string text, int line1, int col1, string name)
+        {
+            if (text == null || _api?.Classes == null) return null;
+            int cursor = OffsetOf(text, line1, col1);
+            var rx = new System.Text.RegularExpressions.Regex($@"\b([A-Za-z_]\w*)\s+{System.Text.RegularExpressions.Regex.Escape(name)}\b");
+            string best = null;
+            foreach (System.Text.RegularExpressions.Match m in rx.Matches(text))
+            {
+                if (m.Index <= cursor) best = m.Groups[1].Value; // ближайшее ДО курсора побеждает
+                else if (best == null) { best = m.Groups[1].Value; break; } // иначе первое после
+            }
+            if (best == null) return null;
+            foreach (var c in _api.Classes)
+                if (c.Name == best) return c;
+            return null;
+        }
+
+        private static int OffsetOf(string text, int line1, int col1)
+        {
+            int line = 1, i = 0;
+            while (i < text.Length && line < line1)
+            {
+                if (text[i] == '\n') line++;
+                i++;
+            }
+            return Math.Min(text.Length, i + Math.Max(0, col1 - 1));
         }
 
         /// <summary>Типизированные плейсхолдеры аргументов для табуляции по вызову.</summary>
@@ -653,8 +704,10 @@ namespace Dsl.Tools.Lsp
 
             var spans = new List<(int line, int col, int len, int type)>();
 
-            // 1) строки и комментарии — сырым проходом (лексер их не отдаёт)
-            ScanStringsAndComments(text, spans);
+            // 1) строки и комментарии — сырым проходом (лексер их не отдаёт);
+            //    дырки интерполяции {expr} собираем отдельно — это КОД
+            var holes = new List<(int line, int col, string src)>();
+            ScanStringsAndComments(text, spans, holes);
 
             // 2) остальное — токенами настоящего лексера
             var declNames = new HashSet<string>(StringComparer.Ordinal);
@@ -674,6 +727,22 @@ namespace Dsl.Tools.Lsp
             if (_api?.Classes != null) foreach (var c in _api.Classes) typeNames.Add(c.Name);
             if (_api?.Enums != null) foreach (var e in _api.Enums) typeNames.Add(e.Name);
 
+            // общая классификация токена (главный текст и дырки интерполяции)
+            int Classify(TokenKind kind, string txt, TokenKind prev, TokenKind next)
+            {
+                if (kind.ToString().StartsWith("Kw")) return TtKeyword;
+                if (kind == TokenKind.Int || kind == TokenKind.Float) return TtNumber;
+                if (kind != TokenKind.Ident) return -1; // пунктуация — цвет темы
+                if (prev == TokenKind.KwEvent) return TtEvent;
+                if (prev == TokenKind.Dot) return next == TokenKind.LParen ? TtFunction : TtProperty;
+                if (next == TokenKind.LParen) return TtFunction;
+                if (apiNames.Contains(txt)) return TtNamespace;
+                if (kindNames.Contains(txt)) return TtKeyword;   // spell/item — читаются как слова языка
+                if (typeNames.Contains(txt)) return TtType;
+                if (declNames.Contains(txt)) return TtClass;
+                return TtVariable;
+            }
+
             try
             {
                 var bag = new DiagnosticBag(new[] { new SourceText(0, path, text) });
@@ -681,33 +750,41 @@ namespace Dsl.Tools.Lsp
                 for (int i = 0; i < toks.Count; i++)
                 {
                     var t = toks[i];
-                    var prev = i > 0 ? toks[i - 1].Kind : TokenKind.Eof;
-                    var next = i + 1 < toks.Count ? toks[i + 1].Kind : TokenKind.Eof;
-
-                    if (t.Kind == TokenKind.String || t.Kind == TokenKind.InterpString) continue; // уже покрашены
+                    if (t.Kind == TokenKind.String || t.Kind == TokenKind.InterpString) continue; // покрашены сканером
                     string txt = t.Text ?? "";
                     if (txt.Length == 0) continue;
-
-                    int type;
-                    if (t.Kind.ToString().StartsWith("Kw")) type = TtKeyword;
-                    else if (t.Kind == TokenKind.Int || t.Kind == TokenKind.Float) type = TtNumber;
-                    else if (t.Kind == TokenKind.Ident)
-                    {
-                        if (prev == TokenKind.KwEvent) type = TtEvent;
-                        else if (prev == TokenKind.Dot) type = next == TokenKind.LParen ? TtFunction : TtProperty;
-                        else if (next == TokenKind.LParen) type = TtFunction;
-                        else if (apiNames.Contains(txt)) type = TtNamespace;
-                        else if (kindNames.Contains(txt)) type = TtKeyword;   // spell/item — читаются как слова языка
-                        else if (typeNames.Contains(txt)) type = TtType;
-                        else if (declNames.Contains(txt)) type = TtClass;
-                        else type = TtVariable;
-                    }
-                    else continue; // пунктуация — цвет темы по умолчанию
-
-                    spans.Add((t.Pos.Line, t.Pos.Column, txt.Length, type));
+                    int type = Classify(t.Kind,
+                        txt,
+                        i > 0 ? toks[i - 1].Kind : TokenKind.Eof,
+                        i + 1 < toks.Count ? toks[i + 1].Kind : TokenKind.Eof);
+                    if (type >= 0) spans.Add((t.Pos.Line, t.Pos.Column, txt.Length, type));
                 }
             }
             catch { /* битый синтаксис не должен гасить подсветку строк/комментариев */ }
+
+            // дырки интерполяции: лексим содержимое как обычный код
+            foreach (var (hLine, hCol, src) in holes)
+            {
+                try
+                {
+                    var hbag = new DiagnosticBag(new[] { new SourceText(0, path, src) });
+                    var htoks = new Lexer(src, 0, hbag).Tokenize();
+                    for (int i = 0; i < htoks.Count; i++)
+                    {
+                        var t = htoks[i];
+                        if (t.Kind == TokenKind.String || t.Kind == TokenKind.InterpString) continue;
+                        string txt = t.Text ?? "";
+                        if (txt.Length == 0) continue;
+                        int type = Classify(t.Kind,
+                            txt,
+                            i > 0 ? htoks[i - 1].Kind : TokenKind.Eof,
+                            i + 1 < htoks.Count ? htoks[i + 1].Kind : TokenKind.Eof);
+                        // дырки однострочные: строка та же, колонка со смещением
+                        if (type >= 0) spans.Add((hLine, hCol + t.Pos.Column - 1, txt.Length, type));
+                    }
+                }
+                catch { }
+            }
 
             // 3) сортировка и дельта-кодирование протокола
             spans.Sort((a, b) => a.line != b.line ? a.line - b.line : a.col - b.col);
@@ -723,8 +800,12 @@ namespace Dsl.Tools.Lsp
             return new JObject { ["data"] = data };
         }
 
-        /// <summary>Строки (обычные и $"...") и комментарии // и /* */ — по сырому тексту, построчными кусками.</summary>
-        private static void ScanStringsAndComments(string text, List<(int, int, int, int)> spans)
+        /// <summary>
+        /// Строки (обычные и $"...") и комментарии // и /* */ — по сырому тексту,
+        /// построчными кусками; дырки интерполяции {expr} отдаются отдельно.
+        /// </summary>
+        private static void ScanStringsAndComments(string text, List<(int, int, int, int)> spans,
+                                                   List<(int line, int col, string src)> holes)
         {
             int line = 1, col = 1;
             int i = 0, n = text.Length;
@@ -759,17 +840,36 @@ namespace Dsl.Tools.Lsp
                 }
                 else if (c == '"' || (c == '$' && i + 1 < n && text[i + 1] == '"'))
                 {
-                    int startCol = col, startLine = line, len = 0;
-                    if (c == '$') { len++; Advance(text[i]); i++; }
-                    len++; Advance(text[i]); i++; // открывающая кавычка
+                    bool interp = c == '$';
+                    int segLine = line, segCol = col, segLen = 0;
+                    void Flush() { if (segLen > 0) spans.Add((segLine, segCol, segLen, TtString)); segLen = 0; }
+
+                    if (interp) { segLen++; Advance(text[i]); i++; }
+                    segLen++; Advance(text[i]); i++; // открывающая кавычка
                     while (i < n && text[i] != '\n')
                     {
-                        if (text[i] == '\\' && i + 1 < n) { len += 2; Advance(text[i]); i++; Advance(text[i]); i++; continue; }
+                        if (text[i] == '\\' && i + 1 < n) { segLen += 2; Advance(text[i]); i++; Advance(text[i]); i++; continue; }
+                        if (interp && text[i] == '{' && i + 1 < n && text[i + 1] == '{')
+                        { segLen += 2; Advance(text[i]); i++; Advance(text[i]); i++; continue; }
+                        if (interp && text[i] == '{')
+                        {
+                            // скобка — ещё строка, содержимое дырки — код
+                            segLen++; Advance(text[i]); i++;
+                            Flush();
+                            int hLine = line, hCol = col;
+                            var sb = new StringBuilder();
+                            while (i < n && text[i] != '}' && text[i] != '"' && text[i] != '\n')
+                            { sb.Append(text[i]); Advance(text[i]); i++; }
+                            if (sb.Length > 0) holes.Add((hLine, hCol, sb.ToString()));
+                            segLine = line; segCol = col; segLen = 0;
+                            if (i < n && text[i] == '}') { segLen++; Advance(text[i]); i++; }
+                            continue;
+                        }
                         bool close = text[i] == '"';
-                        len++; Advance(text[i]); i++;
+                        segLen++; Advance(text[i]); i++;
                         if (close) break;
                     }
-                    spans.Add((startLine, startCol, len, TtString));
+                    Flush();
                 }
                 else { Advance(c); i++; }
             }
