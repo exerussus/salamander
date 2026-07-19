@@ -93,9 +93,32 @@ namespace Dsl.Tools
 
             // ----- modules -----
             var logicalToAbs = new Dictionary<string, string>();
-            var modules = ModuleLoader.LoadFromFolder(root,
-                (file, message) => Emit(extra, file, "E0401", message),
-                logicalToAbs);
+            Action<string, string> onLoadError = (file, message) => Emit(extra, file, "E0401", message);
+            // «ешь то, что дал сборщик»: если он экспортировал salamander-build.json
+            // (упорядоченный список папок модулей) — берём РОВНО его; обход папки
+            // остаётся дев-режимом без сборщика
+            string buildPath = Path.Combine(root, "salamander-build.json");
+            List<ModuleSourceSet> modules;
+            if (File.Exists(buildPath))
+            {
+                try
+                {
+                    var build = Newtonsoft.Json.Linq.JObject.Parse(File.ReadAllText(buildPath));
+                    var dirs = new List<string>();
+                    foreach (var t in build["modules"] ?? new Newtonsoft.Json.Linq.JArray())
+                        dirs.Add(Path.GetFullPath(Path.Combine(root, (string)t)));
+                    modules = ModuleLoader.LoadFromList(dirs, onLoadError, logicalToAbs);
+                }
+                catch (Exception ex)
+                {
+                    onLoadError(buildPath, "salamander-build.json не читается — " + ex.Message);
+                    modules = new List<ModuleSourceSet>();
+                }
+            }
+            else
+            {
+                modules = ModuleLoader.LoadFromFolder(root, onLoadError, logicalToAbs);
+            }
 
             if (modules.Count == 0)
                 Emit(extra, root, "W0402", "no modules found in the folder (a subfolder with module.json).", warning: true);

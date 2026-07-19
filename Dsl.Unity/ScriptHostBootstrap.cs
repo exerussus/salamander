@@ -25,12 +25,17 @@ namespace Dsl.Unity
     public class ScriptHostBootstrap : MonoBehaviour
     {
         [Header("Модули")]
-        [Tooltip("Грузить модули из общей папки StreamingAssets (глобальные/пользовательские моды). " +
-                 "Выключите для карты, у которой скрипты вшиты в сцену (см. ниже) — тогда они не попадут в билд других карт.")]
-        [SerializeField] private bool _loadModsFolder = true;
-
-        [Tooltip("Подпапка StreamingAssets с модулями (каждый модуль = папка с module.json)")]
+        [Tooltip("Подпапка StreamingAssets: сюда экспортируется salamander-api.json для тулинга " +
+                 "(чекер/LSP); движок отсюда НИЧЕГО не грузит сам")]
         [SerializeField] private string _modsFolder = "Scripts";
+
+        /// <summary>
+        /// Источник модулей — СБОРЩИК ИГРЫ. Движок сам ничего не ищет и не
+        /// собирает: назначьте провайдер до Awake (или переопределите
+        /// LoadModules). Сборщик может использовать утилиты
+        /// UnitySourceProvider/ModuleLoader — но зовёт их он, не движок.
+        /// </summary>
+        public System.Func<System.Collections.Generic.List<ModuleSourceSet>> SourceProvider;
 
         [Tooltip("Модули, вшитые в ЭТУ сцену/карту (как триггеры карты в W3 или скрипты миссии в Arma). " +
                  "Каждый = манифест (module.json как TextAsset) + его исходники. Ассеты едут в билд только " +
@@ -80,8 +85,8 @@ namespace Dsl.Unity
         /// скрипты откуда угодно (Addressables, сеть, база данных карты).
         ///
         /// Привязка к карте (как в W3/Arma) достигается так: положите скрипты
-        /// карты в _embeddedModules этого компонента в нужной сцене и снимите
-        /// _loadModsFolder. Ассеты попадут в билд только со своей сценой, а
+        /// карты в _embeddedModules этого компонента в нужной сцене. Ассеты попадут
+        /// в билд только со своей сценой, а
         /// движок живёт на этом GameObject — при выгрузке сцены он уничтожается
         /// вместе со всеми файберами. Никакого общего/статического состояния
         /// между картами нет: каждый бутстрап держит свой ScriptEngine.
@@ -90,8 +95,9 @@ namespace Dsl.Unity
         {
             var modules = new List<ModuleSourceSet>();
 
-            if (_loadModsFolder)
-                modules.AddRange(UnitySourceProvider.LoadFromFolder(ModsPath));
+            // единственный внешний источник — сборщик игры
+            var provided = SourceProvider?.Invoke();
+            if (provided != null) modules.AddRange(provided);
 
             if (_embeddedModules != null)
             {
@@ -126,7 +132,9 @@ namespace Dsl.Unity
 
             CompileAndLoad();
 
-            if (_watchForChanges && _loadModsFolder) StartWatcher();
+            // хот-релоад: за источниками следит тот, кто их дал — сборщик
+            // включает слежку явно (WatchPath = папка с исходниками)
+            if (_watchForChanges && WatchPath != null) StartWatcher();
         }
 
         /// <summary>
@@ -246,10 +254,13 @@ namespace Dsl.Unity
             }
         }
 
+        /// <summary>Папка для слежки хот-релоада; null — не следить. Назначает сборщик.</summary>
+        public string WatchPath;
+
         private void StartWatcher()
         {
-            if (!Directory.Exists(ModsPath)) return;
-            _watcher = new FileSystemWatcher(ModsPath)
+            if (WatchPath == null || !Directory.Exists(WatchPath)) return;
+            _watcher = new FileSystemWatcher(WatchPath)
             {
                 IncludeSubdirectories = true,
                 NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName,

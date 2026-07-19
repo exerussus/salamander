@@ -101,6 +101,8 @@ namespace Dsl.Tools.Lsp
                             break;
 
                         case "textDocument/completion": _rpc.Reply(id, Completion(p)); break;
+                        case "textDocument/signatureHelp": _rpc.Reply(id, SignatureHelp(p)); break;
+                        case "textDocument/semanticTokens/full": _rpc.Reply(id, SemanticTokens(p)); break;
                         case "textDocument/hover": _rpc.Reply(id, Hover(p)); break;
                         case "textDocument/definition": _rpc.Reply(id, Definition(p)); break;
                         case "textDocument/documentSymbol": _rpc.Reply(id, DocumentSymbols(p)); break;
@@ -122,14 +124,24 @@ namespace Dsl.Tools.Lsp
         private JObject Initialize(JObject p)
         {
             _root = null;
-            var rootUri = (string)p?["rootUri"];
-            if (!string.IsNullOrEmpty(rootUri)) _root = UriToPath(rootUri);
-            else
+            // современные клиенты (Rider/LSP4IJ) шлют workspaceFolders, rootUri — null
+            if (p?["workspaceFolders"] is JArray folders && folders.Count > 0)
+            {
+                var wf = (string)folders[0]?["uri"];
+                if (!string.IsNullOrEmpty(wf)) _root = UriToPath(wf);
+            }
+            if (_root == null)
+            {
+                var rootUri = (string)p?["rootUri"];
+                if (!string.IsNullOrEmpty(rootUri)) _root = UriToPath(rootUri);
+            }
+            if (_root == null)
             {
                 var rootPath = (string)p?["rootPath"];
                 if (!string.IsNullOrEmpty(rootPath)) _root = Path.GetFullPath(rootPath);
             }
             _root ??= Directory.GetCurrentDirectory();
+            Console.Error.WriteLine($"salamander-lsp: корень воркспейса: {_root}");
 
             return new JObject
             {
@@ -137,6 +149,16 @@ namespace Dsl.Tools.Lsp
                 {
                     ["textDocumentSync"] = 1, // Full: документ приходит целиком
                     ["completionProvider"] = new JObject { ["triggerCharacters"] = new JArray(".", " ") },
+                    ["signatureHelpProvider"] = new JObject { ["triggerCharacters"] = new JArray("(", ",") },
+                    ["semanticTokensProvider"] = new JObject
+                    {
+                        ["legend"] = new JObject
+                        {
+                            ["tokenTypes"] = new JArray(TokenTypes),
+                            ["tokenModifiers"] = new JArray(),
+                        },
+                        ["full"] = true,
+                    },
                     ["hoverProvider"] = true,
                     ["definitionProvider"] = true,
                     ["documentSymbolProvider"] = true,
@@ -216,9 +238,33 @@ namespace Dsl.Tools.Lsp
             }
 
             var logicalToAbs = new Dictionary<string, string>();
-            var modules = ModuleLoader.LoadFromFolder(_root,
-                (file, message) => Bucket(Path.GetFullPath(file)).Add(LspDiag(1, 1, 1, 1, "E0401", message)),
-                logicalToAbs);
+            Action<string, string> onLoadError =
+                (file, message) => Bucket(Path.GetFullPath(file)).Add(LspDiag(1, 1, 1, 1, "E0401", message));
+            // «ешь то, что дал сборщик»: если он экспортировал salamander-build.json
+            // (упорядоченный список папок модулей) — берём РОВНО его; обход папки
+            // остаётся дев-режимом без сборщика
+            string buildPath = Path.Combine(_root, "salamander-build.json");
+            List<ModuleSourceSet> modules;
+            if (File.Exists(buildPath))
+            {
+                try
+                {
+                    var build = Newtonsoft.Json.Linq.JObject.Parse(File.ReadAllText(buildPath));
+                    var dirs = new List<string>();
+                    foreach (var t in build["modules"] ?? new Newtonsoft.Json.Linq.JArray())
+                        dirs.Add(Path.GetFullPath(Path.Combine(_root, (string)t)));
+                    modules = ModuleLoader.LoadFromList(dirs, onLoadError, logicalToAbs);
+                }
+                catch (Exception ex)
+                {
+                    onLoadError(buildPath, "salamander-build.json не читается — " + ex.Message);
+                    modules = new List<ModuleSourceSet>();
+                }
+            }
+            else
+            {
+                modules = ModuleLoader.LoadFromFolder(_root, onLoadError, logicalToAbs);
+            }
 
             // оверлеи: несохранённые правки важнее диска
             foreach (var set in modules)
@@ -419,7 +465,8 @@ namespace Dsl.Tools.Lsp
                 if (target == "Engine")
                 {
                     foreach (var em in EngineDocs.Methods)
-                        Add(em.Name, 2, em.Signature, em.Summary);
+                        Add(em.Name, 2, em.Signature, em.Summary,
+                            insert: CallSnippet(em.Name, ParamLabels(em)), snippet: true);
                     return items;
                 }
                 // API хоста
@@ -428,7 +475,8 @@ namespace Dsl.Tools.Lsp
                         if (api.Name == target)
                         {
                             foreach (var me in api.Methods)
-                                Add(me.Name, 2, MethodSig(api.Name, me), MethodDocMd(me));
+                                Add(me.Name, 2, MethodSig(api.Name, me), MethodDocMd(me),
+                                    insert: CallSnippet(me.Name, ParamLabels(me)), snippet: true);
                             return items;
                         }
                 // енумы (манифест + скриптовые)
@@ -444,7 +492,11 @@ namespace Dsl.Tools.Lsp
                         if (d.Name == target && (d.Kind == "enum" || d.Kind == "class"))
                         {
                             foreach (var ch in d.Children)
-                                Add(ch.Name, ch.Kind == "func" ? 2 : ch.Kind == "member" ? 20 : ch.Kind == "const" ? 14 : 5, $"{d.Kind} {d.Name}");
+                                Add(ch.Name,
+                                    ch.Kind == "func" ? 2 : ch.Kind == "member" ? 20 : ch.Kind == "const" ? 14 : 5,
+                                    $"{d.Kind} {d.Name}",
+                                    insert: ch.Kind == "func" ? $"{ch.Name}($1)$0" : null,
+                                    snippet: ch.Kind == "func");
                             return items;
                         }
                 return items;
@@ -481,6 +533,246 @@ namespace Dsl.Tools.Lsp
                 foreach (var d in fi.Decls)
                     Add(d.Name, d.Kind == "enum" ? 13 : 7, d.Kind);
             return items;
+        }
+
+        /// <summary>Типизированные плейсхолдеры аргументов для табуляции по вызову.</summary>
+        private static string CallSnippet(string name, List<string> paramLabels)
+        {
+            if (paramLabels.Count == 0) return name + "()$0";
+            var sb = new StringBuilder(name).Append('(');
+            for (int i = 0; i < paramLabels.Count; i++)
+            {
+                if (i > 0) sb.Append(", ");
+                sb.Append("${").Append(i + 1).Append(':').Append(paramLabels[i].Replace("}", "\\}")).Append('}');
+            }
+            return sb.Append(")$0").ToString();
+        }
+
+        private static List<string> ParamLabels(EngineMethod em)
+        {
+            var r = new List<string>();
+            foreach (var (name, type) in em.Params) r.Add($"{type} {name}");
+            return r;
+        }
+
+        private static List<string> ParamLabels(ApiManifest.MethodDef m)
+        {
+            var r = new List<string>();
+            foreach (var pd in m.Params) r.Add($"{pd.Type} {pd.Name}");
+            return r;
+        }
+
+        // ===================================================================
+        // SignatureHelp: активная сигнатура + подсветка текущего аргумента
+        // ===================================================================
+
+        private JToken SignatureHelp(JObject p)
+        {
+            var path = UriToPath((string)p["textDocument"]["uri"]);
+            int line1 = (int)p["position"]["line"] + 1;
+            int col1 = (int)p["position"]["character"] + 1;
+            var lineText = GetLine(GetText(path), line1) ?? "";
+            var before = lineText.Substring(0, Math.Min(col1 - 1, lineText.Length));
+
+            // до внутренней незакрытой '(' (строки грубо вычищаем)
+            var clean = System.Text.RegularExpressions.Regex.Replace(before, "\"(?:\\\\.|[^\"])*\"?", m => new string(' ', m.Length));
+            int depth = 0, open = -1, commas = 0;
+            for (int i = clean.Length - 1; i >= 0; i--)
+            {
+                char c = clean[i];
+                if (c == ')') depth++;
+                else if (c == '(')
+                {
+                    if (depth == 0) { open = i; break; }
+                    depth--;
+                }
+            }
+            if (open < 0) return null;
+            for (int i = open + 1, d2 = 0; i < clean.Length; i++)
+            {
+                char c = clean[i];
+                if (c == '(') d2++;
+                else if (c == ')') d2--;
+                else if (c == ',' && d2 == 0) commas++;
+            }
+
+            var head = clean.Substring(0, open);
+            var m2 = System.Text.RegularExpressions.Regex.Match(head, "(?:(\\w+)\\.)?(\\w+)\\s*$");
+            if (!m2.Success) return null;
+            string owner = m2.Groups[1].Value;
+            string method = m2.Groups[2].Value;
+
+            string label = null, doc = null;
+            List<string> plabels = null;
+            if (owner == "Engine")
+            {
+                foreach (var em in EngineDocs.Methods)
+                    if (em.Name == method) { label = em.Signature; doc = em.Summary; plabels = ParamLabels(em); break; }
+            }
+            else if (owner.Length > 0 && _api?.Apis != null)
+            {
+                foreach (var api in _api.Apis)
+                    if (api.Name == owner)
+                        foreach (var me in api.Methods)
+                            if (me.Name == method)
+                            { label = MethodSig(api.Name, me); doc = MethodDocMd(me); plabels = ParamLabels(me); break; }
+            }
+            if (label == null) return null;
+
+            var ps = new JArray();
+            foreach (var pl in plabels) ps.Add(new JObject { ["label"] = pl });
+            var sig = new JObject { ["label"] = label, ["parameters"] = ps };
+            if (doc != null) sig["documentation"] = new JObject { ["kind"] = "markdown", ["value"] = doc };
+            return new JObject
+            {
+                ["signatures"] = new JArray(sig),
+                ["activeSignature"] = 0,
+                ["activeParameter"] = Math.Min(commas, Math.Max(0, plabels.Count - 1)),
+            };
+        }
+
+        // ===================================================================
+        // Семантическая подсветка: раскраска приходит с сервера — работает в
+        // любом клиенте (Rider без TextMate тоже цветной)
+        // ===================================================================
+
+        private static readonly string[] TokenTypes =
+        {
+            "keyword", "type", "class", "function", "property", "variable",
+            "string", "number", "comment", "event", "namespace", "enumMember",
+        };
+        private const int TtKeyword = 0, TtType = 1, TtClass = 2, TtFunction = 3, TtProperty = 4,
+                          TtVariable = 5, TtString = 6, TtNumber = 7, TtComment = 8, TtEvent = 9,
+                          TtNamespace = 10;
+
+        private JToken SemanticTokens(JObject p)
+        {
+            var path = UriToPath((string)p["textDocument"]["uri"]);
+            var text = GetText(path);
+            if (text == null) return new JObject { ["data"] = new JArray() };
+
+            var spans = new List<(int line, int col, int len, int type)>();
+
+            // 1) строки и комментарии — сырым проходом (лексер их не отдаёт)
+            ScanStringsAndComments(text, spans);
+
+            // 2) остальное — токенами настоящего лексера
+            var declNames = new HashSet<string>(StringComparer.Ordinal);
+            var kindNames = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var fi in _index.Values)
+                foreach (var d in fi.Decls)
+                {
+                    declNames.Add(d.Name);
+                    if (d.Kind != "class" && d.Kind != "trigger" && d.Kind != "listener" && d.Kind != "enum")
+                        kindNames.Add(d.Kind); // слова-виды архетипов (spell/item/...)
+                }
+            if (_api?.Archetypes != null)
+                foreach (var k in _api.Archetypes) kindNames.Add(k.Name);
+            var apiNames = new HashSet<string>(StringComparer.Ordinal) { "Engine" };
+            if (_api?.Apis != null) foreach (var a in _api.Apis) apiNames.Add(a.Name);
+            var typeNames = new HashSet<string>(EngineDocs.Types, StringComparer.Ordinal);
+            if (_api?.Classes != null) foreach (var c in _api.Classes) typeNames.Add(c.Name);
+            if (_api?.Enums != null) foreach (var e in _api.Enums) typeNames.Add(e.Name);
+
+            try
+            {
+                var bag = new DiagnosticBag(new[] { new SourceText(0, path, text) });
+                var toks = new Lexer(text, 0, bag).Tokenize();
+                for (int i = 0; i < toks.Count; i++)
+                {
+                    var t = toks[i];
+                    var prev = i > 0 ? toks[i - 1].Kind : TokenKind.Eof;
+                    var next = i + 1 < toks.Count ? toks[i + 1].Kind : TokenKind.Eof;
+
+                    if (t.Kind == TokenKind.String || t.Kind == TokenKind.InterpString) continue; // уже покрашены
+                    string txt = t.Text ?? "";
+                    if (txt.Length == 0) continue;
+
+                    int type;
+                    if (t.Kind.ToString().StartsWith("Kw")) type = TtKeyword;
+                    else if (t.Kind == TokenKind.Int || t.Kind == TokenKind.Float) type = TtNumber;
+                    else if (t.Kind == TokenKind.Ident)
+                    {
+                        if (prev == TokenKind.KwEvent) type = TtEvent;
+                        else if (prev == TokenKind.Dot) type = next == TokenKind.LParen ? TtFunction : TtProperty;
+                        else if (next == TokenKind.LParen) type = TtFunction;
+                        else if (apiNames.Contains(txt)) type = TtNamespace;
+                        else if (kindNames.Contains(txt)) type = TtKeyword;   // spell/item — читаются как слова языка
+                        else if (typeNames.Contains(txt)) type = TtType;
+                        else if (declNames.Contains(txt)) type = TtClass;
+                        else type = TtVariable;
+                    }
+                    else continue; // пунктуация — цвет темы по умолчанию
+
+                    spans.Add((t.Pos.Line, t.Pos.Column, txt.Length, type));
+                }
+            }
+            catch { /* битый синтаксис не должен гасить подсветку строк/комментариев */ }
+
+            // 3) сортировка и дельта-кодирование протокола
+            spans.Sort((a, b) => a.line != b.line ? a.line - b.line : a.col - b.col);
+            var data = new JArray();
+            int lastLine = 1, lastCol = 1;
+            foreach (var (line, col, len, type) in spans)
+            {
+                int dLine = line - lastLine;
+                int dCol = dLine == 0 ? col - lastCol : col - 1;
+                data.Add(dLine); data.Add(dCol); data.Add(len); data.Add(type); data.Add(0);
+                lastLine = line; lastCol = col;
+            }
+            return new JObject { ["data"] = data };
+        }
+
+        /// <summary>Строки (обычные и $"...") и комментарии // и /* */ — по сырому тексту, построчными кусками.</summary>
+        private static void ScanStringsAndComments(string text, List<(int, int, int, int)> spans)
+        {
+            int line = 1, col = 1;
+            int i = 0, n = text.Length;
+            void Advance(char c) { if (c == '\n') { line++; col = 1; } else col++; }
+
+            while (i < n)
+            {
+                char c = text[i];
+                if (c == '/' && i + 1 < n && text[i + 1] == '/')
+                {
+                    int startCol = col, startLine = line, len = 0;
+                    while (i < n && text[i] != '\n') { len++; Advance(text[i]); i++; }
+                    spans.Add((startLine, startCol, len, TtComment));
+                }
+                else if (c == '/' && i + 1 < n && text[i + 1] == '*')
+                {
+                    int segLine = line, segCol = col, segLen = 0;
+                    while (i < n)
+                    {
+                        bool end = text[i] == '*' && i + 1 < n && text[i + 1] == '/';
+                        if (text[i] == '\n')
+                        {
+                            if (segLen > 0) spans.Add((segLine, segCol, segLen, TtComment));
+                            Advance(text[i]); i++;
+                            segLine = line; segCol = col; segLen = 0;
+                            continue;
+                        }
+                        segLen++; Advance(text[i]); i++;
+                        if (end) { segLen++; Advance(text[i]); i++; break; }
+                    }
+                    if (segLen > 0) spans.Add((segLine, segCol, segLen, TtComment));
+                }
+                else if (c == '"' || (c == '$' && i + 1 < n && text[i + 1] == '"'))
+                {
+                    int startCol = col, startLine = line, len = 0;
+                    if (c == '$') { len++; Advance(text[i]); i++; }
+                    len++; Advance(text[i]); i++; // открывающая кавычка
+                    while (i < n && text[i] != '\n')
+                    {
+                        if (text[i] == '\\' && i + 1 < n) { len += 2; Advance(text[i]); i++; Advance(text[i]); i++; continue; }
+                        bool close = text[i] == '"';
+                        len++; Advance(text[i]); i++;
+                        if (close) break;
+                    }
+                    spans.Add((startLine, startCol, len, TtString));
+                }
+                else { Advance(c); i++; }
+            }
         }
 
         private static string MethodSig(string owner, ApiManifest.MethodDef m)
