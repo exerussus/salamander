@@ -1,0 +1,23 @@
+{
+  "name": "com.exerussus.salamander",
+  "version": "1.0.0",
+  "displayName": "Salamander",
+  "description": "Статически типизированный скриптовый язык с триггерами, событиями и кооперативными файберами (wait / spawn), собственный лексер → парсер → чекер → байткод-VM. Ядро не зависит от Unity и работает на всех платформах, включая WebGL/IL2CPP (никакой кодогенерации в рантайме).",
+  "unity": "6000.4",
+  "author": {
+    "name": "Exerussus"
+  },
+  "keywords": [
+    "exerussus",
+    "salamander",
+    "dsl"
+  ],
+  "author": {
+    "name": "Exerussus",
+    "email": "solovyov.production@gmail.com"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/exerussus/salamander.git"
+  }
+}
