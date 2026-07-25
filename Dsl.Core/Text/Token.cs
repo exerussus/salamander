@@ -12,6 +12,7 @@ namespace Dsl.Text
         Ident,
         Int,
         Float,
+        Double,
         String,        // обычная строка, Value = string
         InterpString,  // интерполяция, Value = InterpTemplate
 

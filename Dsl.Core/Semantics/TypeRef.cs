@@ -8,6 +8,7 @@ namespace Dsl.Semantics
         Bool,
         Int,
         Float,
+        Double,
         Str,
         Fiber,
         Sub,       // Subscription — хэндл подписки listener
@@ -49,6 +50,7 @@ namespace Dsl.Semantics
         public static readonly TypeRef Bool = new TypeRef(TypeKind.Bool);
         public static readonly TypeRef Int = new TypeRef(TypeKind.Int);
         public static readonly TypeRef Float = new TypeRef(TypeKind.Float);
+        public static readonly TypeRef Double = new TypeRef(TypeKind.Double);
         public static readonly TypeRef Str = new TypeRef(TypeKind.Str);
         public static readonly TypeRef Fiber = new TypeRef(TypeKind.Fiber);
         public static readonly TypeRef Subscription = new TypeRef(TypeKind.Sub);
@@ -60,7 +62,10 @@ namespace Dsl.Semantics
         public static TypeRef MapOf(TypeRef key, TypeRef val) => new TypeRef(TypeKind.Map, key: key, val: val);
 
         public bool IsError => Kind == TypeKind.Error;
-        public bool IsNumeric => Kind == TypeKind.Int || Kind == TypeKind.Float;
+        public bool IsNumeric => Kind == TypeKind.Int || Kind == TypeKind.Float || Kind == TypeKind.Double;
+
+        /// <summary>Ранг числового расширения: int(0) → float(1) → double(2). -1 — не число.</summary>
+        public int NumericRank => Kind == TypeKind.Int ? 0 : Kind == TypeKind.Float ? 1 : Kind == TypeKind.Double ? 2 : -1;
         // "ссылочные" типы, которым разрешён null и сравнение с null
         public bool IsRefLike => Kind == TypeKind.Entity || Kind == TypeKind.Str
                                   || Kind == TypeKind.Fiber || Kind == TypeKind.Sub || Kind == TypeKind.Array
@@ -90,7 +95,7 @@ namespace Dsl.Semantics
         {
             if (from == null || from.IsError || IsError) return true; // не плодим каскад ошибок
             if (Same(from)) return true;
-            if (Kind == TypeKind.Float && from.Kind == TypeKind.Int) return true; // расширение
+            if (IsNumeric && from.IsNumeric && NumericRank >= from.NumericRank) return true; // расширение вверх
             if (from.Kind == TypeKind.Nil && IsRefLike) return true;
             return false;
         }
@@ -104,6 +109,7 @@ namespace Dsl.Semantics
                 case TypeKind.Bool: return "bool";
                 case TypeKind.Int: return "int";
                 case TypeKind.Float: return "float";
+                case TypeKind.Double: return "double";
                 case TypeKind.Str: return "string";
                 case TypeKind.Fiber: return "Fiber";
                 case TypeKind.Sub: return "Subscription";

@@ -274,6 +274,7 @@ namespace Dsl.Runtime
                 case VariantType.Bool: w.Write(v.AsBool); break;
                 case VariantType.Int: w.Write(v.AsInt); break;
                 case VariantType.Float: w.Write(v.AsFloat); break;
+                case VariantType.Double: w.Write(v.AsDouble); break;
                 case VariantType.Str: w.Write(v.StrId); break;
                 case VariantType.Enum: w.Write(v.EnumTypeId); w.Write(v.EnumValue); break;
 
@@ -620,6 +621,7 @@ namespace Dsl.Runtime
                 case VariantType.Bool: return Variant.Bool(r.ReadBoolean());
                 case VariantType.Int: return Variant.Int(r.ReadInt32());
                 case VariantType.Float: return Variant.Float(r.ReadSingle());
+                case VariantType.Double: return Variant.Double(r.ReadDouble());
 
                 case VariantType.Str:
                 {

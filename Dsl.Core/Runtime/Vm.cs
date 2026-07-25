@@ -110,6 +110,9 @@ namespace Dsl.Runtime
                         case OpCode.PushFalse: Push(Variant.Bool(false)); break;
                         case OpCode.PushInt: Push(Variant.Int(ins.A)); break;
                         case OpCode.PushFloat: Push(Variant.Float(BitConverter.Int32BitsToSingle(ins.A))); break;
+                        case OpCode.PushDouble:
+                            Push(Variant.Double(BitConverter.Int64BitsToDouble(((long)ins.B << 32) | (uint)ins.A)));
+                            break;
                         case OpCode.PushStr: Push(Variant.Str(LitIds[ins.A])); break;
                         case OpCode.PushEnum: Push(Variant.Enum(ins.A, ins.B)); break;
 
@@ -231,6 +234,8 @@ namespace Dsl.Runtime
                             var b = stack[--sp]; var a = stack[--sp];
                             if (a.Type == VariantType.Int && b.Type == VariantType.Int)
                                 Push(Variant.Int(a.AsInt + b.AsInt));
+                            else if (a.Type == VariantType.Double || b.Type == VariantType.Double)
+                                Push(Variant.Double(a.ToD() + b.ToD()));
                             else
                                 Push(Variant.Float(a.ToF() + b.ToF()));
                             break;
@@ -240,6 +245,8 @@ namespace Dsl.Runtime
                             var b = stack[--sp]; var a = stack[--sp];
                             if (a.Type == VariantType.Int && b.Type == VariantType.Int)
                                 Push(Variant.Int(a.AsInt - b.AsInt));
+                            else if (a.Type == VariantType.Double || b.Type == VariantType.Double)
+                                Push(Variant.Double(a.ToD() - b.ToD()));
                             else
                                 Push(Variant.Float(a.ToF() - b.ToF()));
                             break;
@@ -249,6 +256,8 @@ namespace Dsl.Runtime
                             var b = stack[--sp]; var a = stack[--sp];
                             if (a.Type == VariantType.Int && b.Type == VariantType.Int)
                                 Push(Variant.Int(a.AsInt * b.AsInt));
+                            else if (a.Type == VariantType.Double || b.Type == VariantType.Double)
+                                Push(Variant.Double(a.ToD() * b.ToD()));
                             else
                                 Push(Variant.Float(a.ToF() * b.ToF()));
                             break;
@@ -263,7 +272,10 @@ namespace Dsl.Runtime
                             }
                             else
                             {
-                                Push(Variant.Float(a.ToF() / b.ToF())); // float: inf допустим
+                                if (a.Type == VariantType.Double || b.Type == VariantType.Double)
+                                    Push(Variant.Double(a.ToD() / b.ToD()));
+                                else
+                                    Push(Variant.Float(a.ToF() / b.ToF())); // float: inf допустим
                             }
                             break;
                         }
@@ -278,6 +290,7 @@ namespace Dsl.Runtime
                         {
                             var a = stack[--sp];
                             if (a.Type == VariantType.Int) Push(Variant.Int(-a.AsInt));
+                            else if (a.Type == VariantType.Double) Push(Variant.Double(-a.AsDouble));
                             else Push(Variant.Float(-a.ToF()));
                             break;
                         }
@@ -300,6 +313,8 @@ namespace Dsl.Runtime
                             var b = stack[--sp]; var a = stack[--sp];
                             if (a.Type == VariantType.Int && b.Type == VariantType.Int)
                                 Push(Variant.Bool(a.AsInt < b.AsInt));
+                            else if (a.Type == VariantType.Double || b.Type == VariantType.Double)
+                                Push(Variant.Bool(a.ToD() < b.ToD()));
                             else
                                 Push(Variant.Bool(a.ToF() < b.ToF()));
                             break;
@@ -309,6 +324,8 @@ namespace Dsl.Runtime
                             var b = stack[--sp]; var a = stack[--sp];
                             if (a.Type == VariantType.Int && b.Type == VariantType.Int)
                                 Push(Variant.Bool(a.AsInt <= b.AsInt));
+                            else if (a.Type == VariantType.Double || b.Type == VariantType.Double)
+                                Push(Variant.Bool(a.ToD() <= b.ToD()));
                             else
                                 Push(Variant.Bool(a.ToF() <= b.ToF()));
                             break;
@@ -318,6 +335,8 @@ namespace Dsl.Runtime
                             var b = stack[--sp]; var a = stack[--sp];
                             if (a.Type == VariantType.Int && b.Type == VariantType.Int)
                                 Push(Variant.Bool(a.AsInt > b.AsInt));
+                            else if (a.Type == VariantType.Double || b.Type == VariantType.Double)
+                                Push(Variant.Bool(a.ToD() > b.ToD()));
                             else
                                 Push(Variant.Bool(a.ToF() > b.ToF()));
                             break;
@@ -327,6 +346,8 @@ namespace Dsl.Runtime
                             var b = stack[--sp]; var a = stack[--sp];
                             if (a.Type == VariantType.Int && b.Type == VariantType.Int)
                                 Push(Variant.Bool(a.AsInt >= b.AsInt));
+                            else if (a.Type == VariantType.Double || b.Type == VariantType.Double)
+                                Push(Variant.Bool(a.ToD() >= b.ToD()));
                             else
                                 Push(Variant.Bool(a.ToF() >= b.ToF()));
                             break;
@@ -537,6 +558,12 @@ namespace Dsl.Runtime
                             break;
                         }
 
+                        case OpCode.ToDouble:
+                        {
+                            var v = stack[sp - 1];
+                            stack[sp - 1] = Variant.Double(v.ToD());
+                            break;
+                        }
                         case OpCode.IntToFloat:
                         {
                             var a = stack[--sp];
@@ -572,6 +599,7 @@ namespace Dsl.Runtime
                 case VariantType.Str: strings.Append(strings.Get(v.StrId)); break;
                 case VariantType.Int: strings.AppendInt(v.AsInt); break;
                 case VariantType.Float: strings.AppendFloat(v.AsFloat); break;
+                case VariantType.Double: strings.AppendDouble(v.AsDouble); break;
                 case VariantType.Bool: strings.AppendBool(v.AsBool); break;
                 case VariantType.Nil: strings.Append("null"); break;
                 case VariantType.Enum:

@@ -141,10 +141,13 @@ namespace Dsl.Codegen
             for (int k = 0; k < archKinds.Length; k++)
             {
                 var info = _host.GetArchetypeKind(k);
+                var evNames = new string[info.Events.Count];
+                foreach (var ev in info.Events) evNames[ev.LocalId] = ev.Name;
                 archKinds[k] = new ArchetypeKindRuntime
                 {
                     Name = info.Name,
                     EventCount = info.Events.Count,
+                    EventNames = evNames,
                     IdIndex = new Dictionary<string, int>(System.StringComparer.Ordinal),
                 };
                 archIdLists[k] = new List<string>();
@@ -609,7 +612,8 @@ namespace Dsl.Codegen
                     break;
                 case ConvertExpr cv:
                     EmitExpr(cv.Inner);
-                    Emit(OpCode.IntToFloat);
+                    // расширение числа вверх: в double — ToDouble, иначе int→float
+                    Emit(cv.Type != null && cv.Type.Kind == TypeKind.Double ? OpCode.ToDouble : OpCode.IntToFloat);
                     break;
                 default:
                     Emit(OpCode.PushNil);
@@ -630,6 +634,12 @@ namespace Dsl.Codegen
                 case LiteralKind.Float:
                     Emit(OpCode.PushFloat, System.BitConverter.SingleToInt32Bits((float)lit.FloatValue));
                     break;
+                case LiteralKind.Double:
+                {
+                    long bits = System.BitConverter.DoubleToInt64Bits(lit.FloatValue);
+                    Emit(OpCode.PushDouble, (int)(bits & 0xFFFFFFFF), (int)(bits >> 32));
+                    break;
+                }
                 case LiteralKind.Str:
                     Emit(OpCode.PushStr, LitId(lit.StrValue));
                     break;
@@ -699,6 +709,12 @@ namespace Dsl.Codegen
                 case VariantType.Bool: Emit(v.AsBool ? OpCode.PushTrue : OpCode.PushFalse); break;
                 case VariantType.Int: Emit(OpCode.PushInt, v.AsInt); break;
                 case VariantType.Float: Emit(OpCode.PushFloat, System.BitConverter.SingleToInt32Bits(v.AsFloat)); break;
+                case VariantType.Double:
+                {
+                    long bits = System.BitConverter.DoubleToInt64Bits(v.AsDouble);
+                    Emit(OpCode.PushDouble, (int)(bits & 0xFFFFFFFF), (int)(bits >> 32));
+                    break;
+                }
                 case VariantType.Enum: Emit(OpCode.PushEnum, v.EnumTypeId, v.EnumValue); break;
                 default: Emit(OpCode.PushNil); break;
             }

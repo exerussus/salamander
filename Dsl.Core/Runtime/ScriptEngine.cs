@@ -303,6 +303,55 @@ namespace Dsl.Runtime
             into.AddRange(_prog.ArchetypeKinds[k].Ids);
         }
 
+        // ===================================================================
+        // Интроспекция: пройтись по тому, что модеры описали в DSL
+        // ===================================================================
+        // Хост объявляет ВИДЫ и их события (шаблон для заполнения), DSL создаёт
+        // сущности этого вида и реализует события. Эти геттеры позволяют игре на
+        // старте обойти всё описанное, не зная заранее ни имён видов, ни id.
+
+        /// <summary>Все виды архетипов, объявленные хостом (spell/item/game_mode/...).</summary>
+        public void GetArchetypeKinds(List<string> into)
+        {
+            into.Clear();
+            if (_prog == null) return;
+            foreach (var k in _prog.ArchetypeKinds) into.Add(k.Name);
+        }
+
+        /// <summary>Имена событий вида в порядке объявления хостом (localEventId — индекс в списке).</summary>
+        public void GetArchetypeEvents(string kind, List<string> into)
+        {
+            into.Clear();
+            if (_prog == null || !_archKindByName.TryGetValue(kind, out int k)) return;
+            into.AddRange(_prog.ArchetypeKinds[k].EventNames);
+        }
+
+        /// <summary>Реализовано ли конкретное событие у сущности (вид, id) хоть в одном блоке.</summary>
+        public bool ImplementsEvent(string kind, string id, string eventName)
+        {
+            if (_prog == null || !_archKindByName.TryGetValue(kind, out int k)) return false;
+            var kr = _prog.ArchetypeKinds[k];
+            int arch = ResolveArchetype(k, id);
+            if (arch < 0) return false;
+            for (int e = 0; e < kr.EventCount; e++)
+                if (kr.EventNames[e] == eventName)
+                    return kr.Handlers[arch][e].Func != -1;
+            return false;
+        }
+
+        /// <summary>Имена событий, реально реализованных у сущности (вид, id). Для проверки покрытия шаблона.</summary>
+        public void GetImplementedEvents(string kind, string id, List<string> into)
+        {
+            into.Clear();
+            if (_prog == null || !_archKindByName.TryGetValue(kind, out int k)) return;
+            var kr = _prog.ArchetypeKinds[k];
+            int arch = ResolveArchetype(k, id);
+            if (arch < 0) return;
+            for (int e = 0; e < kr.EventCount; e++)
+                if (kr.Handlers[arch][e].Func != -1)
+                    into.Add(kr.EventNames[e]);
+        }
+
         /// <summary>
         /// Адресный подъём: выполняется обработчик ровно ОДНОГО блока (вид, id),
         /// если тот объявлен и его модуль включён; иначе тишина. Семантика та же,

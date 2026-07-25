@@ -190,6 +190,48 @@ namespace Dsl.Tests
             Assert.AreEqual(new[] { "fireball", "icebolt" }, ids);
         }
 
+        // Интроспекция: игра на старте обходит всё, что модеры описали в DSL,
+        // не зная заранее ни имён видов, ни id, ни какие события заполнены.
+        [Test]
+        public void Introspection_WalkKindsAndImplementedEvents()
+        {
+            var r = Compile(Mod("game", @"
+                spell fireball {
+                    event OnCast(Unit c, Unit t) { }
+                    event OnObtain(Unit u) { }
+                }
+                spell icebolt {
+                    event OnCast(Unit c, Unit t) { }
+                }"));
+            var engine = Load(r);
+
+            // все объявленные хостом виды
+            var kinds = new List<string>();
+            engine.GetArchetypeKinds(kinds);
+            CollectionAssert.Contains(kinds, "spell");
+
+            // все события вида (шаблон для заполнения, в порядке хоста)
+            var events = new List<string>();
+            engine.GetArchetypeEvents("spell", events);
+            CollectionAssert.Contains(events, "OnCast");
+            CollectionAssert.Contains(events, "OnObtain");
+
+            // что реально реализовано у конкретной сущности
+            Assert.IsTrue(engine.ImplementsEvent("spell", "fireball", "OnCast"));
+            Assert.IsTrue(engine.ImplementsEvent("spell", "fireball", "OnObtain"));
+            Assert.IsTrue(engine.ImplementsEvent("spell", "icebolt", "OnCast"));
+            Assert.IsFalse(engine.ImplementsEvent("spell", "icebolt", "OnObtain"), "icebolt не заполнил OnObtain");
+
+            var impl = new List<string>();
+            engine.GetImplementedEvents("spell", "icebolt", impl);
+            Assert.AreEqual(new[] { "OnCast" }, impl);
+
+            // полный обход: вид -> id -> реализованные события
+            var allIds = new List<string>();
+            engine.GetArchetypeIds("spell", allIds);
+            Assert.AreEqual(new[] { "fireball", "icebolt" }, allIds);
+        }
+
         // Сценарий по-членного мержа В ОДНОМ ФАЙЛЕ: второй блок переопределяет
         // событие (и видит поле без переобъявления), третий — только поле.
         [Test]

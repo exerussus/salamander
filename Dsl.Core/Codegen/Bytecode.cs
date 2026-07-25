@@ -8,6 +8,7 @@ namespace Dsl.Codegen
         PushNil, PushTrue, PushFalse,
         PushInt,      // A = значение
         PushFloat,    // A = биты float (Int32BitsToSingle)
+        PushDouble,   // A = младшие 32 бита, B = старшие 32 бита double
         PushStr,      // A = индекс в StringLiterals
         PushEnum,     // A = enumTypeId, B = value
 
@@ -66,6 +67,7 @@ namespace Dsl.Codegen
 
         // преобразования
         IntToFloat,   // top: int -> float
+        ToDouble,     // top: int/float -> double (расширение числа вверх)
     }
 
     /// <summary>Встроенные методы коллекций (list.Add и т.п.), различаются чекером.</summary>

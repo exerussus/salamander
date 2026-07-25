@@ -227,7 +227,7 @@ namespace Dsl.Syntax
         public TypeRef Type; // заполняется чекером
     }
 
-    public enum LiteralKind : byte { Bool, Int, Float, Str, Null }
+    public enum LiteralKind : byte { Bool, Int, Float, Double, Str, Null }
 
     public sealed class LiteralExpr : Expr
     {

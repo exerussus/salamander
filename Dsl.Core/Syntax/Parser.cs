@@ -597,6 +597,12 @@ namespace Dsl.Syntax
                     double v = ParseFloatLiteral(t.Text, t.Pos);
                     return new LiteralExpr { LKind = LiteralKind.Float, FloatValue = v, Pos = t.Pos };
                 }
+                case TokenKind.Double:
+                {
+                    Advance();
+                    double v = ParseFloatLiteral(t.Text, t.Pos);
+                    return new LiteralExpr { LKind = LiteralKind.Double, FloatValue = v, Pos = t.Pos };
+                }
                 case TokenKind.String:
                     Advance();
                     return new LiteralExpr { LKind = LiteralKind.Str, StrValue = (string)t.Value, Pos = t.Pos };

@@ -39,6 +39,10 @@ namespace Dsl.Hosting
                 (ValueReader<float>)((h, v) => v.ToF()),
                 (VariantWriter<float>)((h, x) => Variant.Float(x)));
 
+            Add(TypeRef.Double,
+                (ValueReader<double>)((h, v) => v.ToD()),
+                (VariantWriter<double>)((h, x) => Variant.Double(x)));
+
             Add(TypeRef.Bool,
                 (ValueReader<bool>)((h, v) => v.AsBool),
                 (VariantWriter<bool>)((h, x) => Variant.Bool(x)));

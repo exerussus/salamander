@@ -132,6 +132,10 @@ namespace Dsl.Runtime
             }
         }
 
+        /// <summary>double выводим полным invariant-представлением: тип берут ради
+        /// точности, ручное усечение до 4 знаков (как у float) здесь во вред.</summary>
+        public void AppendDouble(double d) => Append(d.ToString(CultureInfo.InvariantCulture));
+
         private void AppendDigit(int d)
         {
             Ensure(_len + 1);

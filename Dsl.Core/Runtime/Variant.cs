@@ -8,6 +8,7 @@ namespace Dsl.Runtime
         Bool,
         Int,
         Float,
+        Double,  // _lo|_hi = 64 бита double (BitConverter.DoubleToInt64Bits)
         Str,     // _lo = id в StringTable
         Entity,  // _lo = index, _hi = version (хэндл в EntityRegistry)
         Fiber,   // _lo = index, _hi = version (хэндл в FiberPool)
@@ -42,6 +43,11 @@ namespace Dsl.Runtime
         public static Variant Bool(bool b) => new Variant(VariantType.Bool, b ? 1 : 0, 0);
         public static Variant Int(int i) => new Variant(VariantType.Int, i, 0);
         public static Variant Float(float f) => new Variant(VariantType.Float, BitConverter.SingleToInt32Bits(f), 0);
+        public static Variant Double(double d)
+        {
+            long bits = BitConverter.DoubleToInt64Bits(d);
+            return new Variant(VariantType.Double, (int)(bits & 0xFFFFFFFF), (int)(bits >> 32));
+        }
         public static Variant Str(int id) => new Variant(VariantType.Str, id, 0);
         public static Variant Entity(int index, int version) => new Variant(VariantType.Entity, index, version);
         public static Variant Fiber(int index, int version) => new Variant(VariantType.Fiber, index, version);
@@ -54,6 +60,7 @@ namespace Dsl.Runtime
         public bool AsBool => _lo != 0;
         public int AsInt => _lo;
         public float AsFloat => BitConverter.Int32BitsToSingle(_lo);
+        public double AsDouble => BitConverter.Int64BitsToDouble(((long)_hi << 32) | (uint)_lo);
         public int StrId => _lo;
         public int Index => _lo;
         public int Version => _hi;
@@ -66,7 +73,17 @@ namespace Dsl.Runtime
         {
             if (Type == VariantType.Float) return AsFloat;
             if (Type == VariantType.Int) return _lo;
+            if (Type == VariantType.Double) return (float)AsDouble;
             return 0f;
+        }
+
+        /// <summary>Приведение к double для арифметики (int/float расширяются).</summary>
+        public double ToD()
+        {
+            if (Type == VariantType.Double) return AsDouble;
+            if (Type == VariantType.Float) return AsFloat;
+            if (Type == VariantType.Int) return _lo;
+            return 0.0;
         }
 
         /// <summary>"Истинность" для условий: применимо только к Bool (чекер это гарантирует).</summary>
@@ -82,6 +99,7 @@ namespace Dsl.Runtime
                 return false;
             }
             if (Type == VariantType.Float) return AsFloat == other.AsFloat;
+            if (Type == VariantType.Double) return AsDouble == other.AsDouble;
             return _lo == other._lo && _hi == other._hi;
         }
 
@@ -101,6 +119,7 @@ namespace Dsl.Runtime
                 case VariantType.Bool: return AsBool ? "true" : "false";
                 case VariantType.Int: return AsInt.ToString(System.Globalization.CultureInfo.InvariantCulture);
                 case VariantType.Float: return AsFloat.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                case VariantType.Double: return AsDouble.ToString(System.Globalization.CultureInfo.InvariantCulture);
                 case VariantType.Str: return $"str#{StrId}";
                 case VariantType.Entity: return $"entity#{Index}.{Version}";
                 case VariantType.Fiber: return $"fiber#{Index}.{Version}";

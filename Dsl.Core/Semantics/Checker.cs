@@ -755,6 +755,7 @@ namespace Dsl.Semantics
                         case "bool": return TypeRef.Bool;
                         case "int": return TypeRef.Int;
                         case "float": return TypeRef.Float;
+                        case "double": return TypeRef.Double;
                         case "string": return TypeRef.Str;
                         case "Fiber": return TypeRef.Fiber;
                         case "Subscription": return TypeRef.Subscription;
@@ -1219,16 +1220,16 @@ namespace Dsl.Semantics
                 _diag.Error("E0150", $"{what} должно иметь тип bool, получен {t}.", pos);
         }
 
-        private static ConvertExpr Convert(Expr inner) =>
-            new ConvertExpr { Inner = inner, Type = TypeRef.Float, Pos = inner.Pos };
+        private static ConvertExpr Convert(Expr inner, TypeRef to) =>
+            new ConvertExpr { Inner = inner, Type = to, Pos = inner.Pos };
 
         /// <summary>Проверка присваиваемости + вставка int→float при необходимости.</summary>
         private void CoerceAssign(ref Expr value, TypeRef target, TypeRef valueT, SourcePos pos, string what)
         {
             if (target == null || valueT == null || target.IsError || valueT.IsError) return;
-            if (target.Kind == TypeKind.Float && valueT.Kind == TypeKind.Int)
+            if (target.IsNumeric && valueT.IsNumeric && target.NumericRank > valueT.NumericRank)
             {
-                value = Convert(value);
+                value = Convert(value, target); // расширение вверх: int→float→double
                 return;
             }
             if (!target.AcceptsValueOf(valueT))
@@ -1274,6 +1275,7 @@ namespace Dsl.Semantics
                 case LiteralKind.Str: return lit.Type = TypeRef.Str;
                 case LiteralKind.Null: return lit.Type = TypeRef.Nil;
                 case LiteralKind.Float: return lit.Type = TypeRef.Float;
+                case LiteralKind.Double: return lit.Type = TypeRef.Double;
                 case LiteralKind.Int:
                     if (lit.IntValue < int.MinValue || lit.IntValue > int.MaxValue)
                         _diag.Error("E0152", "Целочисленная константа вне диапазона int.", lit.Pos);
@@ -1290,7 +1292,7 @@ namespace Dsl.Semantics
                 var t = CheckExpr(ref p);
                 ip.Parts[i] = p;
                 bool ok = t.Kind == TypeKind.Str || t.Kind == TypeKind.Int || t.Kind == TypeKind.Float
-                          || t.Kind == TypeKind.Bool || t.Kind == TypeKind.Enum || t.IsError;
+                          || t.Kind == TypeKind.Double || t.Kind == TypeKind.Bool || t.Kind == TypeKind.Enum || t.IsError;
                 if (!ok)
                     _diag.Error("E0153", $"В интерполяцию нельзя подставить значение типа {t}.", p.Pos);
             }
@@ -1689,12 +1691,12 @@ namespace Dsl.Semantics
                         _diag.Error("E0176", $"Арифметика неприменима к {lt} и {rt}.", b.Pos);
                         return b.Type = TypeRef.Error;
                     }
-                    if (lt.Kind == TypeKind.Int && rt.Kind == TypeKind.Int)
-                        return b.Type = TypeRef.Int;
-
-                    if (b.Left.Type != null && b.Left.Type.Kind == TypeKind.Int) b.Left = Convert(b.Left);
-                    if (b.Right.Type != null && b.Right.Type.Kind == TypeKind.Int) b.Right = Convert(b.Right);
-                    return b.Type = TypeRef.Float;
+                    // результат — по наибольшему числовому рангу; операнды ниже расширяются
+                    var res = lt.NumericRank >= rt.NumericRank ? lt : rt;
+                    if (res.Kind == TypeKind.Int) return b.Type = TypeRef.Int;
+                    if (lt.NumericRank < res.NumericRank) b.Left = Convert(b.Left, res);
+                    if (rt.NumericRank < res.NumericRank) b.Right = Convert(b.Right, res);
+                    return b.Type = res;
                 }
 
                 case TokenKind.Percent:
@@ -1710,7 +1712,7 @@ namespace Dsl.Semantics
         private void CheckConcatOperand(TypeRef t, SourcePos pos)
         {
             bool ok = t.Kind == TypeKind.Str || t.Kind == TypeKind.Int || t.Kind == TypeKind.Float
-                      || t.Kind == TypeKind.Bool || t.Kind == TypeKind.Enum || t.IsError;
+                      || t.Kind == TypeKind.Double || t.Kind == TypeKind.Bool || t.Kind == TypeKind.Enum || t.IsError;
             if (!ok)
                 _diag.Error("E0178", $"Значение типа {t} нельзя вклеить в строку.", pos);
         }

@@ -48,6 +48,7 @@ namespace Dsl.Codegen
     {
         public string Name;
         public int EventCount;
+        public string[] EventNames = System.Array.Empty<string>();          // localEventId -> имя
         public string[] Ids = System.Array.Empty<string>();                 // порядок объявления
         public System.Collections.Generic.Dictionary<string, int> IdIndex; // id -> плотный индекс
         public ArchHandler[][] Handlers = System.Array.Empty<ArchHandler[]>();
@@ -150,6 +151,7 @@ namespace Dsl.Codegen
             foreach (var k in ArchetypeKinds)
             {
                 MixStr(k.Name); Mix(k.EventCount); Mix(k.Ids.Length);
+                foreach (var en in k.EventNames) MixStr(en);
                 foreach (var id in k.Ids) MixStr(id);
                 foreach (var row in k.Handlers)
                     foreach (var ah in row) { Mix(ah.Func); Mix(ah.ModuleIndex); }

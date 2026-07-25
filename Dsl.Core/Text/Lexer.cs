@@ -151,8 +151,15 @@ namespace Dsl.Text
                 while (!End && IsDigit(Cur)) Advance();
             }
 
+            // суффикс типа: d — double, f — float (как в C#); без суффикса дробное = float
+            var kind = isFloat ? TokenKind.Float : TokenKind.Int;
+            if (Cur == 'd' || Cur == 'D') { Advance(); kind = TokenKind.Double; }
+            else if (Cur == 'f' || Cur == 'F') { Advance(); kind = TokenKind.Float; }
+
             string text = _src.Substring(s, _pos - s);
-            return new Token(isFloat ? TokenKind.Float : TokenKind.Int, text, null, start);
+            if (kind == TokenKind.Double || kind == TokenKind.Float)
+                text = text.TrimEnd('d', 'D', 'f', 'F'); // значение без суффикса
+            return new Token(kind, text, null, start);
         }
 
         private Token LexString(SourcePos start, bool interpolated)

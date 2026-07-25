@@ -321,6 +321,16 @@ listener Burn  { event OnUnitDamageTaken(Unit t, Unit s, float a, DamageType d);
   не входит) → Window → General → Test Runner → вкладка EditMode → Run All.
   Требуется пакет com.unity.test-framework (обычно установлен по умолчанию).
 
+## Интроспекция: обойти всё, что описано в DSL
+
+Хост объявляет виды и их события (шаблон для заполнения), DSL создаёт сущности
+и реализует события. На старте игра может обойти всё описанное, не зная заранее
+ни имён видов, ни id: `GetArchetypeKinds` (все виды), `GetArchetypeIds(kind)`
+(все id вида), `GetImplementedEvents(kind, id)` (что реально заполнено), плюс
+`GetArchetypeEvents(kind)` (полный список событий вида — сам шаблон) и
+`ImplementsEvent(kind, id, name)`. Контракт «обязательно реализовать» — сверка
+реализованного с требуемым набором и отказ загрузки матча при недостаче.
+
 ## Граница: движок НЕ сборщик
 
 Рантайм Salamander сам ничего не ищет и не собирает — наборы модулей ему отдаёт
@@ -387,7 +397,7 @@ listener Burn  { event OnUnitDamageTaken(Unit t, Unit s, float a, DamageType d);
 
 ## Возможности (сводка)
 
-- **Типизация**: int/float/bool/string, enum (свои и хостовые), сущности хоста,
+- **Типизация**: int/float/double/bool/string, enum (свои и хостовые), сущности хоста,
   `T[]`, `List<T>`, `Map<K,V>`, `Fiber`, `Subscription`; интерполяция `$"hp {x}"`.
 - **Декларации**: статичный `class`, `trigger` (события + `action Do`),
   `listener` (подписка на сущность), блоки-архетипы (`spell id { ... }`, виды
