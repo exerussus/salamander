@@ -390,6 +390,7 @@ namespace Dsl.Codegen
 
                 case IfStmt i: EmitIf(i); break;
                 case WhileStmt w: EmitWhile(w); break;
+                case LoopStmt lp: EmitLoop(lp); break;
                 case ForRangeStmt fr: EmitForRange(fr); break;
                 case ForEachStmt fe: EmitForEach(fe); break;
 
@@ -414,6 +415,10 @@ namespace Dsl.Codegen
                 case WaitStmt w:
                     EmitExpr(w.Seconds);
                     Emit(OpCode.Wait);
+                    break;
+
+                case YieldStmt _:
+                    Emit(OpCode.YieldTick); // уступить кадр, продолжить со следующей строки
                     break;
 
                 case WaitUntilStmt wu:
@@ -502,6 +507,28 @@ namespace Dsl.Codegen
             Patch(exit, HereLabel);
             foreach (var br in ctx.Breaks) Patch(br, HereLabel);
             foreach (var co in ctx.Continues) Patch(co, start);
+        }
+
+        // loop(cond) = while(cond) с безусловным yield в конце КАЖДОЙ итерации.
+        // continue прыгает на этот yield (тоже отдаёт кадр — иначе continue стал
+        // бы лазейкой для спина); break/return выходят сразу, без лишнего кадра.
+        private void EmitLoop(LoopStmt lp)
+        {
+            int start = HereLabel;
+            EmitExpr(lp.Cond);
+            int exit = EmitJump(OpCode.JumpIfFalse);
+
+            var ctx = new LoopCtx();
+            _loops.Add(ctx);
+            EmitBlock(lp.Body);
+            _loops.RemoveAt(_loops.Count - 1);
+
+            int yieldPoint = HereLabel;      // continue приходит СЮДА — на уступку кадра
+            Emit(OpCode.YieldTick);
+            Emit(OpCode.Jump, start);
+            Patch(exit, HereLabel);
+            foreach (var br in ctx.Breaks) Patch(br, HereLabel);
+            foreach (var co in ctx.Continues) Patch(co, yieldPoint);
         }
 
         private void EmitForRange(ForRangeStmt fr)

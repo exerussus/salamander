@@ -1007,6 +1007,33 @@ namespace Dsl.Semantics
                     break;
                 }
 
+                case LoopStmt lp:
+                {
+                    // loop отдаёт кадр на каждой итерации → это кооперативная точка,
+                    // как wait: запрещён там же, где запрещён wait
+                    if (_module != null && _module.Synchronous)
+                        _diag.Error("E0170", "'loop' запрещён в синхронном модуле (execution: synchronous) — " +
+                                             "он уступает кадр; используйте while.", lp.Pos);
+                    if (_noWaitHandler)
+                        _diag.Error("E0178", "'loop' запрещён в OnUnsubscribe — подписка уничтожается немедленно.", lp.Pos);
+                    var t = CheckExpr(ref lp.Cond);
+                    RequireBool(t, lp.Cond.Pos, "условие loop");
+                    _loopDepth++;
+                    CheckBlock(lp.Body);
+                    _loopDepth--;
+                    break;
+                }
+
+                case YieldStmt y:
+                {
+                    if (_module != null && _module.Synchronous)
+                        _diag.Error("E0170", "'yield' запрещён в синхронном модуле (execution: synchronous) — " +
+                                             "он уступает кадр.", y.Pos);
+                    if (_noWaitHandler)
+                        _diag.Error("E0178", "'yield' запрещён в OnUnsubscribe — подписка уничтожается немедленно.", y.Pos);
+                    break;
+                }
+
                 case ForRangeStmt fr:
                 {
                     var ft = CheckExpr(ref fr.From);

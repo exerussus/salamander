@@ -19,9 +19,9 @@ namespace Dsl.Text
         // ключевые слова
         KwClass, KwTrigger, KwDisabled, KwEnum, KwListener, KwSelf, KwPass,
         KwFunc, KwAction, KwEvent, KwConst, KwVar,
-        KwIf, KwElse, KwWhile, KwFor, KwIn,
+        KwIf, KwElse, KwWhile, KwFor, KwIn, KwLoop,
         KwBreak, KwContinue, KwReturn,
-        KwWait, KwUntil, KwSpawn, KwNew,
+        KwWait, KwUntil, KwSpawn, KwNew, KwYield,
         KwTrue, KwFalse, KwNull,
 
         // разделители

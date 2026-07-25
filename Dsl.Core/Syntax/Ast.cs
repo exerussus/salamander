@@ -175,6 +175,14 @@ namespace Dsl.Syntax
         public Block Body;
     }
 
+    /// <summary>Кооперативный цикл: как while, но каждая итерация отдаёт кадр
+    /// (yield в конце тела). Спин невозможен by design.</summary>
+    public sealed class LoopStmt : Stmt
+    {
+        public Expr Cond;
+        public Block Body;
+    }
+
     public sealed class ForRangeStmt : Stmt
     {
         public string Var;
@@ -219,6 +227,9 @@ namespace Dsl.Syntax
     {
         public Expr Cond;
     }
+
+    /// <summary>yield; — уступить кадр и продолжить со следующей строки.</summary>
+    public sealed class YieldStmt : Stmt { }
 
     // ===== выражения ========================================================
 

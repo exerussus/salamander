@@ -197,11 +197,11 @@ namespace Dsl.Tests
         {
             var r = Compile(Mod("game", @"
                 spell fireball {
-                    event OnCast(Unit c, Unit t) { }
+                    event OnCast(Unit c, float p) { }
                     event OnObtain(Unit u) { }
                 }
                 spell icebolt {
-                    event OnCast(Unit c, Unit t) { }
+                    event OnCast(Unit c, float p) { }
                 }"));
             var engine = Load(r);
 

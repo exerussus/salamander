@@ -343,11 +343,18 @@ namespace Dsl.Syntax
                 case TokenKind.KwVar: return ParseVarDecl();
                 case TokenKind.KwIf: return ParseIf();
                 case TokenKind.KwWhile: return ParseWhile();
+                case TokenKind.KwLoop: return ParseLoop();
                 case TokenKind.KwFor: return ParseFor();
                 case TokenKind.KwReturn: return ParseReturn();
                 case TokenKind.KwBreak: { var p = Advance().Pos; Expect(TokenKind.Semicolon, "E0030", "';'"); return new BreakStmt { Pos = p }; }
                 case TokenKind.KwContinue: { var p = Advance().Pos; Expect(TokenKind.Semicolon, "E0031", "';'"); return new ContinueStmt { Pos = p }; }
                 case TokenKind.KwWait: return ParseWait();
+                case TokenKind.KwYield:
+                {
+                    var p = Advance().Pos;
+                    Expect(TokenKind.Semicolon, "E0030", "';'");
+                    return new YieldStmt { Pos = p };
+                }
                 case TokenKind.KwPass:
                 {
                     var p = Advance().Pos;
@@ -391,6 +398,16 @@ namespace Dsl.Syntax
             Expect(TokenKind.RParen, "E0038", "')'");
             var body = ParseBlock();
             return new WhileStmt { Cond = cond, Body = body, Pos = pos };
+        }
+
+        private Stmt ParseLoop()
+        {
+            var pos = Advance().Pos;
+            Expect(TokenKind.LParen, "E0037", "'('");
+            var cond = ParseExpr();
+            Expect(TokenKind.RParen, "E0038", "')'");
+            var body = ParseBlock();
+            return new LoopStmt { Cond = cond, Body = body, Pos = pos };
         }
 
         private Stmt ParseFor()

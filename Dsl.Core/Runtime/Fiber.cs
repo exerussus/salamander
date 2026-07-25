@@ -42,6 +42,7 @@ namespace Dsl.Runtime
         public int TriggerId = -1;        // триггер-владелец (для Engine.KillAll)
         public bool KillRequested;        // самоубийство через Engine.Kill(self)
         public int BudgetHits;            // сколько тиков подряд файбер упирался в бюджет
+        public long InstrSinceYield;      // инструкций с последней КООПЕРАТИВНОЙ точки (wait/yield); ловит спин
 
         // снапшоты активных for-in (map/list/array): цикл видит коллекцию на
         // момент входа, менять её в теле безопасно. Буферы принадлежат файберу
@@ -82,6 +83,7 @@ namespace Dsl.Runtime
             TriggerId = -1;
             KillRequested = false;
             BudgetHits = 0;
+            InstrSinceYield = 0;
             AttachIndex = -1;
             AttachFields = null;
             AttachSelf = Variant.Nil;

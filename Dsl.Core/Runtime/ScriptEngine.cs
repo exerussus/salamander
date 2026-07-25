@@ -73,6 +73,17 @@ namespace Dsl.Runtime
         /// <summary>Для CarryOverThenKill: сколько тиков подряд у бюджета → kill.</summary>
         public int BudgetKillThreshold = 300;
 
+        /// <summary>
+        /// Порог «залипшего цикла»: если файбер исполнил столько инструкций, НЕ
+        /// дойдя ни до одной кооперативной точки (wait/wait until/spawn-yield),
+        /// он считается бесконечным циклом без ожидания и убивается немедленно —
+        /// не дожидаясь BudgetKillThreshold тиков и не вешая кадр. Это ловит
+        /// while(true) без эффективного wait (в т.ч. когда wait until мгновенно
+        /// истинно). По умолчанию — один полный per-run cap: честная тяжёлая
+        /// работа успевает приостановиться, спин — нет.
+        /// </summary>
+        public long StuckInstructionLimit = 200_000;
+
         /// <summary>Детальная разбивка инструкций по триггерам. В релизе держите
         /// off (горячий путь платит только за общий счётчик тика), в редакторе on.</summary>
         public bool EnableProfiling = false;
@@ -526,6 +537,7 @@ namespace Dsl.Runtime
             int executed = _vm.LastInstructionCount;
             _tickInstrLeft -= executed;
             _tick.InstructionsThisTick += executed;
+            f.InstrSinceYield += executed; // сбросится на кооперативной точке (Waited/Yielded)
             if (EnableProfiling && (uint)f.TriggerId < (uint)_trigStats.Length)
             {
                 _trigStats[f.TriggerId].InstructionsThisTick += executed;
@@ -552,6 +564,7 @@ namespace Dsl.Runtime
 
                 case RunResult.Waited:
                     f.BudgetHits = 0; // кооперативная приостановка — не вечный цикл
+                    f.InstrSinceYield = 0;
                     f.State = FiberState.Sleeping;
                     f.WakeTime = _time + Math.Max(0f, f.PendingWaitSeconds);
                     PushTimer(f.WakeTime, FiberPool.Pack(f));
@@ -559,6 +572,7 @@ namespace Dsl.Runtime
 
                 case RunResult.Yielded:
                     f.BudgetHits = 0;
+                    f.InstrSinceYield = 0;
                     f.State = FiberState.YieldedTick;
                     _nextTick.Add(FiberPool.Pack(f));
                     break;
@@ -579,7 +593,13 @@ namespace Dsl.Runtime
         {
             f.BudgetHits++;
 
-            bool kill = Policy == BudgetPolicy.KillImmediately
+            // залипший цикл: много инструкций подряд БЕЗ единой кооперативной
+            // точки — убиваем немедленно, не дожидаясь BudgetKillThreshold тиков
+            // (иначе такой файбер жёг бы весь бюджет каждого кадра, вешая сервер)
+            bool stuck = f.InstrSinceYield >= StuckInstructionLimit;
+
+            bool kill = stuck
+                     || Policy == BudgetPolicy.KillImmediately
                      || (Policy == BudgetPolicy.CarryOverThenKill && f.BudgetHits >= BudgetKillThreshold);
 
             if (kill)
@@ -592,8 +612,13 @@ namespace Dsl.Runtime
                 }
                 _tick.FibersKilledThisTick++;
                 _fibers.Return(f);
-                OnError?.Invoke($"Файбер убит: превышен бюджет инструкций {f.BudgetHits} тиков подряд " +
-                                "(похоже на бесконечный цикл без wait).");
+                if (stuck)
+                    OnError?.Invoke($"Файбер убит: цикл без ожидания — {f.InstrSinceYield} инструкций " +
+                                    "без единого wait/wait until (бесконечный while без эффективной паузы). " +
+                                    "Добавьте wait в тело цикла или убедитесь, что условие wait until может стать ложным.");
+                else
+                    OnError?.Invoke($"Файбер убит: превышен бюджет инструкций {f.BudgetHits} тиков подряд " +
+                                    "(похоже на бесконечный цикл без wait).");
                 OnBudgetExceeded?.Invoke(trig);
             }
             else

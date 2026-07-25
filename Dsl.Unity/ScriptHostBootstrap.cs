@@ -52,6 +52,15 @@ namespace Dsl.Unity
         [Tooltip("Версия скриптового API игры; несовпадение в манифесте модуля = ошибка загрузки")]
         [SerializeField] private int _apiVersion = 1;
 
+        [Header("Авто-старт")]
+        [Tooltip("Поднять DSL в Awake автоматически. Выключите, если хост собирает реестр по фазам " +
+                 "(регистрирует фичи/виды) и запускает движок вручную через RunDsl().")]
+        [SerializeField] private bool _autoRun = true;
+
+        [Tooltip("Тикать движок в Update автоматически. Выключите, если хост гоняет тик сам " +
+                 "(свой игровой луп, фиксированный шаг, сетевой такт) — тогда зовите UpdateDsl() вручную.")]
+        [SerializeField] private bool _autoUpdate = true;
+
         [Header("Горячая перезагрузка")]
         [SerializeField] private bool _watchForChanges = true;
         [Tooltip("Пауза после последнего изменения файла перед перекомпиляцией, сек")]
@@ -137,6 +146,11 @@ namespace Dsl.Unity
 
         protected virtual void Awake()
         {
+            if (_autoRun) RunDsl();
+        }
+
+        public void RunDsl()
+        {
             _registry = BuildRegistry(out _updateEventId);
             ExportApiManifestIfNeeded();
 
@@ -194,7 +208,13 @@ namespace Dsl.Unity
         }
 #endif
 
-        protected virtual void Update()
+        /// <summary>
+        /// Один шаг движка: разгребает отложенный хот-релоад (штампует время на
+        /// главном потоке), тикает файберы и поднимает событие Update. Публичный,
+        /// чтобы хост мог тикать сам (свой луп, фиксированный шаг, сетевой такт),
+        /// выключив _autoUpdate.
+        /// </summary>
+        public void UpdateDsl()
         {
             // событие вотчера пришло из чужого потока — штампуем время здесь, на главном
             if (_pendingDirty)
@@ -217,6 +237,12 @@ namespace Dsl.Unity
                    .AddFloat((float)_engine.Time)
                    .AddFloat(dt)
                    .Commit();
+        }
+
+        protected virtual void Update()
+        {
+            if (!_autoUpdate) return;
+            UpdateDsl();
         }
 
         protected virtual void OnDestroy()
