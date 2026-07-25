@@ -1112,7 +1112,7 @@ namespace Dsl.Semantics
                     if (!t.IsNumeric && !t.IsError)
                         _diag.Error("E0142", "'wait' ожидает число секунд.", w.Seconds.Pos);
                     if (t.Kind == TypeKind.Int)
-                        w.Seconds = Convert(w.Seconds); // секунды всегда float
+                        w.Seconds = Convert(w.Seconds, TypeRef.Float); // секунды: int→float (float/double проходят как есть)
                     break;
                 }
 
@@ -1606,17 +1606,19 @@ namespace Dsl.Semantics
                 var t = CheckExpr(ref e);
                 al.Elems[i] = e;
 
-                if (elemT.Kind == TypeKind.Int && t.Kind == TypeKind.Float) elemT = TypeRef.Float;
+                // числовой элемент шире — поднимаем тип массива по рангу (int→float→double)
+                if (elemT.IsNumeric && t.IsNumeric && t.NumericRank > elemT.NumericRank) elemT = t;
                 else if (!elemT.AcceptsValueOf(t) && !t.IsError)
                     _diag.Error("E0172", $"Элемент #{i + 1} имеет тип {t}, ожидался {elemT}.", e.Pos);
             }
 
-            // при элементном типе float — подтягиваем int-элементы
-            if (elemT.Kind == TypeKind.Float)
+            // числовой элементный тип — подтягиваем более узкие числовые элементы вверх
+            if (elemT.IsNumeric && elemT.NumericRank > 0)
             {
                 for (int i = 0; i < al.Elems.Count; i++)
-                    if (al.Elems[i].Type != null && al.Elems[i].Type.Kind == TypeKind.Int)
-                        al.Elems[i] = Convert(al.Elems[i]);
+                    if (al.Elems[i].Type != null && al.Elems[i].Type.IsNumeric
+                        && al.Elems[i].Type.NumericRank < elemT.NumericRank)
+                        al.Elems[i] = Convert(al.Elems[i], elemT);
             }
 
             al.ElemTypeRef = elemT;
