@@ -1,7 +1,10 @@
 {
     "name": "Dsl.Unity.Editor",
     "rootNamespace": "Dsl.Unity.Editor",
-    "references": [],
+    "references": [
+        "Dsl.Core",
+        "Dsl.Unity"
+    ],
     "includePlatforms": [
         "Editor"
     ],
@@ -9,7 +12,7 @@
     "allowUnsafeCode": false,
     "overrideReferences": false,
     "precompiledReferences": [],
-    "autoReferenced": false,
+    "autoReferenced": true,
     "defineConstraints": [],
     "versionDefines": [],
     "noEngineReferences": false

@@ -26,14 +26,21 @@ namespace Dsl.Unity
     {
         [Header("Модули")]
         [Tooltip("Подпапка StreamingAssets: сюда экспортируется salamander-api.json для тулинга " +
-                 "(чекер/LSP); движок отсюда НИЧЕГО не грузит сам")]
+                 "(чекер/LSP). Если включён 'Загружать из папки' — отсюда же берутся коровые модули игры")]
         [SerializeField] private string _modsFolder = "Scripts";
 
+        [Tooltip("Коровая загрузка: сканировать папку модулей (StreamingAssets/<modsFolder>) и грузить всё, " +
+                 "что там лежит (каждая подпапка с module.json — модуль). Базовые скрипты игры. " +
+                 "НЕ мешает внешнему SourceProvider и вшитым модулям — все три источника складываются.")]
+        [SerializeField] private bool _loadFromModsFolder = true;
+
+        [Tooltip("Следить за папкой модулей для хот-релоада (только когда включена загрузка из папки)")]
+        [SerializeField] private bool _watchModsFolder = true;
+
         /// <summary>
-        /// Источник модулей — СБОРЩИК ИГРЫ. Движок сам ничего не ищет и не
-        /// собирает: назначьте провайдер до Awake (или переопределите
-        /// LoadModules). Сборщик может использовать утилиты
-        /// UnitySourceProvider/ModuleLoader — но зовёт их он, не движок.
+        /// Внешний источник модулей от СБОРЩИКА ИГРЫ (моды, Addressables, сеть).
+        /// Складывается с коровой загрузкой из папки и вшитыми модулями — не
+        /// заменяет их. Назначьте до Awake (или переопределите LoadModules).
         /// </summary>
         public System.Func<System.Collections.Generic.List<ModuleSourceSet>> SourceProvider;
 
@@ -80,25 +87,33 @@ namespace Dsl.Unity
         protected string ModsPath => Path.Combine(Application.streamingAssetsPath, _modsFolder);
 
         /// <summary>
-        /// Собирает модули для компиляции. По умолчанию: общая папка (если
-        /// включена) + вшитые в сцену модули. Переопределите, чтобы грузить
-        /// скрипты откуда угодно (Addressables, сеть, база данных карты).
+        /// Собирает модули для компиляции из ТРЁХ складывающихся источников:
+        /// (1) коровая папка модулей игры — StreamingAssets/&lt;modsFolder&gt;, под
+        /// флагом _loadFromModsFolder; (2) внешний SourceProvider сборщика (моды,
+        /// Addressables, сеть); (3) вшитые в сцену _embeddedModules (скрипты
+        /// карты). Ни один не исключает другой. Переопределите, чтобы полностью
+        /// заменить логику сбора.
         ///
-        /// Привязка к карте (как в W3/Arma) достигается так: положите скрипты
-        /// карты в _embeddedModules этого компонента в нужной сцене. Ассеты попадут
-        /// в билд только со своей сценой, а
-        /// движок живёт на этом GameObject — при выгрузке сцены он уничтожается
-        /// вместе со всеми файберами. Никакого общего/статического состояния
-        /// между картами нет: каждый бутстрап держит свой ScriptEngine.
+        /// Привязка к карте (как в W3/Arma): положите скрипты карты в
+        /// _embeddedModules этого компонента в нужной сцене. Ассеты попадут в
+        /// билд только со своей сценой, а движок живёт на этом GameObject — при
+        /// выгрузке сцены он уничтожается вместе со всеми файберами. Общего или
+        /// статического состояния между картами нет: каждый бутстрап держит свой
+        /// ScriptEngine.
         /// </summary>
         protected virtual List<ModuleSourceSet> LoadModules()
         {
             var modules = new List<ModuleSourceSet>();
 
-            // единственный внешний источник — сборщик игры
+            // 1) коровая загрузка: папка модулей игры (под флагом)
+            if (_loadFromModsFolder && Directory.Exists(ModsPath))
+                modules.AddRange(UnitySourceProvider.LoadFromFolder(ModsPath));
+
+            // 2) внешний источник сборщика (моды, Addressables, сеть) — складывается
             var provided = SourceProvider?.Invoke();
             if (provided != null) modules.AddRange(provided);
 
+            // 3) вшитые в сцену модули (скрипты карты)
             if (_embeddedModules != null)
             {
                 foreach (var em in _embeddedModules)
@@ -132,9 +147,15 @@ namespace Dsl.Unity
 
             CompileAndLoad();
 
-            // хот-релоад: за источниками следит тот, кто их дал — сборщик
-            // включает слежку явно (WatchPath = папка с исходниками)
-            if (_watchForChanges && WatchPath != null) StartWatcher();
+            // хот-релоад: следим за коровой папкой (если грузим из неё) и/или за
+            // путём, назначенным сборщиком. Первый источник, у которого есть путь.
+            if (_watchForChanges)
+            {
+                string watch = (_loadFromModsFolder && _watchModsFolder && Directory.Exists(ModsPath))
+                    ? ModsPath
+                    : WatchPath;
+                if (watch != null) StartWatcher(watch);
+            }
         }
 
         /// <summary>
@@ -254,13 +275,13 @@ namespace Dsl.Unity
             }
         }
 
-        /// <summary>Папка для слежки хот-релоада; null — не следить. Назначает сборщик.</summary>
+        /// <summary>Папка для слежки хот-релоада, назначенная сборщиком (в дополнение к коровой папке).</summary>
         public string WatchPath;
 
-        private void StartWatcher()
+        private void StartWatcher(string path)
         {
-            if (WatchPath == null || !Directory.Exists(WatchPath)) return;
-            _watcher = new FileSystemWatcher(WatchPath)
+            if (path == null || !Directory.Exists(path)) return;
+            _watcher = new FileSystemWatcher(path)
             {
                 IncludeSubdirectories = true,
                 NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName,
