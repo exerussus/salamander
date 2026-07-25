@@ -53,13 +53,13 @@ namespace Dsl.Tools.Lsp
         public static readonly string[] Keywords =
         {
             "trigger", "class", "enum", "listener", "self", "pass", "disabled", "func", "action", "event",
-            "const", "var", "if", "else", "while", "for", "in", "break", "continue", "return",
-            "wait", "until", "spawn", "new", "true", "false", "null",
+            "const", "var", "if", "else", "while", "loop", "for", "in", "break", "continue", "return",
+            "wait", "until", "yield", "spawn", "new", "true", "false", "null",
         };
 
         public static readonly string[] Types =
         {
-            "int", "float", "bool", "string", "void", "Fiber", "Subscription", "List", "Map",
+            "int", "float", "double", "bool", "string", "void", "Fiber", "Subscription", "List", "Map",
         };
     }
 }

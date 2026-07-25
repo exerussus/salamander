@@ -212,6 +212,21 @@ namespace Dsl.Tools.Lsp
             }
 
             string apiPath = Path.Combine(_root, "salamander-api.json");
+            // манифест обычно экспортируется в StreamingAssets/<modsFolder>, а не в
+            // корень воркспейса — если в корне нет, ищем ближайший в подпапках
+            if (!File.Exists(apiPath))
+            {
+                try
+                {
+                    var found = Directory.GetFiles(_root, "salamander-api.json", SearchOption.AllDirectories);
+                    if (found.Length > 0)
+                    {
+                        Array.Sort(found, (a, b) => a.Length - b.Length); // ближе к корню — короче путь
+                        apiPath = found[0];
+                    }
+                }
+                catch { /* нет доступа к обходу — останемся на корневом пути */ }
+            }
             Semantics.HostRegistry registry;
             int apiVersion = 1;
             _api = null;
