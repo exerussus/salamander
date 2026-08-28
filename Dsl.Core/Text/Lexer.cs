@@ -120,9 +120,14 @@ namespace Dsl.Text
                 // /* ... */ блочный комментарий
                 if (c == '/' && Peek() == '*')
                 {
+                    SourcePos open = Here;
                     Advance(); Advance();
                     while (!End && !(Cur == '*' && Peek() == '/')) Advance();
                     if (!End) { Advance(); Advance(); }
+                    else
+                        // молча проглотить остаток файла — худший из вариантов:
+                        // код «исчезает», а компилятор не жалуется
+                        _diag?.Error("E0218", "Незакрытый блочный комментарий '/*' — остаток файла не разобран.", open);
                     continue;
                 }
                 break;
@@ -178,8 +183,9 @@ namespace Dsl.Text
 
                 if (c == '\\')
                 {
+                    SourcePos esc = Here;
                     Advance();
-                    lit.Append(ReadEscape());
+                    lit.Append(ReadEscape(esc));
                     continue;
                 }
 
@@ -230,7 +236,7 @@ namespace Dsl.Text
             return new Token(TokenKind.String, "", lit.ToString(), start);
         }
 
-        private string ReadEscape()
+        private string ReadEscape(SourcePos at)
         {
             char e = Cur;
             Advance();
@@ -243,7 +249,13 @@ namespace Dsl.Text
                 case '\\': return "\\";
                 case '{': return "{";
                 case '}': return "}";
-                default: return e.ToString();
+                default:
+                    // неизвестный escape молча превращался в сам символ, поэтому
+                    // "C:\data" читалось как "C:data" — обратный слэш исчезал без следа
+                    _diag?.Warning("W0100",
+                        $"Неизвестная escape-последовательность '\\{e}' — взята как символ '{e}'. " +
+                        "Обратный слэш пишется как '\\\\'.", at);
+                    return e.ToString();
             }
         }
 

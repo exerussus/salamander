@@ -39,12 +39,31 @@ namespace Dsl.Compilation
                 return null;
             }
 
+            if (manifest == null)
+            {
+                // JsonConvert возвращает null на содержимом "null" — без этой
+                // проверки следующий же manifest.Sources даёт NullReferenceException
+                onError?.Invoke(manifestPath, "манифест пуст или содержит null.");
+                return null;
+            }
+
             var set = new ModuleSourceSet { Manifest = manifest };
-            string moduleName = manifest?.Name ?? Path.GetFileName(dir);
+            string moduleName = manifest.Name ?? Path.GetFileName(dir);
+            string moduleRoot = Path.GetFullPath(dir);
 
             foreach (var rel in manifest.Sources ?? Array.Empty<string>())
             {
-                string full = Path.Combine(dir, rel);
+                // sources приходит из module.json, то есть от автора мода. Без
+                // проверки Path.Combine принимает и '..', и АБСОЛЮТНЫЙ путь
+                // (последний просто отбрасывает dir) — модуль читает любой файл
+                // на диске, а его содержимое утекает наружу через текст диагностик
+                // (лексер и парсер цитируют исходник дословно).
+                if (!TryResolveSource(moduleRoot, rel, out string full))
+                {
+                    onError?.Invoke(manifestPath,
+                        $"модуль '{moduleName}': путь '{rel}' ведёт за пределы папки модуля — отклонён.");
+                    continue;
+                }
                 if (!File.Exists(full))
                 {
                     onError?.Invoke(manifestPath, $"модуль '{moduleName}': файл из манифеста не найден: {rel}");
@@ -53,9 +72,32 @@ namespace Dsl.Compilation
                 string logical = $"{moduleName}/{rel.Replace('\\', '/')}";
                 set.Files.Add((logical, File.ReadAllText(full)));
                 if (logicalToAbsolute != null)
-                    logicalToAbsolute[logical] = Path.GetFullPath(full);
+                    logicalToAbsolute[logical] = full;
             }
             return set;
+        }
+
+        /// <summary>
+        /// Путь исходника из манифеста → абсолютный путь ВНУТРИ папки модуля.
+        /// false, если путь пустой, абсолютный, или после нормализации уходит наружу.
+        /// </summary>
+        private static bool TryResolveSource(string moduleRoot, string rel, out string full)
+        {
+            full = null;
+            if (string.IsNullOrWhiteSpace(rel)) return false;
+            if (Path.IsPathRooted(rel)) return false;
+
+            string combined;
+            try { combined = Path.GetFullPath(Path.Combine(moduleRoot, rel)); }
+            catch { return false; } // недопустимые символы, слишком длинный путь и т.п.
+
+            string prefix = moduleRoot.EndsWith(Path.DirectorySeparatorChar.ToString())
+                ? moduleRoot
+                : moduleRoot + Path.DirectorySeparatorChar;
+            if (!combined.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return false;
+
+            full = combined;
+            return true;
         }
 
         /// <summary>

@@ -216,6 +216,13 @@ namespace Dsl.Unity
         /// </summary>
         public void UpdateDsl()
         {
+            // Проверка авторитета идёт ПЕРВОЙ: скрипты исполняются только на
+            // авторитете, значит и перекомпилировать их клиенту незачем — иначе он
+            // платит за компиляцию и прогоняет <init> ради программы, которую
+            // никогда не тикает. Флаги вотчера при этом не теряются: если авторитет
+            // появится позже, релоад произойдёт тогда.
+            if (!IsAuthority || _engine == null) return;
+
             // событие вотчера пришло из чужого потока — штампуем время здесь, на главном
             if (_pendingDirty)
             {
@@ -229,7 +236,7 @@ namespace Dsl.Unity
                 CompileAndLoad(); // при ошибке старая программа продолжает работать
             }
 
-            if (!IsAuthority || _engine == null || !_engine.IsLoaded) return;
+            if (!_engine.IsLoaded) return;
 
             float dt = UnityEngine.Time.deltaTime;
             _engine.Tick(dt);
@@ -306,7 +313,9 @@ namespace Dsl.Unity
 
         private void StartWatcher(string path)
         {
+#if UNITY_EDITOR || UNITY_STANDALONE
             if (path == null || !Directory.Exists(path)) return;
+            _watcher?.Dispose(); // повторный RunDsl() иначе оставлял висеть прежний вотчер
             _watcher = new FileSystemWatcher(path)
             {
                 IncludeSubdirectories = true,
@@ -318,6 +327,12 @@ namespace Dsl.Unity
             _watcher.Deleted += OnFsEvent;
             _watcher.Renamed += (_, __) => MarkDirty();
             _watcher.EnableRaisingEvents = true;
+#else
+            // FileSystemWatcher есть не на всех платформах, а файловая загрузка
+            // модулей всё равно работает только в редакторе и на десктопе
+            // (StreamingAssets на Android/WebGL — не путь в файловой системе)
+            _ = path;
+#endif
         }
 
         private void OnFsEvent(object sender, FileSystemEventArgs e) => MarkDirty();

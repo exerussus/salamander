@@ -26,9 +26,18 @@ namespace Dsl.Runtime
         internal Variant[] Statics;
         internal int[] LitIds; // индекс литерала -> интернированный id
 
-        /// <summary>Сколько инструкций исполнил последний Run — движок списывает это с бюджета тика.</summary>
-        public int LastInstructionCount => _instr;
+        /// <summary>Сколько инструкций исполнил последний завершившийся Run — движок списывает это с бюджета тика.</summary>
+        public int LastInstructionCount => _lastInstr;
         private int _instr;
+        private int _lastInstr;
+
+        /// <summary>
+        /// Предел глубины скриптовых вызовов внутри одного файбера. Без него
+        /// прямая или взаимная рекурсия раздувает Frames/Stack до OutOfMemory —
+        /// бюджет инструкций от этого не спасает, потому что память кончается
+        /// раньше, чем счётчик.
+        /// </summary>
+        public int MaxCallDepth = 512;
 
         public Vm(ScriptEngine engine)
         {
@@ -43,6 +52,14 @@ namespace Dsl.Runtime
         /// </summary>
         public RunResult Run(Fiber f, int cap)
         {
+            // Run РЕЕНТЕРАБЕЛЕН: хостовый метод посреди файбера может поднять
+            // событие, а Engine.Attach — прогнать инициализацию полей подписки;
+            // оба заходят сюда повторно. Счётчик инструкций обязан быть сохранён
+            // и восстановлен, иначе вложенный запуск обнуляет бюджет ВНЕШНЕГО
+            // файбера, проверка `_instr >= cap` перестаёт срабатывать, и цикл
+            // без wait висит вечно, пробивая и MaxInstructionsPerFiberRun,
+            // и StuckInstructionLimit.
+            int outer = _instr;
             _instr = 0;
             try
             {
@@ -59,6 +76,11 @@ namespace Dsl.Runtime
                 // тоже гасят только файбер
                 _engine.ReportFiberError(f, "Внутренняя ошибка: " + ex.Message);
                 return RunResult.Errored;
+            }
+            finally
+            {
+                _lastInstr = _instr;  // читает вызывающий сразу после Run
+                _instr = outer;       // внешний файбер продолжает со своим счётчиком
             }
         }
 
@@ -268,6 +290,11 @@ namespace Dsl.Runtime
                             if (a.Type == VariantType.Int && b.Type == VariantType.Int)
                             {
                                 if (b.AsInt == 0) throw new ScriptError("Деление на ноль.");
+                                // int.MinValue / -1 не представимо в int: без этой
+                                // проверки CLR бросит OverflowException, и автор скрипта
+                                // увидит бесполезное «Внутренняя ошибка»
+                                if (a.AsInt == int.MinValue && b.AsInt == -1)
+                                    throw new ScriptError("Переполнение: результат -2147483648 / -1 не помещается в int.");
                                 Push(Variant.Int(a.AsInt / b.AsInt));
                             }
                             else
@@ -283,6 +310,9 @@ namespace Dsl.Runtime
                         {
                             var b = stack[--sp]; var a = stack[--sp];
                             if (b.AsInt == 0) throw new ScriptError("Остаток от деления на ноль.");
+                            // int.MinValue % -1 математически 0, но в C# это
+                            // implementation-defined (может бросить OverflowException)
+                            if (a.AsInt == int.MinValue && b.AsInt == -1) { Push(Variant.Int(0)); break; }
                             Push(Variant.Int(a.AsInt % b.AsInt));
                             break;
                         }
@@ -393,6 +423,9 @@ namespace Dsl.Runtime
                         {
                             int funcIdx = ins.A;
                             int argc = ins.B;
+                            if (f.FrameCount >= MaxCallDepth)
+                                throw new ScriptError(
+                                    $"Слишком глубокая вложенность вызовов (предел {MaxCallDepth}) — похоже на бесконечную рекурсию.");
                             var callee = Prog.Functions[funcIdx];
 
                             int newBase = sp - argc;
@@ -421,7 +454,18 @@ namespace Dsl.Runtime
                             var ctx = new CallContext(stack, argBase, argc, _engine);
                             _engine.Host.Function(ins.A)(ref ctx);
                             sp = argBase;
+                            stack = f.Stack; // хост мог реентерабельно войти в движок
                             Push(ctx.HasResult ? ctx.Result : Variant.Nil);
+                            // ...и там же запросить смерть этого файбера: например
+                            // InvalidateEntity(цель) снимает подписку и возвращает её
+                            // блок полей в пул. Без этой проверки файбер продолжил бы
+                            // писать в массив, уже отданный другой подписке.
+                            if (f.KillRequested)
+                            {
+                                frame.Ip = ip;
+                                f.Sp = sp;
+                                return RunResult.Completed;
+                            }
                             break;
                         }
 
@@ -432,6 +476,7 @@ namespace Dsl.Runtime
                             f.Sp = sp;
                             var res = _engine.ExecEngineOp((EngineOp)ins.A, f, argBase, argc);
                             sp = argBase;
+                            stack = f.Stack; // обновить ДО Push: движок мог вырастить стек
                             Push(res);
                             if (f.KillRequested)
                             {
@@ -439,7 +484,6 @@ namespace Dsl.Runtime
                                 f.Sp = sp;
                                 return RunResult.Completed; // самоуничтожение через Engine.Kill
                             }
-                            stack = f.Stack; // движок мог активировать рост? нет, но безопасно
                             break;
                         }
 
@@ -458,7 +502,17 @@ namespace Dsl.Runtime
                         case OpCode.Wait:
                         {
                             var secs = stack[--sp];
-                            f.PendingWaitSeconds = secs.ToF();
+                            float pending = secs.ToF();
+                            // NaN отравляет мин-кучу таймеров: его нельзя ни извлечь
+                            // (NaN <= time ложно), ни выбрать при просеивании вниз
+                            // (NaN < x ложно) — он остаётся в куче навсегда, ломает
+                            // инвариант и блокирует пробуждения, пока сидит в корне.
+                            // Infinity просто вешает файбер до перезагрузки.
+                            if (float.IsNaN(pending) || float.IsInfinity(pending))
+                                throw new ScriptError(
+                                    "wait: длительность должна быть конечным числом, получено " +
+                                    pending.ToString(System.Globalization.CultureInfo.InvariantCulture) + ".");
+                            f.PendingWaitSeconds = pending;
                             frame.Ip = ip;
                             f.Sp = sp;
                             return RunResult.Waited;

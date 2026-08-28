@@ -107,8 +107,11 @@ namespace Dsl.Tests
                          out var errors);
             e.Tick(0.016f);
             _onPing.Raise(e, new Unit());
-            // каждый оборот (в т.ч. с continue) — один кадр; на 5-м пишем
-            for (int k = 0; k < 6; k++) e.Tick(0.016f);
+            // каждый оборот (в т.ч. с continue) — один кадр; на 5-м пишем.
+            // Raise выполняет оборот n=1, дальше по обороту за тик, значит до
+            // n=5 нужно ровно 4 тика: на большем числе тиков loop(true) продолжит
+            // крутиться и допишет "five" ещё раз за каждый лишний кадр.
+            for (int k = 0; k < 4; k++) e.Tick(0.016f);
             Assert.AreEqual(new[] { "five" }, _log);
             Assert.AreEqual(0, errors.Count, "continue отдаёт кадр — спина нет");
         }

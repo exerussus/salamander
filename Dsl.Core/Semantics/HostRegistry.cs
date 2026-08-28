@@ -112,8 +112,18 @@ namespace Dsl.Semantics
         public int DefineEnum(string name, params string[] members)
             => DefineEnum(name, null, members);
 
+        // Id раньше выводился из Count перезаписываемого словаря: повторная
+        // регистрация имени НЕ увеличивала Count, поэтому следующий (уже другой)
+        // тип получал тот же Id. Два разных Entity/Enum становились неразличимы
+        // для чекера — Item проходил туда, где ждут Unit, а падало это позже и в
+        // другом месте как InvalidCastException → «Внутренняя ошибка».
+        // Плюс id скриптовых енумов считаются как EnumCount + n, так что сдвиг
+        // ломал и их. Поэтому дубль теперь — явная ошибка регистрации.
         public int DefineEnum(string name, string summary, string[] members)
         {
+            if (_enums.ContainsKey(name))
+                throw new System.InvalidOperationException(
+                    $"Енум '{name}' уже зарегистрирован. Регистрируйте каждый тип ровно один раз.");
             var info = new HostEnumInfo { Id = _enums.Count, Name = name, Names = members, Summary = summary };
             for (int i = 0; i < members.Length; i++) info.Members[members[i]] = i;
             _enums[name] = info;
@@ -124,6 +134,9 @@ namespace Dsl.Semantics
 
         public int DefineClass(string name, string summary)
         {
+            if (_classes.ContainsKey(name))
+                throw new System.InvalidOperationException(
+                    $"Класс '{name}' уже зарегистрирован. Регистрируйте каждый тип ровно один раз.");
             var info = new HostClassInfo { Id = _classes.Count, Name = name, Summary = summary };
             _classes[name] = info;
             return info.Id;
@@ -184,6 +197,10 @@ namespace Dsl.Semantics
 
         public int DefineEvent(string name, TypeRef[] paramTypes, string summary, string[] paramNames, string[] paramDocs)
         {
+            // дубль оставлял в _eventList мёртвый слот и незаметно менял EventCount
+            if (_events.ContainsKey(name))
+                throw new System.InvalidOperationException(
+                    $"Событие '{name}' уже зарегистрировано. Имя события должно быть уникальным.");
             var info = new HostEventInfo
             {
                 Id = _eventList.Count,

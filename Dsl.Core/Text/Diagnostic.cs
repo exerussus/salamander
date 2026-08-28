@@ -57,13 +57,33 @@ namespace Dsl.Text
         public IReadOnlyList<Diagnostic> Items => _items;
         public bool HasErrors { get; private set; }
 
+        /// <summary>
+        /// Потолок собираемых сообщений. Страховка от «водопадов» на битом вводе:
+        /// один сломанный файл не должен раздувать список до OutOfMemory и не должен
+        /// топить настоящие ошибки. После переполнения добавляется финальная запись,
+        /// сбор прекращается, но HasErrors остаётся верным.
+        /// </summary>
+        public int MaxItems = 500;
+
+        private bool _overflowed;
+
         public void Report(Severity severity, string code, string message, SourcePos pos)
         {
+            if (severity == Severity.Error) HasErrors = true;
+            if (_overflowed) return;
+            if (_items.Count >= MaxItems)
+            {
+                _overflowed = true;
+                _items.Add(new Diagnostic(Severity.Error, "E0221",
+                    $"Сообщений больше {MaxItems} — остальные не показаны. Исправьте первые: обычно дальше идут их следствия.",
+                    "<compiler>", 0, 0));
+                return;
+            }
+
             string name = pos.FileId >= 0 && _files != null && pos.FileId < _files.Count
                 ? _files[pos.FileId].Name
                 : "<unknown>";
             _items.Add(new Diagnostic(severity, code, message, name, pos.Line, pos.Column));
-            if (severity == Severity.Error) HasErrors = true;
         }
 
         public void Error(string code, string message, SourcePos pos) =>

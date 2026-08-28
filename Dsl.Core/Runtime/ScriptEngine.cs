@@ -67,6 +67,24 @@ namespace Dsl.Runtime
         /// <summary>Потолок НОВЫХ файберов (spawn/activate) за тик — защита от спавн-бомбы.</summary>
         public int MaxFibersStartedPerTick = 4096;
 
+        /// <summary>
+        /// Потолок инструкций для инициализации: чанк &lt;init&gt; (статики) и сброс
+        /// полей подписки listener. Ждать они не могут, но МОГУТ звать скриптовые
+        /// функции — а значит и зациклиться. Без конечного предела такой
+        /// инициализатор вешает LoadProgram/Attach без диагностики.
+        /// </summary>
+        public int InitInstructionLimit = 5_000_000;
+
+        /// <summary>
+        /// Предел глубины скриптовых вызовов внутри файбера (защита от рекурсии,
+        /// которая съедает память раньше, чем срабатывает бюджет инструкций).
+        /// </summary>
+        public int MaxCallDepth
+        {
+            get => _vm.MaxCallDepth;
+            set => _vm.MaxCallDepth = value;
+        }
+
         /// <summary>Что делать с файбером, упёршимся в бюджет (см. BudgetPolicy).</summary>
         public BudgetPolicy Policy = BudgetPolicy.CarryOverThenKill;
 
@@ -221,11 +239,15 @@ namespace Dsl.Runtime
             var f = CreateFiber(CompiledProgram.InitFuncIndex, null, 0, 0, -1);
             _current = f;
             f.State = FiberState.Running;
-            // инициализаторам даём щедрый разовый лимит (они не должны ждать)
-            var r = _vm.Run(f, int.MaxValue);
+            // инициализаторам даём щедрый, но КОНЕЧНЫЙ лимит: ждать они не могут,
+            // а вот вызвать зациклившуюся функцию — вполне
+            var r = _vm.Run(f, InitInstructionLimit);
             _current = null;
             if (r == RunResult.Waited || r == RunResult.Yielded)
                 OnError?.Invoke("<init>: инициализаторы полей не должны ждать (wait) — инициализация прервана.");
+            else if (r == RunResult.OutOfBudget)
+                OnError?.Invoke($"<init>: инициализация статических полей не уложилась в {InitInstructionLimit} " +
+                                "инструкций и прервана — вероятно, инициализатор вызывает зацикленную функцию.");
             _fibers.Return(f);
         }
 
@@ -896,7 +918,9 @@ namespace Dsl.Runtime
                 var prev = _current;
                 _current = fi;
                 fi.State = FiberState.Running;
-                _vm.Run(fi, int.MaxValue);
+                if (_vm.Run(fi, InitInstructionLimit) == RunResult.OutOfBudget)
+                    OnError?.Invoke($"listener '{info.Name}': инициализация полей подписки не уложилась в " +
+                                    $"{InitInstructionLimit} инструкций и прервана.");
                 _current = prev;
                 _fibers.Return(fi);
             }
@@ -1033,6 +1057,19 @@ namespace Dsl.Runtime
                 if (f == null || f.State == FiberState.Free) continue;
                 for (int s = 0; s < f.Sp; s++)
                     if (f.Stack[s].Type == VariantType.Str) Strings.Mark(f.Stack[s].StrId);
+
+                // снапшоты активных for-in — ПОЛНОЦЕННЫЙ корень: элемент может быть
+                // удалён из исходной коллекции прямо в теле цикла (что язык явно
+                // разрешает), и тогда буфер файбера — единственная живая ссылка
+                for (int d = 0; d < f.IterDepth && d < f.IterCounts.Length; d++)
+                {
+                    var buf = f.IterBufs[d];
+                    if (buf == null) continue;
+                    int n = f.IterCounts[d];
+                    if (n > buf.Length) n = buf.Length;
+                    for (int k = 0; k < n; k++)
+                        if (buf[k].Type == VariantType.Str) Strings.Mark(buf[k].StrId);
+                }
             }
 
             for (int i = 0; i < _attachments.Count; i++)
@@ -1171,6 +1208,11 @@ namespace Dsl.Runtime
 
         private void PushTimer(double time, long fiber)
         {
+            // страховка инварианта кучи: NaN несравним, поэтому попав внутрь он
+            // остаётся там навсегда и блокирует пробуждения, пока сидит в корне.
+            // Основная проверка стоит в опкоде Wait, эта — чтобы дыру нельзя было
+            // открыть вообще ниоткуда.
+            if (double.IsNaN(time)) time = _time;
             if (_timerCount >= _timerTime.Length)
             {
                 Array.Resize(ref _timerTime, _timerTime.Length * 2);

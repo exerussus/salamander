@@ -4,12 +4,42 @@ namespace Dsl.Runtime
 {
     /// <summary>
     /// Все скриптовые коллекции живут здесь, Variant хранит только id.
-    /// Слоты пулятся; ёмкость буферов сохраняется при переиспользовании.
-    /// Время жизни: до перезагрузки программы (Clear) — отдельного GC
-    /// коллекций в v1 нет, это осознанное упрощение.
+    ///
+    /// ВРЕМЯ ЖИЗНИ (важно, легко недооценить): сборщика коллекций в v1 нет, и
+    /// слот возвращается в пул ТОЛЬКО из Clear(), то есть при перезагрузке
+    /// программы. Это значит, что не только долгоживущая, но и ЛЮБАЯ временная
+    /// коллекция — вечная: `var tmp = new List&lt;int&gt;();` внутри обработчика,
+    /// который срабатывает каждый кадр, течёт со скоростью кадра. Плюс
+    /// MarkStrings обходит все когда-либо созданные коллекции, поэтому свип
+    /// строк дорожает по ходу сессии.
+    ///
+    /// Пока сборщика нет, MaxLiveCollections делает эту утечку видимой сразу
+    /// (внятная ScriptError на тестах) вместо тихого роста до OutOfMemory
+    /// через час игры.
     /// </summary>
     public sealed class CollectionStore
     {
+        /// <summary>
+        /// Потолок числа живых коллекций. Срабатывание почти всегда означает не
+        /// «мало лимита», а создание коллекций в горячем обработчике.
+        /// </summary>
+        public int MaxLiveCollections = 1 << 20;
+
+        /// <summary>
+        /// Потолок длины одного массива. Без него `new T[n]` с произвольным n
+        /// уходит прямо в new Variant[n] и даёт OutOfMemoryException, которая
+        /// ловится общим catch как бесполезная «Внутренняя ошибка».
+        /// </summary>
+        public int MaxArrayLength = 1 << 22;
+
+        private void EnsureCollectionBudget()
+        {
+            if (LiveCount < MaxLiveCollections) return;
+            throw new ScriptError(
+                $"Исчерпан лимит живых коллекций ({MaxLiveCollections}). Коллекции живут до перезагрузки " +
+                "программы — не создавайте List/Map/массивы в обработчиках, которые срабатывают каждый кадр.");
+        }
+
         // ----- массивы (фиксированная длина) -----
         private Variant[][] _arrays = new Variant[64][];
         private int _arrayCount;
@@ -35,6 +65,9 @@ namespace Dsl.Runtime
         public Variant NewArray(int size)
         {
             if (size < 0) throw new ScriptError("Отрицательный размер массива.");
+            if (size > MaxArrayLength)
+                throw new ScriptError($"Размер массива {size} превышает предел {MaxArrayLength}.");
+            EnsureCollectionBudget();
             int id;
             if (_freeArrays.Count > 0)
             {
@@ -56,6 +89,7 @@ namespace Dsl.Runtime
 
         public Variant NewList()
         {
+            EnsureCollectionBudget();
             int id;
             if (_freeLists.Count > 0)
             {
@@ -73,6 +107,7 @@ namespace Dsl.Runtime
 
         public Variant NewMap()
         {
+            EnsureCollectionBudget();
             int id;
             if (_freeMaps.Count > 0)
             {

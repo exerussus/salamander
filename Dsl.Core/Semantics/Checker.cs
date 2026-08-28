@@ -365,7 +365,9 @@ namespace Dsl.Semantics
 
             if (!kind.EventByName.TryGetValue(fn.Name, out var ev))
             {
-                _diag.Error("E0199",
+                // E0199 закреплён за «блок без событий» (это пиннится ArchetypeTests),
+                // поэтому «нет такого события у вида» переехало на свободный код
+                _diag.Error("E0217",
                     $"У вида '{kind.Name}' нет события '{fn.Name}'. События вида перечислены в манифесте API.",
                     fn.Pos);
                 return;
@@ -658,11 +660,26 @@ namespace Dsl.Semantics
                     case LiteralKind.Bool when f.Type.Kind == TypeKind.Bool:
                         sym.ConstValue = Variant.Bool(lit.BoolValue); return;
                     case LiteralKind.Int when f.Type.Kind == TypeKind.Int:
+                        // диапазон проверяется здесь: инициализаторы const не проходят
+                        // через CheckMergedInits, поэтому CheckLiteral их не видит,
+                        // и без этой проверки литерал молча обрезался бы кастом
+                        if (lit.IntValue < int.MinValue || lit.IntValue > int.MaxValue)
+                        {
+                            _diag.Error("E0152", "Целочисленная константа вне диапазона int.", f.Pos);
+                            sym.ConstValue = Variant.Int(0);
+                            return;
+                        }
                         sym.ConstValue = Variant.Int((int)lit.IntValue); return;
                     case LiteralKind.Int when f.Type.Kind == TypeKind.Float:
                         sym.ConstValue = Variant.Float(lit.IntValue); return;
                     case LiteralKind.Float when f.Type.Kind == TypeKind.Float:
                         sym.ConstValue = Variant.Float((float)lit.FloatValue); return;
+                    // double поддержан как полноценный тип — значит и const double тоже
+                    case LiteralKind.Int when f.Type.Kind == TypeKind.Double:
+                        sym.ConstValue = Variant.Double(lit.IntValue); return;
+                    case LiteralKind.Float when f.Type.Kind == TypeKind.Double:
+                    case LiteralKind.Double when f.Type.Kind == TypeKind.Double:
+                        sym.ConstValue = Variant.Double(lit.FloatValue); return;
                     case LiteralKind.Str when f.Type.Kind == TypeKind.Str:
                         sym.ConstStr = lit.StrValue; return;
                 }
@@ -909,10 +926,74 @@ namespace Dsl.Semantics
                         fn.Pos);
             }
             else
+            {
                 CheckBlock(fn.Body);
+                // без этой проверки функция с типом возврата, не дошедшая до return,
+                // молча возвращает Nil (компилятор дописывает Return 0), а Nil в
+                // арифметике превращается в 0 — тихий неверный результат вместо ошибки
+                if (fn.ReturnType != null && fn.ReturnType.Kind != TypeKind.Void && !fn.ReturnType.IsError
+                    && !AlwaysReturns(fn.Body))
+                {
+                    _diag.Error("E0222",
+                        $"Не все пути '{fn.Name}' возвращают значение типа {fn.ReturnType}.", fn.Pos);
+                }
+            }
             PopScope();
 
             fn.LocalCount = _localCount;
+        }
+
+        /// <summary>
+        /// Гарантированно ли стейтмент завершает функцию. Консервативно:
+        /// всё непонятное считается «не завершает», поэтому ложных ошибок нет —
+        /// возможны только пропущенные.
+        /// </summary>
+        private static bool AlwaysReturns(Stmt s)
+        {
+            switch (s)
+            {
+                case ReturnStmt _:
+                    return true;
+
+                case Block b:
+                    foreach (var st in b.Stmts)
+                        if (AlwaysReturns(st)) return true;
+                    return false;
+
+                case IfStmt i:
+                    return i.Else != null && AlwaysReturns(i.Then) && AlwaysReturns(i.Else);
+
+                // while(true)/loop(true) без собственного break никогда не отдаёт
+                // управление дальше — конец функции недостижим
+                case WhileStmt w:
+                    return IsAlwaysTrue(w.Cond) && !HasOwnBreak(w.Body);
+                case LoopStmt lp:
+                    return IsAlwaysTrue(lp.Cond) && !HasOwnBreak(lp.Body);
+
+                default:
+                    return false;
+            }
+        }
+
+        private static bool IsAlwaysTrue(Expr e) =>
+            e is LiteralExpr lit && lit.LKind == LiteralKind.Bool && lit.BoolValue;
+
+        /// <summary>Есть ли break, относящийся именно к ЭТОМУ циклу (во вложенные не заходим).</summary>
+        private static bool HasOwnBreak(Stmt s)
+        {
+            switch (s)
+            {
+                case BreakStmt _:
+                    return true;
+                case Block b:
+                    foreach (var st in b.Stmts)
+                        if (HasOwnBreak(st)) return true;
+                    return false;
+                case IfStmt i:
+                    return HasOwnBreak(i.Then) || (i.Else != null && HasOwnBreak(i.Else));
+                default:
+                    return false; // вложенный цикл перехватывает свой break
+            }
         }
 
         // ===== области видимости локалей =====
@@ -1612,7 +1693,7 @@ namespace Dsl.Semantics
             na.ElemTypeRef = ResolveType(na.ElemType);
             var st = CheckExpr(ref na.Size);
             if (st.Kind != TypeKind.Int && !st.IsError)
-                _diag.Error("E0170", "Размер массива должен быть int.", na.Size.Pos);
+                _diag.Error("E0210", "Размер массива должен быть int.", na.Size.Pos);
             return na.Type = TypeRef.ArrayOf(na.ElemTypeRef);
         }
 
@@ -1636,7 +1717,7 @@ namespace Dsl.Semantics
                 // числовой элемент шире — поднимаем тип массива по рангу (int→float→double)
                 if (elemT.IsNumeric && t.IsNumeric && t.NumericRank > elemT.NumericRank) elemT = t;
                 else if (!elemT.AcceptsValueOf(t) && !t.IsError)
-                    _diag.Error("E0172", $"Элемент #{i + 1} имеет тип {t}, ожидался {elemT}.", e.Pos);
+                    _diag.Error("E0211", $"Элемент #{i + 1} имеет тип {t}, ожидался {elemT}.", e.Pos);
             }
 
             // числовой элементный тип — подтягиваем более узкие числовые элементы вверх
@@ -1658,7 +1739,7 @@ namespace Dsl.Semantics
             if (u.Op == TokenKind.Minus)
             {
                 if (!t.IsNumeric && !t.IsError)
-                    _diag.Error("E0173", $"Унарный минус неприменим к {t}.", u.Pos);
+                    _diag.Error("E0212", $"Унарный минус неприменим к {t}.", u.Pos);
                 return u.Type = t;
             }
             // Not
@@ -1689,7 +1770,7 @@ namespace Dsl.Semantics
                         (rt.Kind == TypeKind.Nil && lt.IsRefLike) ||
                         lt.IsError || rt.IsError;
                     if (!ok)
-                        _diag.Error("E0174", $"Нельзя сравнивать {lt} и {rt}.", b.Pos);
+                        _diag.Error("E0213", $"Нельзя сравнивать {lt} и {rt}.", b.Pos);
                     return b.Type = TypeRef.Bool;
                 }
 
@@ -1717,7 +1798,7 @@ namespace Dsl.Semantics
                 {
                     if ((!lt.IsNumeric || !rt.IsNumeric) && !lt.IsError && !rt.IsError)
                     {
-                        _diag.Error("E0176", $"Арифметика неприменима к {lt} и {rt}.", b.Pos);
+                        _diag.Error("E0214", $"Арифметика неприменима к {lt} и {rt}.", b.Pos);
                         return b.Type = TypeRef.Error;
                     }
                     // результат — по наибольшему числовому рангу; операнды ниже расширяются
@@ -1730,7 +1811,7 @@ namespace Dsl.Semantics
 
                 case TokenKind.Percent:
                     if ((lt.Kind != TypeKind.Int || rt.Kind != TypeKind.Int) && !lt.IsError && !rt.IsError)
-                        _diag.Error("E0177", "Оператор % определён для int % int.", b.Pos);
+                        _diag.Error("E0215", "Оператор % определён для int % int.", b.Pos);
                     return b.Type = TypeRef.Int;
 
                 default:
@@ -1743,7 +1824,7 @@ namespace Dsl.Semantics
             bool ok = t.Kind == TypeKind.Str || t.Kind == TypeKind.Int || t.Kind == TypeKind.Float
                       || t.Kind == TypeKind.Double || t.Kind == TypeKind.Bool || t.Kind == TypeKind.Enum || t.IsError;
             if (!ok)
-                _diag.Error("E0178", $"Значение типа {t} нельзя вклеить в строку.", pos);
+                _diag.Error("E0216", $"Значение типа {t} нельзя вклеить в строку.", pos);
         }
 
         // ===== вызовы =====

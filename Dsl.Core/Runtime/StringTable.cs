@@ -112,11 +112,18 @@ namespace Dsl.Runtime
             if (f < 0) { AppendChar('-'); f = -f; }
 
             int whole = (int)f;
-            AppendInt(whole);
-
             float frac = f - whole;
             int scaled = (int)MathF.Round(frac * 10000f); // 4 знака
-            if (scaled >= 10000) { /* округление перекинуло разряд */ scaled = 9999; }
+            if (scaled >= 10000)
+            {
+                // округление перекинуло разряд: 0.99999 → «1», а не «0.9999».
+                // Раньше здесь стоял кламп до 9999, из-за чего лог показывал
+                // не то число, которое лежит в переменной.
+                whole++;
+                scaled = 0;
+            }
+
+            AppendInt(whole);
             if (scaled <= 0) return;
 
             AppendChar('.');

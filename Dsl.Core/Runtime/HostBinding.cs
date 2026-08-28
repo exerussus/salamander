@@ -61,7 +61,14 @@ namespace Dsl.Runtime
         public void ReturnInt(int v) { Result = Variant.Int(v); HasResult = true; }
         public void ReturnFloat(float v) { Result = Variant.Float(v); HasResult = true; }
         public void ReturnBool(bool v) { Result = Variant.Bool(v); HasResult = true; }
-        public void ReturnStr(string v) { Result = Variant.Str(Host.InternString(v)); HasResult = true; }
+        // null-строка обязана стать Nil: Variant.Str(InternString(null)) давал
+        // Str(-1) — значение, для которого `s == null` в скрипте ложно, хотя ведёт
+        // оно себя как пустая строка. VariantWriter<string> уже делает именно так.
+        public void ReturnStr(string v)
+        {
+            Result = v == null ? Variant.Nil : Variant.Str(Host.InternString(v));
+            HasResult = true;
+        }
         public void ReturnEntity(object o) { Result = Host.WrapObject(o); HasResult = true; }
         public void ReturnNil() { Result = Variant.Nil; HasResult = true; }
     }

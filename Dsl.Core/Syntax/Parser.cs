@@ -14,11 +14,30 @@ namespace Dsl.Syntax
         private readonly DiagnosticBag _diag;
         private int _i;
 
+        /// <summary>
+        /// Предел вложенности выражений, блоков и типов. Рекурсивный спуск на
+        /// глубоко вложенном вводе (тысячи '(' или '{') иначе даёт
+        /// StackOverflowException, которую в .NET поймать нельзя — падает весь
+        /// процесс (редактор Unity, LSP, CI). Настоящим скриптам столько не нужно.
+        /// </summary>
+        private const int MaxNestingDepth = 256;
+
+        private int _depth;
+        private bool _depthReported;
+
         public Parser(List<Token> tokens, int fileId, DiagnosticBag diag)
         {
             _t = tokens;
             _fileId = fileId;
             _diag = diag;
+        }
+
+        private void DepthError(SourcePos pos)
+        {
+            if (_depthReported) return;   // одного сообщения достаточно, дальше только шум
+            _depthReported = true;
+            _diag.Error("E0220",
+                $"Слишком глубокая вложенность (предел {MaxNestingDepth}) — разбор файла прерван.", pos);
         }
 
         private Token Cur => _t[_i];
@@ -118,12 +137,7 @@ namespace Dsl.Syntax
             var name = Expect(TokenKind.Ident, "E0010", "имя класса").Text;
             var c = new ClassDecl { Name = name, Pos = pos };
             Expect(TokenKind.LBrace, "E0011", "'{'");
-            while (!Is(TokenKind.RBrace) && !Is(TokenKind.Eof))
-            {
-                var m = ParseMember();
-                if (m != null) c.Members.Add(m);
-                else break;
-            }
+            ParseMembers(c.Members);
             Expect(TokenKind.RBrace, "E0012", "'}'");
             return c;
         }
@@ -134,12 +148,7 @@ namespace Dsl.Syntax
             var name = Expect(TokenKind.Ident, "E0013", "имя триггера").Text;
             var tr = new TriggerDecl { Name = name, StartDisabled = disabled, Pos = pos };
             Expect(TokenKind.LBrace, "E0014", "'{'");
-            while (!Is(TokenKind.RBrace) && !Is(TokenKind.Eof))
-            {
-                var m = ParseMember();
-                if (m != null) tr.Members.Add(m);
-                else break;
-            }
+            ParseMembers(tr.Members);
             Expect(TokenKind.RBrace, "E0015", "'}'");
             return tr;
         }
@@ -150,12 +159,7 @@ namespace Dsl.Syntax
             var name = Expect(TokenKind.Ident, "E0013", "имя listener").Text;
             var l = new ListenerDecl { Name = name, Pos = pos };
             Expect(TokenKind.LBrace, "E0014", "'{'");
-            while (!Is(TokenKind.RBrace) && !Is(TokenKind.Eof))
-            {
-                var m = ParseMember();
-                if (m != null) l.Members.Add(m);
-                else break;
-            }
+            ParseMembers(l.Members);
             Expect(TokenKind.RBrace, "E0015", "'}'");
             return l;
         }
@@ -169,14 +173,52 @@ namespace Dsl.Syntax
 
             var a = new ArchetypeDecl { Kind = kindTok.Text, Name = id, Pos = kindTok.Pos };
             Expect(TokenKind.LBrace, "E0014", "'{'");
-            while (!Is(TokenKind.RBrace) && !Is(TokenKind.Eof))
-            {
-                var m = ParseMember();
-                if (m != null) a.Members.Add(m);
-                else break;
-            }
+            ParseMembers(a.Members);
             Expect(TokenKind.RBrace, "E0015", "'}'");
             return a;
+        }
+
+        /// <summary>
+        /// Тело объявления: члены до '}' или конца файла.
+        ///
+        /// ВАЖНО: ParseMember никогда не возвращает null, а Expect намеренно НЕ
+        /// двигает позицию при неудаче. Значит на токене, который не начинает
+        /// члена (например 'Engine.Log("hi");' прямо в теле триггера, мимо
+        /// event/func), разбор члена не потребляет ни одного токена — и наивный
+        /// цикл крутится вечно, наполняя DiagnosticBag. Поэтому прогресс
+        /// проверяется явно, а мусор пропускается до следующей точки синхронизации.
+        /// </summary>
+        private void ParseMembers(List<Member> into)
+        {
+            while (!Is(TokenKind.RBrace) && !Is(TokenKind.Eof))
+            {
+                int before = _i;
+                var m = ParseMember();
+                if (m != null) into.Add(m);
+                if (_i != before) continue;
+
+                _diag.Error("E0219",
+                    $"Ожидалось объявление члена (поле, const, func, action или event), встречено '{Cur.Text}'. " +
+                    "Операторы допустимы только внутри func/action/event.", Cur.Pos);
+                SyncMember();
+            }
+        }
+
+        /// <summary>
+        /// Восстановление внутри тела объявления: пропустить мусор до ';' либо до
+        /// начала следующего члена. Гарантированно двигает позицию (иначе вызвавший
+        /// цикл станет вечным).
+        /// </summary>
+        private void SyncMember()
+        {
+            Advance(); // хотя бы один токен — прогресс обязателен
+            while (!Is(TokenKind.Eof) && !Is(TokenKind.RBrace)
+                   && !Is(TokenKind.KwConst) && !Is(TokenKind.KwFunc)
+                   && !Is(TokenKind.KwAction) && !Is(TokenKind.KwEvent))
+            {
+                if (Match(TokenKind.Semicolon)) return;
+                Advance();
+            }
         }
 
         private Member ParseMember()
@@ -250,6 +292,14 @@ namespace Dsl.Syntax
 
         private TypeSyntax ParseType()
         {
+            if (_depth >= MaxNestingDepth) { DepthError(Cur.Pos); return new NameType { Name = "?", Pos = Cur.Pos }; }
+            _depth++;
+            try { return ParseTypeCore(); }
+            finally { _depth--; }
+        }
+
+        private TypeSyntax ParseTypeCore()
+        {
             var pos = Cur.Pos;
             var name = Expect(TokenKind.Ident, "E0026", "имя типа").Text;
 
@@ -280,6 +330,14 @@ namespace Dsl.Syntax
         private TypeSyntax TryParseType(out int savedI)
         {
             savedI = _i;
+            if (_depth >= MaxNestingDepth) { DepthError(Cur.Pos); return null; }
+            _depth++;
+            try { return TryParseTypeCore(savedI); }
+            finally { _depth--; }
+        }
+
+        private TypeSyntax TryParseTypeCore(int savedI)
+        {
             if (!Is(TokenKind.Ident)) return null;
             // тихий разбор без диагностик: временно ловим через ручную проверку
             var pos = Cur.Pos;
@@ -319,9 +377,11 @@ namespace Dsl.Syntax
             var b = new Block { Pos = pos };
             while (!Is(TokenKind.RBrace) && !Is(TokenKind.Eof))
             {
+                int before = _i;
                 var s = ParseStmt();
                 if (s != null) b.Stmts.Add(s);
-                else SyncStatement();
+                // страховка от вечного цикла: стейтмент обязан что-то потребить
+                if (s == null || _i == before) SyncStatement();
             }
             Expect(TokenKind.RBrace, "E0029", "'}'");
             return b;
@@ -336,6 +396,14 @@ namespace Dsl.Syntax
         }
 
         private Stmt ParseStmt()
+        {
+            if (_depth >= MaxNestingDepth) { DepthError(Cur.Pos); return null; }
+            _depth++;
+            try { return ParseStmtCore(); }
+            finally { _depth--; }
+        }
+
+        private Stmt ParseStmtCore()
         {
             switch (Cur.Kind)
             {
@@ -538,6 +606,20 @@ namespace Dsl.Syntax
         }
 
         private Expr ParseUnary()
+        {
+            if (_depth >= MaxNestingDepth)
+            {
+                DepthError(Cur.Pos);
+                var here = Cur.Pos;
+                Advance(); // прогресс обязателен, иначе зациклится вызывающий разбор
+                return new LiteralExpr { LKind = LiteralKind.Null, Pos = here };
+            }
+            _depth++;
+            try { return ParseUnaryCore(); }
+            finally { _depth--; }
+        }
+
+        private Expr ParseUnaryCore()
         {
             if (Is(TokenKind.Not) || Is(TokenKind.Minus))
             {

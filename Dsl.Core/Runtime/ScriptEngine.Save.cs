@@ -333,6 +333,65 @@ namespace Dsl.Runtime
             if (_current != null)
                 throw new InvalidOperationException("LoadState: нельзя загружаться изнутри исполнения скрипта.");
 
+            try
+            {
+                LoadStateCore(stream, resolver);
+            }
+            catch (SaveStateException)
+            {
+                ResetRuntimeAfterFailedLoad();
+                throw;
+            }
+            catch (Exception ex)
+            {
+                // Сейв — НЕДОВЕРЕННЫЕ данные: файл на диске игрока, облако, сеть.
+                // Отпечаток программы ловит только несовпадение версии скриптов,
+                // но не порчу и не подделку. Поэтому любой сбой разбора обязан
+                // стать SaveStateException, а движок — остаться в заведомо пустом,
+                // а не в полуразобранном состоянии.
+                ResetRuntimeAfterFailedLoad();
+                throw new SaveStateException("Сейв повреждён или несовместим: " + ex.Message);
+            }
+        }
+
+        /// <summary>Привести рантайм к заведомо пустому состоянию после неудачной загрузки.</summary>
+        private void ResetRuntimeAfterFailedLoad()
+        {
+            KillAllFibers();
+            _runQueue.Clear();
+            _nextTick.Clear();
+            _timerCount = 0;
+            Collections.Clear();
+            _subsByEntity.Clear();
+            _freeAttachments.Clear();
+            for (int i = _attachments.Count - 1; i >= 0; i--)
+            {
+                var a = _attachments[i];
+                a.Active = false; a.Finalizing = false; a.Fields = null; a.ListenerId = -1; a.Version++;
+                _freeAttachments.Push(i);
+            }
+            _liveAttachments = 0;
+        }
+
+        /// <summary>Счётчик из сейва с проверкой диапазона: без неё крафт даёт OutOfMemory на аллокации.</summary>
+        private static int ReadCount(BinaryReader r, int max, string what)
+        {
+            int n = r.ReadInt32();
+            if (n < 0 || n > max)
+                throw new SaveStateException($"Сейв повреждён: {what} = {n} вне диапазона 0..{max}.");
+            return n;
+        }
+
+        private static double ReadFiniteTime(BinaryReader r, string what)
+        {
+            double t = r.ReadDouble();
+            if (double.IsNaN(t) || double.IsInfinity(t))
+                throw new SaveStateException($"Сейв повреждён: {what} не является конечным числом.");
+            return t;
+        }
+
+        private void LoadStateCore(Stream stream, ISaveEntityResolver resolver)
+        {
             var r = new BinaryReader(stream, System.Text.Encoding.UTF8, leaveOpen: true);
 
             // --- заголовок ---
@@ -346,7 +405,7 @@ namespace Dsl.Runtime
                 throw new SaveStateException(
                     "Сейв сделан с другой версией скриптов — загрузка невозможна. " +
                     "Файберы хранят позиции в байткоде и валидны только против того же кода.");
-            double savedTime = r.ReadDouble();
+            double savedTime = ReadFiniteTime(r, "модельное время");
 
             // --- полный сброс текущего рантайма ---
             KillAllFibers();
@@ -378,7 +437,7 @@ namespace Dsl.Runtime
             for (int i = 0; i < mCount; i++) _moduleEnabled[i] = r.ReadBoolean();
 
             // --- динамические строки ---
-            int strCount = r.ReadInt32();
+            int strCount = ReadCount(r, 1 << 22, "число динамических строк");
             for (int i = 0; i < strCount; i++)
             {
                 int oldId = r.ReadInt32();
@@ -387,13 +446,17 @@ namespace Dsl.Runtime
             }
 
             // --- шапки коллекций: создаём пустые, строим ремап ---
-            int collCount = r.ReadInt32();
+            int collCount = ReadCount(r, Collections.MaxLiveCollections, "число коллекций");
             var collOrder = new (VariantType kind, int newId, int len)[collCount];
             for (int i = 0; i < collCount; i++)
             {
                 var kind = (VariantType)r.ReadByte();
+                if (kind != VariantType.Array && kind != VariantType.List && kind != VariantType.Map)
+                    throw new SaveStateException($"Сейв повреждён: неизвестный вид коллекции {(byte)kind}.");
                 int oldId = r.ReadInt32();
-                int len = r.ReadInt32();
+                int len = ReadCount(r,
+                    kind == VariantType.Array ? Collections.MaxArrayLength : 1 << 24,
+                    "длина коллекции");
                 Variant h;
                 switch (kind)
                 {
@@ -405,7 +468,7 @@ namespace Dsl.Runtime
             }
 
             // --- шапки подписок: резолвим цель, недоступные — дропаем целиком ---
-            int attCount = r.ReadInt32();
+            int attCount = ReadCount(r, 1 << 20, "число подписок");
             var attOrder = new (Attachment att, int fieldCount, bool dropped)[attCount];
             var attByOldIndex = new Dictionary<int, Attachment>();
             for (int i = 0; i < attCount; i++)
@@ -414,7 +477,7 @@ namespace Dsl.Runtime
                 long stable = r.ReadInt64();
                 int oldIdx = r.ReadInt32();
                 int oldVer = r.ReadInt32();
-                int fieldCount = r.ReadInt32();
+                int fieldCount = ReadCount(r, 1 << 16, "число полей подписки");
 
                 object obj = stable != 0 ? resolver.ResolveStableId(stable) : null;
                 if (obj == null || (uint)lid >= (uint)_prog.Listeners.Length)
@@ -452,19 +515,26 @@ namespace Dsl.Runtime
             }
 
             // --- шапки файберов: материализуем, строим ремап ---
-            int fibCount = r.ReadInt32();
+            int fibCount = ReadCount(r, 1 << 20, "число файберов");
             var fibOrder = new (Fiber f, bool dropped, int[] iterCounts)[fibCount];
+            var fibMinStack = new int[fibCount];   // Base + LocalCount самого высокого кадра
             for (int i = 0; i < fibCount; i++)
             {
                 int oldIdx = r.ReadInt32();
                 int oldVer = r.ReadInt32();
                 var state = (FiberState)r.ReadByte();
+                // сохраняются только приостановленные файберы; Free/Running в сейве
+                // означают порчу, а Free ещё и оставил бы арендованный слот вне пула
+                if (state != FiberState.Ready && state != FiberState.Sleeping && state != FiberState.YieldedTick)
+                    throw new SaveStateException($"Сейв повреждён: недопустимое состояние файбера {(byte)state}.");
                 int triggerId = r.ReadInt32();
                 int budgetHits = r.ReadInt32();
-                double wakeTime = r.ReadDouble();
+                double wakeTime = ReadFiniteTime(r, "время пробуждения файбера");
                 float pendingWait = r.ReadSingle();
+                if (float.IsNaN(pendingWait) || float.IsInfinity(pendingWait))
+                    throw new SaveStateException("Сейв повреждён: длительность wait не является конечным числом.");
                 int attachOld = r.ReadInt32();
-                int frameCount = r.ReadInt32();
+                int frameCount = ReadCount(r, MaxCallDepth, "глубина стека вызовов");
 
                 Attachment att = null;
                 bool dropped = false;
@@ -475,9 +545,9 @@ namespace Dsl.Runtime
                 {
                     // кадры и шапку итераций прочитать и выбросить (выравнивание потока)
                     for (int k = 0; k < frameCount; k++) { r.ReadInt32(); r.ReadInt32(); r.ReadInt32(); }
-                    int dDepth = r.ReadInt32();
+                    int dDepth = ReadCount(r, 1 << 10, "глубина вложенных for-in");
                     var dCounts = new int[dDepth];
-                    for (int k = 0; k < dDepth; k++) dCounts[k] = r.ReadInt32();
+                    for (int k = 0; k < dDepth; k++) dCounts[k] = ReadCount(r, 1 << 24, "размер снапшота for-in");
                     fibOrder[i] = (null, true, dCounts);
                     continue;
                 }
@@ -496,16 +566,33 @@ namespace Dsl.Runtime
                 }
                 if (f.Frames.Length < frameCount) Array.Resize(ref f.Frames, Math.Max(frameCount, f.Frames.Length * 2));
                 f.FrameCount = frameCount;
+                int minStack = 0;
                 for (int k = 0; k < frameCount; k++)
                 {
-                    f.Frames[k].Func = r.ReadInt32();
-                    f.Frames[k].Ip = r.ReadInt32();
-                    f.Frames[k].Base = r.ReadInt32();
+                    int fn = r.ReadInt32();
+                    int ipv = r.ReadInt32();
+                    int bas = r.ReadInt32();
+                    // (func, ip, base) адресуют байткод и стек напрямую: без сверки
+                    // крафтовый сейв входит в произвольную функцию, в середину чанка
+                    // или адресует локали мимо стека
+                    if ((uint)fn >= (uint)_prog.Functions.Length)
+                        throw new SaveStateException($"Сейв повреждён: индекс функции {fn} вне программы.");
+                    var callee = _prog.Functions[fn];
+                    if (ipv < 0 || ipv > callee.Code.Length)
+                        throw new SaveStateException($"Сейв повреждён: позиция {ipv} вне кода функции '{callee.Name}'.");
+                    if (bas < 0 || bas > (1 << 22))
+                        throw new SaveStateException($"Сейв повреждён: база локалей {bas} вне допустимого диапазона.");
+                    f.Frames[k].Func = fn;
+                    f.Frames[k].Ip = ipv;
+                    f.Frames[k].Base = bas;
+                    int need = bas + callee.LocalCount;
+                    if (need > minStack) minStack = need;
                 }
+                fibMinStack[i] = minStack;
 
-                int iterDepth = r.ReadInt32();
+                int iterDepth = ReadCount(r, 1 << 10, "глубина вложенных for-in");
                 var iterCounts = new int[iterDepth];
-                for (int k = 0; k < iterDepth; k++) iterCounts[k] = r.ReadInt32();
+                for (int k = 0; k < iterDepth; k++) iterCounts[k] = ReadCount(r, 1 << 24, "размер снапшота for-in");
 
                 ctx.FiberMap[Pack(oldIdx, oldVer)] = f.Handle;
                 fibOrder[i] = (f, false, iterCounts);
@@ -553,9 +640,10 @@ namespace Dsl.Runtime
             }
 
             // --- содержимое: стеки файберов ---
-            foreach (var (f, dropped, iterCounts) in fibOrder)
+            for (int fi = 0; fi < fibOrder.Length; fi++)
             {
-                int sp = r.ReadInt32();
+                var (f, dropped, iterCounts) = fibOrder[fi];
+                int sp = ReadCount(r, 1 << 22, "размер стека файбера");
                 if (dropped)
                 {
                     for (int i = 0; i < sp; i++) ReadVariant(r, ctx);
@@ -563,7 +651,9 @@ namespace Dsl.Runtime
                         for (int i = 0; i < cnt; i++) ReadVariant(r, ctx);
                     continue;
                 }
-                f.EnsureStack(sp);
+                // стек обязан вмещать не только сохранённый Sp, но и локали ВСЕХ
+                // восстановленных кадров — иначе LoadLocal уедет за границу массива
+                f.EnsureStack(Math.Max(sp, fibMinStack[fi]));
                 for (int i = 0; i < sp; i++) f.Stack[i] = ReadVariant(r, ctx);
                 f.Sp = sp;
                 for (int d = 0; d < iterCounts.Length; d++)
@@ -576,22 +666,22 @@ namespace Dsl.Runtime
             }
 
             // --- очереди/таймеры ---
-            int timerCount = r.ReadInt32();
+            int timerCount = ReadCount(r, 1 << 20, "число таймеров");
             for (int i = 0; i < timerCount; i++)
             {
-                double t = r.ReadDouble();
+                double t = ReadFiniteTime(r, "время таймера");
                 var h = RemapFiber(r, ctx);
                 var tf = _fibers.ResolveHandle(h);
                 if (tf != null) PushTimer(t, FiberPool.Pack(tf));
             }
-            int rqCount = r.ReadInt32();
+            int rqCount = ReadCount(r, 1 << 20, "длина очереди запуска");
             for (int i = 0; i < rqCount; i++)
             {
                 var h = RemapFiber(r, ctx);
                 var f = _fibers.ResolveHandle(h);
                 if (f != null) _runQueue.Enqueue(FiberPool.Pack(f));
             }
-            int ntCount = r.ReadInt32();
+            int ntCount = ReadCount(r, 1 << 20, "длина очереди следующего тика");
             for (int i = 0; i < ntCount; i++)
             {
                 var h = RemapFiber(r, ctx);
@@ -626,6 +716,7 @@ namespace Dsl.Runtime
                 case VariantType.Str:
                 {
                     int id = r.ReadInt32();
+                    if (id < 0) return Variant.Nil;                        // порча: id строки не бывает отрицательным
                     if (id < Strings.StaticCount) return Variant.Str(id); // литерал — стабилен
                     return ctx.StrMap.TryGetValue(id, out var nid) ? Variant.Str(nid) : Variant.Str(Strings.Intern(""));
                 }
