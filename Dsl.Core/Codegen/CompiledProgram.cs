@@ -27,6 +27,8 @@ namespace Dsl.Codegen
         public string Module;
         public int ModuleIndex;
         public int FieldCount;             // размер блока полей одной подписки
+        /// <summary>Имя поля по слоту: сейв адресует поля подписки именами, а не индексами.</summary>
+        public string[] FieldNames = System.Array.Empty<string>();
         public int InitFuncIndex = -1;     // сброс полей к инициализаторам (или -1)
         public int OnSubscribeFunc = -1;
         public int OnUnsubscribeFunc = -1;
@@ -69,6 +71,18 @@ namespace Dsl.Codegen
     {
         public Chunk[] Functions;              // [0] — синтетический <init>
         public int StaticCount;                // размер массива статиков
+
+        /// <summary>
+        /// Стабильный ключ статического поля по слоту: "c:Класс.поле",
+        /// "t:Триггер.поле", "a:вид:id.поле". Ключ НЕ содержит модуль — классы,
+        /// триггеры и архетипы сливаются по имени поверх модулей, и перенос
+        /// объявления между модулями не должен терять сохранённое значение.
+        ///
+        /// Нужен сейвам: слоты раздаются в порядке объявления, поэтому вставка
+        /// одного поля в середину сдвигает все последующие. По именам данные
+        /// переживают правку скриптов, по индексам — нет.
+        /// </summary>
+        public string[] StaticKeys = System.Array.Empty<string>();
         public string[] StringLiterals;        // пул строковых литералов
         public TriggerRuntimeInfo[] Triggers;
         public EventHandlerRef[][] EventHandlers; // [hostEventId] -> упорядоченные обработчики

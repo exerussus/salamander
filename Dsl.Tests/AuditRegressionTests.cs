@@ -53,6 +53,21 @@ namespace Dsl.Tests
         private CompilationResult CompileBody(string body) =>
             CompileSource("trigger T { event OnPing(Unit u) { " + body + " } }");
 
+        private static ModuleSourceSet Mod(string name, string src, params string[] deps)
+        {
+            var set = new ModuleSourceSet
+            {
+                Manifest = new ModuleManifest
+                {
+                    Name = name, ApiVersion = 1,
+                    Dependencies = deps ?? Array.Empty<string>(),
+                    Sources = new[] { "t.sal" },
+                },
+            };
+            set.Files.Add((name + "/t.sal", src));
+            return set;
+        }
+
         private static string Dump(CompilationResult r)
         {
             var sb = new System.Text.StringBuilder();
@@ -182,8 +197,10 @@ trigger Good { event OnPing(Unit u) { wait 1.0; Api.Note(""woke""); } }"),
 
         // ===== C-04: коллекции никогда не освобождаются ======================
 
-        // Сборщика коллекций нет, слот живёт до перезагрузки программы. Пока это
-        // так, утечка обязана быть ВИДНОЙ: внятная ошибка вместо тихого роста.
+        // Потолок работает МЕЖДУ сборками и считает все занятые слоты, включая
+        // недостижимые, но ещё не подметённые: сборку нельзя звать изнутри опкода
+        // (VM держит вершину стека в локальной переменной, Fiber.Sp там устаревший).
+        // Поэтому переполнение — честный отказ, а не тихий рост до OutOfMemory.
         [Test]
         public void CollectionBudget_FailsLoudly()
         {
@@ -195,7 +212,7 @@ trigger Good { event OnPing(Unit u) { wait 1.0; Api.Note(""woke""); } }"),
             _onPing.Raise(e, new Unit());
 
             Assert.AreEqual(1, errors.Count, string.Join("\n", errors));
-            StringAssert.Contains("лимит живых коллекций", errors[0]);
+            StringAssert.Contains("лимит коллекций", errors[0]);
         }
 
         // ===== H-03: свип строк не видел снапшот for-in ======================
@@ -427,6 +444,206 @@ trigger T { event OnPing(Unit u) { Api.Note($""{C.K}""); } }");
             var r = CompileSource(@"trigger T { event OnPing(Unit u) { Api.Note(""x""); } } /* хвост");
             Assert.IsFalse(r.Success);
             Assert.IsTrue(HasCode(r, "E0218"), Dump(r));
+        }
+
+        // ===== C-04: сборщик коллекций =======================================
+
+        // Временные коллекции больше не вечные: недостижимое освобождается.
+        [Test]
+        public void UnreachableCollections_AreCollected()
+        {
+            var e = Load(CompileBody(@"int i = 0; while (i < 50) { var t = new List<int>(); t.Add(i); i = i + 1; }"),
+                out var errors);
+            e.Tick(0.016f);
+            _onPing.Raise(e, new Unit());
+
+            Assert.AreEqual(0, errors.Count, string.Join("\n", errors));
+            Assert.GreaterOrEqual(e.GetStats().Collections, 50, "коллекции созданы");
+
+            var swept = e.Collect();
+            Assert.GreaterOrEqual(swept.Collections, 50, "недостижимое освобождено");
+            Assert.AreEqual(0, e.GetStats().Collections, "живых не осталось");
+        }
+
+        // Достижимое из статика — живёт, включая вложенную коллекцию.
+        [Test]
+        public void ReachableCollections_SurviveWithNesting()
+        {
+            var e = Load(CompileSource(@"
+class S { List<int> keep = new List<int>(); }
+trigger T
+{
+    event OnPing(Unit u)
+    {
+        S.keep.Add(1);
+        var junk = new List<int>();
+        junk.Add(2);
+        Api.Note($""{S.keep.count}"");
+    }
+}"), out var errors);
+
+            e.Tick(0.016f);
+            _onPing.Raise(e, new Unit());
+            Assert.AreEqual(0, errors.Count, string.Join("\n", errors));
+
+            e.Collect();
+            Assert.AreEqual(1, e.GetStats().Collections, "остался только статик-список");
+
+            _log.Clear();
+            _onPing.Raise(e, new Unit());          // содержимое пережило сборку
+            Assert.AreEqual(new[] { "2" }, _log);
+        }
+
+        // Коллекция, живая ТОЛЬКО через снапшот for-in (источник очищен) — тот же
+        // корень, на котором раньше спотыкался свип строк.
+        [Test]
+        public void CollectionAliveOnlyViaIterationSnapshot_Survives()
+        {
+            var e = Load(CompileSource(@"
+class S { List<int> src = new List<int>(); }
+trigger T
+{
+    event OnPing(Unit u)
+    {
+        S.src.Add(10); S.src.Add(20);
+        for x in S.src { S.src.Clear(); wait 0.1; Api.Note($""{x}""); }
+    }
+}"), out var errors);
+
+            e.Tick(0.016f);
+            _onPing.Raise(e, new Unit());   // дошли до первого wait
+            e.Collect();                    // снапшот обязан удержать элементы
+            for (int i = 0; i < 5; i++) e.Tick(0.2f);
+
+            Assert.AreEqual(0, errors.Count, string.Join("\n", errors));
+            Assert.AreEqual(new[] { "10", "20" }, _log);
+        }
+
+        // ===== Миграция сейва ================================================
+
+        // Вставка поля в середину сдвигает слоты: значения должны ехать по ИМЕНАМ.
+        [Test]
+        public void InsertedField_DoesNotShiftSavedValues()
+        {
+            var before = CompileSource(@"
+class S { int a = 1; int b = 2; }
+trigger T { event OnPing(Unit u) { S.a = 10; S.b = 20; Api.Note($""{S.a} {S.b}""); } }");
+            var after = CompileSource(@"
+class S { int a = 1; int mid = 99; int b = 2; }
+trigger T { event OnPing(Unit u) { Api.Note($""{S.a} {S.b} {S.mid}""); } }");
+            Assert.IsTrue(before.Success, Dump(before));
+            Assert.IsTrue(after.Success, Dump(after));
+
+            var res = new NullResolver();
+            var e1 = Load(before, out _);
+            e1.Tick(0.016f);
+            _onPing.Raise(e1, new Unit());
+            Assert.AreEqual(new[] { "10 20" }, _log);
+            byte[] save = e1.SaveState(res);
+
+            _log.Clear();
+            var e2 = Load(after, out _);
+            var report = e2.LoadState(save, res);
+            CollectionAssert.Contains(report.NewStatics, "c:S.mid");
+
+            e2.Tick(0.016f);
+            _onPing.Raise(e2, new Unit());
+            Assert.AreEqual(new[] { "10 20 99" }, _log, "значения нашлись по именам, а не по индексам");
+        }
+
+        // Добавление триггера сдвигает id — флаг обязан ехать по имени.
+        [Test]
+        public void AddedTrigger_DoesNotBreakTriggerFlags()
+        {
+            var before = CompileSource(@"
+disabled trigger Cheats { event OnPing(Unit u) { Api.Note(""cheat""); } }
+trigger T { event OnPing(Unit u) { Api.Note(""t""); } }");
+            var after = CompileSource(@"
+trigger Extra { event OnPing(Unit u) { Api.Note(""extra""); } }
+disabled trigger Cheats { event OnPing(Unit u) { Api.Note(""cheat""); } }
+trigger T { event OnPing(Unit u) { Api.Note(""t""); } }");
+            Assert.IsTrue(before.Success, Dump(before));
+            Assert.IsTrue(after.Success, Dump(after));
+
+            var res = new NullResolver();
+            var e1 = Load(before, out _);
+            Assert.IsTrue(e1.SetTriggerEnabled("Cheats", true));
+            byte[] save = e1.SaveState(res);
+
+            var e2 = Load(after, out _);
+            e2.LoadState(save, res);
+
+            bool cheatsOn = false, found = false;
+            foreach (var st in e2.GetTriggerStats())
+                if (st.Name == "Cheats") { cheatsOn = st.Enabled; found = true; }
+            Assert.IsTrue(found, "триггер Cheats на месте");
+            Assert.IsTrue(cheatsOn, "флаг переехал по имени, несмотря на сдвиг id");
+        }
+
+        // ===== M-08: карантин модулей ========================================
+
+        [Test]
+        public void BrokenModule_IsQuarantined_RestCompiles()
+        {
+            var good = Mod("base", @"trigger B { event OnPing(Unit u) { Api.Note(""base""); } }");
+            var bad = Mod("evil", @"trigger E { Engine.Log(""оператор мимо event""); }");
+
+            var r = ScriptCompiler.Compile(_host.Registry, 1,
+                new List<ModuleSourceSet> { good, bad }, quarantineBrokenModules: true);
+
+            Assert.IsTrue(r.Success, Dump(r));
+            Assert.AreEqual(1, r.Excluded.Count, "исключён ровно один модуль");
+            Assert.AreEqual("evil", r.Excluded[0].Name);
+            Assert.AreEqual(1, r.Program.Modules.Length);
+            Assert.AreEqual("base", r.Program.Modules[0]);
+        }
+
+        [Test]
+        public void DependentOfBrokenModule_IsExcludedToo()
+        {
+            var bad = Mod("evil", @"trigger E { Engine.Log(""битый""); }");
+            var dep = Mod("addon", @"trigger A { event OnPing(Unit u) { Api.Note(""addon""); } }", "evil");
+            var good = Mod("base", @"trigger B { event OnPing(Unit u) { Api.Note(""base""); } }");
+
+            var r = ScriptCompiler.Compile(_host.Registry, 1,
+                new List<ModuleSourceSet> { bad, dep, good }, quarantineBrokenModules: true);
+
+            Assert.IsTrue(r.Success, Dump(r));
+            var names = new List<string>();
+            foreach (var ex in r.Excluded) names.Add(ex.Name);
+            CollectionAssert.Contains(names, "evil");
+            CollectionAssert.Contains(names, "addon");
+            Assert.AreEqual(1, r.Program.Modules.Length);
+            Assert.AreEqual("base", r.Program.Modules[0]);
+        }
+
+        [Test]
+        public void ApiVersionMismatch_QuarantinesOnlyThatModule()
+        {
+            var good = Mod("base", @"trigger B { event OnPing(Unit u) { Api.Note(""base""); } }");
+            var old = Mod("legacy", @"trigger L { event OnPing(Unit u) { Api.Note(""old""); } }");
+            old.Manifest.ApiVersion = 0; // мод под прошлую версию API
+
+            var r = ScriptCompiler.Compile(_host.Registry, 1,
+                new List<ModuleSourceSet> { good, old }, quarantineBrokenModules: true);
+
+            Assert.IsTrue(r.Success, Dump(r));
+            Assert.AreEqual(1, r.Excluded.Count);
+            Assert.AreEqual("legacy", r.Excluded[0].Name);
+        }
+
+        // Инструментам (DslCheck, LSP) карантин не нужен: модер обязан видеть
+        // свои ошибки, а не молча лишиться модуля.
+        [Test]
+        public void WithoutQuarantine_AnyErrorFailsWholeBuild()
+        {
+            var good = Mod("base", @"trigger B { event OnPing(Unit u) { Api.Note(""base""); } }");
+            var bad = Mod("evil", @"trigger E { Engine.Log(""битый""); }");
+
+            var r = ScriptCompiler.Compile(_host.Registry, 1, new List<ModuleSourceSet> { good, bad });
+
+            Assert.IsFalse(r.Success);
+            Assert.AreEqual(0, r.Excluded.Count);
         }
     }
 }

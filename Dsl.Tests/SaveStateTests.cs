@@ -239,20 +239,62 @@ namespace Dsl.Tests
             Assert.AreEqual(0, e2.GetStats().LiveSubscriptions, "подписка на исчезнувшую цель дропнута");
         }
 
+        // Изменившийся код больше НЕ убивает сейв целиком: данные адресуются
+        // именами и переезжают, а файберы (функция + позиция в байткоде) — нет.
         [Test]
-        public void FingerprintMismatch_Throws()
+        public void ChangedCode_MigratesData_DropsFibers()
         {
-            var r1 = Compile(@"trigger T { event OnPing(Unit u) { Api.Note(""a""); } }");
-            var r2 = Compile(@"trigger T { event OnPing(Unit u) { Api.Note(""b""); } }"); // другой литерал
+            var r1 = Compile(@"trigger T {
+                int n = 0;
+                event OnPing(Unit u) { n = n + 1; Api.Note($""{n}""); wait 5.0; }
+            }");
+            var r2 = Compile(@"trigger T {
+                int n = 0;
+                event OnPing(Unit u) { n = n + 1; Api.Note($""[{n}]""); wait 5.0; }
+            }"); // другой литерал → другой отпечаток кода, то же поле n
             Assert.IsTrue(r1.Success && r2.Success);
+            Assert.AreNotEqual(r1.Program.Fingerprint, r2.Program.Fingerprint);
             var res = new Resolver();
 
             var e1 = NewEngine(r1.Program);
             e1.Tick(0.016f);
+            _onPing.Raise(e1, new Unit { Id = 1 });
+            Assert.AreEqual(new[] { "1" }, _log);
+            Assert.AreEqual(1, e1.GetStats().LiveFibers, "файбер висит на wait");
             byte[] save = e1.SaveState(res);
 
+            _log.Clear();
             var e2 = NewEngine(r2.Program);
-            Assert.Throws<SaveStateException>(() => e2.LoadState(save, res));
+            var report = e2.LoadState(save, res);
+
+            Assert.IsFalse(report.FibersRestored, "код изменился — продолжения не восстановимы");
+            Assert.AreEqual(1, report.DroppedFibers);
+            CollectionAssert.Contains(report.DroppedFiberTriggers, "T");
+            Assert.AreEqual(0, e2.GetStats().LiveFibers);
+
+            // данные пережили: n восстановлено, счёт продолжается с двойки
+            e2.Tick(0.016f);
+            _onPing.Raise(e2, new Unit { Id = 1 });
+            Assert.AreEqual(new[] { "[2]" }, _log);
+        }
+
+        // Тот же код — полное восстановление, отчёт чистый.
+        [Test]
+        public void SameCode_RestoresEverything_CleanReport()
+        {
+            var r = Compile(@"trigger T { event OnPing(Unit u) { wait 5.0; Api.Note(""late""); } }");
+            Assert.IsTrue(r.Success);
+            var res = new Resolver();
+
+            var e1 = NewEngine(r.Program);
+            e1.Tick(0.016f);
+            _onPing.Raise(e1, new Unit { Id = 1 });
+            byte[] save = e1.SaveState(res);
+
+            var e2 = NewEngine(r.Program);
+            var report = e2.LoadState(save, res);
+            Assert.IsTrue(report.IsClean, report.ToString());
+            Assert.AreEqual(1, e2.GetStats().LiveFibers);
         }
 
         [Test]

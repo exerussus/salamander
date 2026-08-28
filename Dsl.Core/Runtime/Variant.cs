@@ -53,7 +53,10 @@ namespace Dsl.Runtime
         public static Variant Fiber(int index, int version) => new Variant(VariantType.Fiber, index, version);
         public static Variant Sub(int index, int version) => new Variant(VariantType.Sub, index, version);
         public static Variant Enum(int enumTypeId, int value) => new Variant(VariantType.Enum, value, enumTypeId);
-        public static Variant Coll(VariantType kind, int id) => new Variant(kind, id, 0);
+        // коллекции версионируются как сущности и файберы: сборщик переиспользует
+        // слот, и без версии протухший хэндл молча указывал бы на ЧУЖУЮ живую
+        // коллекцию вместо честной ошибки
+        public static Variant Coll(VariantType kind, int id, int version) => new Variant(kind, id, version);
 
         public bool IsNil => Type == VariantType.Nil;
 
@@ -67,6 +70,7 @@ namespace Dsl.Runtime
         public int EnumValue => _lo;
         public int EnumTypeId => _hi;
         public int CollId => _lo;
+        public int CollVersion => _hi;
 
         /// <summary>Приведение к float для арифметики (int тоже допустим).</summary>
         public float ToF()

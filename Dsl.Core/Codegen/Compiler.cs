@@ -109,6 +109,11 @@ namespace Dsl.Codegen
                     initIdx = chunks.Count - 1;
                 }
 
+                // имена полей по слотам — сейв адресует поля подписки именами
+                var fieldNames = new string[ls.FieldCount];
+                foreach (var fs in ls.Fields.Values)
+                    if ((uint)fs.Slot < (uint)fieldNames.Length) fieldNames[fs.Slot] = fs.Name;
+
                 listeners[i] = new ListenerRuntimeInfo
                 {
                     Id = i,
@@ -116,6 +121,7 @@ namespace Dsl.Codegen
                     Module = ls.Module,
                     ModuleIndex = moduleIndex.TryGetValue(ls.Module, out var lmi) ? lmi : 0,
                     FieldCount = ls.FieldCount,
+                    FieldNames = fieldNames,
                     InitFuncIndex = initIdx,
                     OnSubscribeFunc = ls.OnSubscribe?.FuncIndex ?? -1,
                     OnUnsubscribeFunc = ls.OnUnsubscribe?.FuncIndex ?? -1,
@@ -195,10 +201,20 @@ namespace Dsl.Codegen
                 };
             }
 
+            // стабильные ключи статиков: сейв сопоставляет значения по ним, а не
+            // по индексу слота (вставка поля в середину сдвигает все следующие)
+            var staticKeys = new string[_sem.StaticFields.Count];
+            for (int i = 0; i < staticKeys.Length; i++)
+            {
+                var fs = _sem.StaticFields[i];
+                staticKeys[i] = (fs.OwnerKey ?? "?") + "." + fs.Name;
+            }
+
             return new CompiledProgram
             {
                 Functions = chunks.ToArray(),
                 StaticCount = _sem.StaticFields.Count,
+                StaticKeys = staticKeys,
                 StringLiterals = _stringLits.ToArray(),
                 Triggers = triggers,
                 EventHandlers = handlers,

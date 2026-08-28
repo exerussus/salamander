@@ -13,6 +13,9 @@ namespace Dsl.Semantics
     public sealed class FieldSymbol
     {
         public string Name;
+        /// <summary>Владелец в стабильной форме: "c:Класс" / "t:Триггер" / "a:вид:id".
+        /// Из него собирается ключ статика для сейва (см. CompiledProgram.StaticKeys).</summary>
+        public string OwnerKey;
         public bool IsConst;
         public TypeRef Type;
         public int Slot = -1;        // для не-const: индекс статического слота

@@ -58,8 +58,20 @@ namespace Dsl.Unity
         [SerializeField] private bool _autoRun = true;
 
         [Tooltip("Тикать движок в Update автоматически. Выключите, если хост гоняет тик сам " +
-                 "(свой игровой луп, фиксированный шаг, сетевой такт) — тогда зовите UpdateDsl() вручную.")]
+                 "(свой игровой луп, фиксированный шаг, сетевой такт) — тогда зовите UpdateDsl(dt) вручную, " +
+                 "передавая свой шаг: перегрузка без аргумента шагает кадром рендера.")]
         [SerializeField] private bool _autoUpdate = true;
+
+        [Header("Шаг движка")]
+        [Tooltip("Фиксированный шаг скриптового движка, сек (0 = шагать кадром рендера). " +
+                 "Постоянный шаг делает TickInstructionBudget осмысленным и убирает зависимость " +
+                 "поведения скриптов от фреймрейта. Это НЕ сетевой такт и совпадать с ним не обязан.")]
+        [SerializeField] private float _fixedStep = 0f;
+
+        [Tooltip("Максимум шагов за кадр — защита от спирали смерти на просадке")]
+        [SerializeField] private int _maxStepsPerFrame = 4;
+
+        private float _stepAccumulator;
 
         [Header("Горячая перезагрузка")]
         [SerializeField] private bool _watchForChanges = true;
@@ -208,13 +220,21 @@ namespace Dsl.Unity
         }
 #endif
 
+        /// <summary>Шаг движка кадром рендера. Совместимость со старым вызовом.</summary>
+        public void UpdateDsl() => UpdateDsl(UnityEngine.Time.deltaTime);
+
         /// <summary>
-        /// Один шаг движка: разгребает отложенный хот-релоад (штампует время на
-        /// главном потоке), тикает файберы и поднимает событие Update. Публичный,
-        /// чтобы хост мог тикать сам (свой луп, фиксированный шаг, сетевой такт),
-        /// выключив _autoUpdate.
+        /// Один шаг движка на ЗАДАННЫЙ шаг модельного времени (сек): разгребает
+        /// отложенный хот-релоад (штампует время на главном потоке), тикает файберы
+        /// и поднимает событие Update. Публичный, чтобы хост мог тикать сам — свой
+        /// луп, фиксированный шаг, сетевой такт — выключив _autoUpdate.
+        ///
+        /// От dt считаются wait и Engine.Time, и на КАЖДЫЙ такой вызов отмеряется
+        /// TickInstructionBudget. Поэтому при накачке из своего лупа передавайте
+        /// свой шаг: перегрузка без аргумента берёт кадр рендера, и модельное время
+        /// пойдёт с неверной скоростью.
         /// </summary>
-        public void UpdateDsl()
+        public void UpdateDsl(float dt)
         {
             // Проверка авторитета идёт ПЕРВОЙ: скрипты исполняются только на
             // авторитете, значит и перекомпилировать их клиенту незачем — иначе он
@@ -238,7 +258,6 @@ namespace Dsl.Unity
 
             if (!_engine.IsLoaded) return;
 
-            float dt = UnityEngine.Time.deltaTime;
             _engine.Tick(dt);
             _engine.Raise(_updateEventId)
                    .AddFloat((float)_engine.Time)
@@ -249,7 +268,25 @@ namespace Dsl.Unity
         protected virtual void Update()
         {
             if (!_autoUpdate) return;
-            UpdateDsl();
+
+            if (_fixedStep <= 0f) { UpdateDsl(UnityEngine.Time.deltaTime); return; }
+
+            // потолок ниже единицы означал бы «шагов за кадр нет»: движок молча
+            // встал бы, а аккумулятор рос без предела
+            int maxSteps = _maxStepsPerFrame > 0 ? _maxStepsPerFrame : 1;
+
+            _stepAccumulator += UnityEngine.Time.deltaTime;
+
+            int steps = 0;
+            while (_stepAccumulator >= _fixedStep && steps < maxSteps)
+            {
+                _stepAccumulator -= _fixedStep;
+                steps++;
+                UpdateDsl(_fixedStep);
+            }
+
+            // просадка кадра: не копим долг бесконечно, иначе догоняние съест следующие кадры
+            if (steps == maxSteps && _stepAccumulator > _fixedStep) _stepAccumulator = 0f;
         }
 
         protected virtual void OnDestroy()
@@ -287,7 +324,9 @@ namespace Dsl.Unity
         public void CompileAndLoad()
         {
             var modules = LoadModules();
-            var result = ScriptCompiler.Compile(_registry, _apiVersion, modules);
+            // в игре — карантин: сбойный мод исключается вместе с зависимыми, а не
+            // выключает все моды и базовые скрипты разом
+            var result = ScriptCompiler.Compile(_registry, _apiVersion, modules, quarantineBrokenModules: true);
 
             foreach (var d in result.Diagnostics)
             {
@@ -295,6 +334,9 @@ namespace Dsl.Unity
                 else if (d.Severity == Text.Severity.Warning) Debug.LogWarning($"[script] {d}");
                 else Debug.Log($"[script] {d}");
             }
+
+            foreach (var ex in result.Excluded)
+                Debug.LogError($"[script] Модуль '{ex.Name}' ИСКЛЮЧЁН из сборки — {ex.Reason}");
 
             if (result.Success)
             {

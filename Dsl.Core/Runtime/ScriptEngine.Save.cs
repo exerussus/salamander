@@ -55,16 +55,71 @@ namespace Dsl.Runtime
         }
     }
 
-    /// <summary>Сейв не подходит к текущей программе/движку (формат, версия, отпечаток).</summary>
+    /// <summary>Сейв не подходит к текущему движку (формат, версия) или повреждён.</summary>
     public sealed class SaveStateException : Exception
     {
         public SaveStateException(string message) : base(message) { }
     }
 
+    /// <summary>
+    /// Что именно не совпало при загрузке. Пустой отчёт (ничего не потеряно,
+    /// FibersRestored == true) — это загрузка «как было».
+    ///
+    /// Смысл разделения: сейв содержит ДАННЫЕ (статики, коллекции, строки, поля
+    /// подписок, флаги, время) и ПРОДОЛЖЕНИЯ (файберы: функция + позиция в
+    /// байткоде + стек). Данные адресуются именами и переживают правку скриптов.
+    /// Продолжения — это сырой счётчик команд, он валиден только против того же
+    /// байткода, и мигрировать его нельзя в принципе.
+    /// </summary>
+    public sealed class SaveMigrationReport
+    {
+        /// <summary>false — скрипты изменились, файберы не восстановлены (данные — да).</summary>
+        public bool FibersRestored = true;
+
+        /// <summary>Сколько файберов не вернулось (включая дропнутые из-за исчезнувшей цели подписки).</summary>
+        public int DroppedFibers;
+
+        /// <summary>Имена триггеров, чьи файберы не вернулись (без повторов).</summary>
+        public readonly List<string> DroppedFiberTriggers = new List<string>();
+
+        /// <summary>Статики, которые были в сейве, но исчезли из программы — значение потеряно.</summary>
+        public readonly List<string> MissingStatics = new List<string>();
+
+        /// <summary>Статики, появившиеся в программе после сейва — остались со своим инициализатором.</summary>
+        public readonly List<string> NewStatics = new List<string>();
+
+        /// <summary>Подписки, которые не восстановились (цель исчезла или listener удалён).</summary>
+        public int DroppedSubscriptions;
+
+        /// <summary>Ничего не потеряно.</summary>
+        public bool IsClean =>
+            FibersRestored && DroppedFibers == 0 && MissingStatics.Count == 0
+            && NewStatics.Count == 0 && DroppedSubscriptions == 0;
+
+        public override string ToString()
+        {
+            if (IsClean) return "сейв восстановлен полностью";
+            var sb = new System.Text.StringBuilder("сейв восстановлен с потерями:");
+            if (!FibersRestored)
+                sb.Append($" скрипты изменились, файберы не восстановлены ({DroppedFibers});");
+            else if (DroppedFibers > 0)
+                sb.Append($" файберов не вернулось: {DroppedFibers};");
+            if (DroppedFiberTriggers.Count > 0)
+                sb.Append(" триггеры: ").Append(string.Join(", ", DroppedFiberTriggers)).Append(';');
+            if (MissingStatics.Count > 0)
+                sb.Append($" полей исчезло: {MissingStatics.Count};");
+            if (NewStatics.Count > 0)
+                sb.Append($" новых полей: {NewStatics.Count};");
+            if (DroppedSubscriptions > 0)
+                sb.Append($" подписок не вернулось: {DroppedSubscriptions};");
+            return sb.ToString();
+        }
+    }
+
     public sealed partial class ScriptEngine
     {
         private const int SaveMagic = 0x4C415353;  // "SSAL"
-        private const byte SaveVersion = 1;
+        private const byte SaveVersion = 2;
         private const int SaveEndMarker = 0x444E4553; // "SEND"
 
         // протухшие хэндлы: версии слотов никогда не бывают отрицательными,
@@ -98,19 +153,31 @@ namespace Dsl.Runtime
                 throw new InvalidOperationException(
                     "SaveState: нельзя сохраняться изнутри исполнения скрипта — вызовите между тиками.");
 
+            // сборка перед снапшотом: иначе в сейв уедет мусор, который просто
+            // ещё не подмели, и файл будет зависеть от того, когда его сделали
+            Collect();
+
             var w = new BinaryWriter(stream, System.Text.Encoding.UTF8, leaveOpen: true);
 
             // --- заголовок ---
             w.Write(SaveMagic);
             w.Write(SaveVersion);
-            w.Write(_prog.Fingerprint);
+            w.Write(_prog.Fingerprint);   // отпечаток КОДА: гейт только для файберов
             w.Write(_time);
 
-            // --- флаги ---
-            w.Write(_triggerEnabled.Length);
-            foreach (var b in _triggerEnabled) w.Write(b);
-            w.Write(_moduleEnabled.Length);
-            foreach (var b in _moduleEnabled) w.Write(b);
+            // --- флаги ПО ИМЕНАМ: добавление триггера или модуля больше не ломает сейв ---
+            w.Write(_prog.Triggers.Length);
+            for (int i = 0; i < _prog.Triggers.Length; i++)
+            {
+                w.Write(_prog.Triggers[i].Name ?? "");
+                w.Write(_triggerEnabled[i]);
+            }
+            w.Write(_prog.Modules.Length);
+            for (int i = 0; i < _prog.Modules.Length; i++)
+            {
+                w.Write(_prog.Modules[i] ?? "");
+                w.Write(_moduleEnabled[i]);
+            }
 
             // --- динамические строки (id -> значение; литералы стабильны по отпечатку) ---
             int dynStart = Strings.StaticCount;
@@ -153,17 +220,23 @@ namespace Dsl.Runtime
                 }
             }
 
-            // --- шапки подписок ---
+            // --- шапки подписок: listener по ИМЕНИ, поля по ИМЕНАМ ---
             w.Write(atts.Count);
             foreach (var a in atts)
             {
-                w.Write(a.ListenerId);
+                var info = _prog.Listeners[a.ListenerId];
+                w.Write(info.Name ?? "");
                 long stable = 0;
                 if (Entities.TryResolveObject(a.Target, out var obj)) stable = resolver.GetStableId(obj);
                 w.Write(stable);
                 w.Write(a.Index);
                 w.Write(a.Version);
-                w.Write(a.Fields?.Length ?? 0);
+
+                var names = info.FieldNames ?? Array.Empty<string>();
+                int n = a.Fields?.Length ?? 0;
+                if (n > names.Length) n = names.Length;
+                w.Write(n);
+                for (int i = 0; i < n; i++) w.Write(names[i] ?? "");
             }
 
             // --- шапки файберов (всё, кроме стека значений) ---
@@ -190,9 +263,15 @@ namespace Dsl.Runtime
                 for (int i = 0; i < f.IterDepth; i++) w.Write(f.IterCounts[i]);
             }
 
-            // --- содержимое: статики ---
-            w.Write(_statics.Length);
-            foreach (var v in _statics) WriteVariant(w, v, resolver);
+            // --- содержимое: статики ПО КЛЮЧАМ (модуль-независимым) ---
+            var keys = _prog.StaticKeys ?? Array.Empty<string>();
+            int stCount = Math.Min(_statics.Length, keys.Length);
+            w.Write(stCount);
+            for (int i = 0; i < stCount; i++)
+            {
+                w.Write(keys[i] ?? "");
+                WriteVariant(w, _statics[i], resolver);
+            }
 
             // --- содержимое: коллекции (в порядке шапок) ---
             foreach (var (kind, id) in colls)
@@ -226,7 +305,10 @@ namespace Dsl.Runtime
             // --- содержимое: поля подписок ---
             foreach (var a in atts)
             {
+                var info = _prog.Listeners[a.ListenerId];
+                var names = info.FieldNames ?? Array.Empty<string>();
                 int n = a.Fields?.Length ?? 0;
+                if (n > names.Length) n = names.Length;
                 for (int i = 0; i < n; i++) WriteVariant(w, a.Fields[i], resolver);
             }
 
@@ -293,7 +375,9 @@ namespace Dsl.Runtime
                     break;
 
                 default: // Array / List / Map
-                    w.Write(v.CollId);
+                    // версия слота при загрузке будет новая, поэтому едет только id;
+                    // мёртвый хэндл пишем как -1, чтобы он не «попал» в чужой слот
+                    w.Write(Collections.IsAlive(v) ? v.CollId : -1);
                     break;
             }
         }
@@ -307,26 +391,30 @@ namespace Dsl.Runtime
         {
             public ISaveEntityResolver Resolver;
             public Dictionary<int, int> StrMap = new Dictionary<int, int>();
-            public Dictionary<int, int> ArrMap = new Dictionary<int, int>();
-            public Dictionary<int, int> ListMap = new Dictionary<int, int>();
-            public Dictionary<int, int> MapMap = new Dictionary<int, int>();
+            // коллекции: старый id -> НОВЫЙ ХЭНДЛ целиком (id + актуальная версия слота)
+            public Dictionary<int, Variant> ArrMap = new Dictionary<int, Variant>();
+            public Dictionary<int, Variant> ListMap = new Dictionary<int, Variant>();
+            public Dictionary<int, Variant> MapMap = new Dictionary<int, Variant>();
             public Dictionary<long, Variant> FiberMap = new Dictionary<long, Variant>(); // oldPacked -> новый хэндл
             public Dictionary<long, Variant> SubMap = new Dictionary<long, Variant>();   // oldPacked -> новый хэндл
         }
 
         /// <summary>
-        /// Восстановить состояние из снапшота. Требования: LoadProgram уже вызван
-        /// с ТОЙ ЖЕ программой (отпечаток сверяется — иначе SaveStateException),
+        /// Восстановить состояние из снапшота. Требования: LoadProgram уже вызван,
         /// мир пересоздан и resolver готов отдавать объекты по стабильным id.
         /// Текущее состояние рантайма полностью сбрасывается.
+        ///
+        /// Скрипты МОГЛИ измениться с момента сейва: данные восстанавливаются по
+        /// именам, а файберы — только если байткод совпал. Что потерялось,
+        /// написано в возвращённом отчёте.
         /// </summary>
-        public void LoadState(byte[] data, ISaveEntityResolver resolver)
+        public SaveMigrationReport LoadState(byte[] data, ISaveEntityResolver resolver)
         {
             using var ms = new MemoryStream(data, writable: false);
-            LoadState(ms, resolver);
+            return LoadState(ms, resolver);
         }
 
-        public void LoadState(Stream stream, ISaveEntityResolver resolver)
+        public SaveMigrationReport LoadState(Stream stream, ISaveEntityResolver resolver)
         {
             if (resolver == null) throw new ArgumentNullException(nameof(resolver));
             if (_prog == null) throw new InvalidOperationException("LoadState: сначала загрузите программу (LoadProgram).");
@@ -335,7 +423,7 @@ namespace Dsl.Runtime
 
             try
             {
-                LoadStateCore(stream, resolver);
+                return LoadStateCore(stream, resolver);
             }
             catch (SaveStateException)
             {
@@ -345,9 +433,9 @@ namespace Dsl.Runtime
             catch (Exception ex)
             {
                 // Сейв — НЕДОВЕРЕННЫЕ данные: файл на диске игрока, облако, сеть.
-                // Отпечаток программы ловит только несовпадение версии скриптов,
-                // но не порчу и не подделку. Поэтому любой сбой разбора обязан
-                // стать SaveStateException, а движок — остаться в заведомо пустом,
+                // Отпечаток ловит только несовпадение версии скриптов, но не порчу
+                // и не подделку. Поэтому любой сбой разбора обязан стать
+                // SaveStateException, а движок — остаться в заведомо пустом,
                 // а не в полуразобранном состоянии.
                 ResetRuntimeAfterFailedLoad();
                 throw new SaveStateException("Сейв повреждён или несовместим: " + ex.Message);
@@ -390,21 +478,26 @@ namespace Dsl.Runtime
             return t;
         }
 
-        private void LoadStateCore(Stream stream, ISaveEntityResolver resolver)
+        private SaveMigrationReport LoadStateCore(Stream stream, ISaveEntityResolver resolver)
         {
             var r = new BinaryReader(stream, System.Text.Encoding.UTF8, leaveOpen: true);
+            var report = new SaveMigrationReport();
 
             // --- заголовок ---
             if (r.ReadInt32() != SaveMagic)
                 throw new SaveStateException("Это не сейв Salamander (неверная сигнатура файла).");
             byte ver = r.ReadByte();
             if (ver != SaveVersion)
-                throw new SaveStateException($"Версия формата сейва {ver} не поддерживается (движок понимает {SaveVersion}).");
-            ulong fp = r.ReadUInt64();
-            if (fp != _prog.Fingerprint)
                 throw new SaveStateException(
-                    "Сейв сделан с другой версией скриптов — загрузка невозможна. " +
-                    "Файберы хранят позиции в байткоде и валидны только против того же кода.");
+                    $"Версия формата сейва {ver} не поддерживается (движок понимает {SaveVersion}).");
+
+            ulong savedCodeFp = r.ReadUInt64();
+            // Отпечаток кода гейтит ТОЛЬКО файберы: они хранят (функция, позиция в
+            // байткоде), и против другого кода это мусор. Данные адресуются именами
+            // и переживают правку скриптов.
+            bool codeMatches = savedCodeFp == _prog.Fingerprint;
+            report.FibersRestored = codeMatches;
+
             double savedTime = ReadFiniteTime(r, "модельное время");
 
             // --- полный сброс текущего рантайма ---
@@ -424,17 +517,38 @@ namespace Dsl.Runtime
             _liveAttachments = 0;
             _time = savedTime;
 
+            // Прогон <init> ДО чтения: статики, которых в сейве нет (новое поле в
+            // новой версии скриптов), обязаны получить свой инициализатор, а не
+            // остаться с хэндлами на коллекции, снесённые Collections.Clear().
+            RunInit();
+
             var ctx = new LoadCtx { Resolver = resolver };
 
-            // --- флаги ---
-            int tCount = r.ReadInt32();
-            if (tCount != _triggerEnabled.Length)
-                throw new SaveStateException("Сейв не согласован с программой (число триггеров).");
-            for (int i = 0; i < tCount; i++) _triggerEnabled[i] = r.ReadBoolean();
-            int mCount = r.ReadInt32();
-            if (mCount != _moduleEnabled.Length)
-                throw new SaveStateException("Сейв не согласован с программой (число модулей).");
-            for (int i = 0; i < mCount; i++) _moduleEnabled[i] = r.ReadBoolean();
+            // --- флаги по именам ---
+            int tCount = ReadCount(r, 1 << 20, "число триггеров");
+            var trigFlags = new Dictionary<string, bool>(tCount, StringComparer.Ordinal);
+            for (int i = 0; i < tCount; i++)
+            {
+                string name = r.ReadString();
+                bool on = r.ReadBoolean();
+                trigFlags[name] = on;
+            }
+            for (int i = 0; i < _prog.Triggers.Length; i++)
+                if (trigFlags.TryGetValue(_prog.Triggers[i].Name ?? "", out bool on))
+                    _triggerEnabled[i] = on;
+                // иначе триггер новый — остаётся со своим стартовым флагом
+
+            int mCount = ReadCount(r, 1 << 20, "число модулей");
+            var modFlags = new Dictionary<string, bool>(mCount, StringComparer.Ordinal);
+            for (int i = 0; i < mCount; i++)
+            {
+                string name = r.ReadString();
+                bool on = r.ReadBoolean();
+                modFlags[name] = on;
+            }
+            for (int i = 0; i < _prog.Modules.Length; i++)
+                if (modFlags.TryGetValue(_prog.Modules[i] ?? "", out bool on))
+                    _moduleEnabled[i] = on;
 
             // --- динамические строки ---
             int strCount = ReadCount(r, 1 << 22, "число динамических строк");
@@ -447,7 +561,7 @@ namespace Dsl.Runtime
 
             // --- шапки коллекций: создаём пустые, строим ремап ---
             int collCount = ReadCount(r, Collections.MaxLiveCollections, "число коллекций");
-            var collOrder = new (VariantType kind, int newId, int len)[collCount];
+            var collOrder = new (VariantType kind, Variant handle, int len)[collCount];
             for (int i = 0; i < collCount; i++)
             {
                 var kind = (VariantType)r.ReadByte();
@@ -460,31 +574,39 @@ namespace Dsl.Runtime
                 Variant h;
                 switch (kind)
                 {
-                    case VariantType.Array: h = Collections.NewArray(len); ctx.ArrMap[oldId] = h.CollId; break;
-                    case VariantType.List: h = Collections.NewList(); ctx.ListMap[oldId] = h.CollId; break;
-                    default: h = Collections.NewMap(); ctx.MapMap[oldId] = h.CollId; break;
+                    case VariantType.Array: h = Collections.NewArray(len); ctx.ArrMap[oldId] = h; break;
+                    case VariantType.List: h = Collections.NewList(); ctx.ListMap[oldId] = h; break;
+                    default: h = Collections.NewMap(); ctx.MapMap[oldId] = h; break;
                 }
-                collOrder[i] = (kind, h.CollId, len);
+                collOrder[i] = (kind, h, len);
             }
 
-            // --- шапки подписок: резолвим цель, недоступные — дропаем целиком ---
+            // --- шапки подписок: listener по имени, цель по стабильному id ---
+            var listenerByName = new Dictionary<string, int>(StringComparer.Ordinal);
+            for (int i = 0; i < _prog.Listeners.Length; i++)
+                listenerByName[_prog.Listeners[i].Name ?? ""] = i;
+
             int attCount = ReadCount(r, 1 << 20, "число подписок");
-            var attOrder = new (Attachment att, int fieldCount, bool dropped)[attCount];
+            var attOrder = new (Attachment att, string[] savedFields, bool dropped)[attCount];
             var attByOldIndex = new Dictionary<int, Attachment>();
             for (int i = 0; i < attCount; i++)
             {
-                int lid = r.ReadInt32();
+                string lname = r.ReadString();
                 long stable = r.ReadInt64();
                 int oldIdx = r.ReadInt32();
                 int oldVer = r.ReadInt32();
                 int fieldCount = ReadCount(r, 1 << 16, "число полей подписки");
+                var savedFields = new string[fieldCount];
+                for (int k = 0; k < fieldCount; k++) savedFields[k] = r.ReadString();
 
                 object obj = stable != 0 ? resolver.ResolveStableId(stable) : null;
-                if (obj == null || (uint)lid >= (uint)_prog.Listeners.Length)
+                if (obj == null || !listenerByName.TryGetValue(lname, out int lid))
                 {
-                    // цель исчезла из мира — подписка не восстанавливается
-                    // (OnUnsubscribe не зовём: в ЭТОМ мире она и не жила)
-                    attOrder[i] = (null, fieldCount, true);
+                    // цель исчезла из мира либо listener удалён из скриптов —
+                    // подписка не восстанавливается (OnUnsubscribe не зовём:
+                    // в ЭТОМ мире она и не жила)
+                    attOrder[i] = (null, savedFields, true);
+                    report.DroppedSubscriptions++;
                     continue;
                 }
 
@@ -503,6 +625,9 @@ namespace Dsl.Runtime
                 att.Fields = pool.Count > 0 ? pool.Pop()
                            : info.FieldCount > 0 ? new Variant[info.FieldCount]
                            : Array.Empty<Variant>();
+                // пул отдаёт массив с чужими значениями: поля, которых в сейве нет,
+                // обязаны быть чистыми, а не унаследованными от прошлой подписки
+                if (att.Fields.Length > 0) Array.Clear(att.Fields, 0, att.Fields.Length);
 
                 if (!_subsByEntity.TryGetValue(att.TargetKey, out var list))
                     _subsByEntity[att.TargetKey] = list = new List<int>();
@@ -511,7 +636,7 @@ namespace Dsl.Runtime
 
                 ctx.SubMap[Pack(oldIdx, oldVer)] = Variant.Sub(att.Index, att.Version);
                 attByOldIndex[oldIdx] = att;
-                attOrder[i] = (att, fieldCount, false);
+                attOrder[i] = (att, savedFields, false);
             }
 
             // --- шапки файберов: материализуем, строим ремап ---
@@ -523,10 +648,6 @@ namespace Dsl.Runtime
                 int oldIdx = r.ReadInt32();
                 int oldVer = r.ReadInt32();
                 var state = (FiberState)r.ReadByte();
-                // сохраняются только приостановленные файберы; Free/Running в сейве
-                // означают порчу, а Free ещё и оставил бы арендованный слот вне пула
-                if (state != FiberState.Ready && state != FiberState.Sleeping && state != FiberState.YieldedTick)
-                    throw new SaveStateException($"Сейв повреждён: недопустимое состояние файбера {(byte)state}.");
                 int triggerId = r.ReadInt32();
                 int budgetHits = r.ReadInt32();
                 double wakeTime = ReadFiniteTime(r, "время пробуждения файбера");
@@ -537,9 +658,10 @@ namespace Dsl.Runtime
                 int frameCount = ReadCount(r, MaxCallDepth, "глубина стека вызовов");
 
                 Attachment att = null;
-                bool dropped = false;
-                if (attachOld >= 0 && !attByOldIndex.TryGetValue(attachOld, out att))
-                    dropped = true; // подписка не восстановилась (цель исчезла) → файбер не жилец
+                // файбер не восстанавливается, если изменился код (позиция в байткоде
+                // потеряла смысл) или не вернулась его подписка
+                bool dropped = !codeMatches
+                            || (attachOld >= 0 && !attByOldIndex.TryGetValue(attachOld, out att));
 
                 if (dropped)
                 {
@@ -549,8 +671,14 @@ namespace Dsl.Runtime
                     var dCounts = new int[dDepth];
                     for (int k = 0; k < dDepth; k++) dCounts[k] = ReadCount(r, 1 << 24, "размер снапшота for-in");
                     fibOrder[i] = (null, true, dCounts);
+                    NoteDroppedFiber(report, triggerId);
                     continue;
                 }
+
+                // сохраняются только приостановленные файберы; Free/Running в сейве
+                // означают порчу, а Free ещё и оставил бы арендованный слот вне пула
+                if (state != FiberState.Ready && state != FiberState.Sleeping && state != FiberState.YieldedTick)
+                    throw new SaveStateException($"Сейв повреждён: недопустимое состояние файбера {(byte)state}.");
 
                 var f = _fibers.Rent();
                 f.State = state;
@@ -598,44 +726,69 @@ namespace Dsl.Runtime
                 fibOrder[i] = (f, false, iterCounts);
             }
 
-            // --- содержимое: статики ---
-            int stCount = r.ReadInt32();
-            if (stCount != _statics.Length)
-                throw new SaveStateException("Сейв не согласован с программой (число статических полей).");
-            for (int i = 0; i < stCount; i++) _statics[i] = ReadVariant(r, ctx);
+            // --- содержимое: статики ПО КЛЮЧАМ ---
+            var keyToSlot = new Dictionary<string, int>(StringComparer.Ordinal);
+            var progKeys = _prog.StaticKeys ?? Array.Empty<string>();
+            for (int i = 0; i < progKeys.Length && i < _statics.Length; i++)
+                keyToSlot[progKeys[i] ?? ""] = i;
+
+            int stCount = ReadCount(r, 1 << 22, "число статических полей");
+            var seenKeys = new HashSet<string>(StringComparer.Ordinal);
+            for (int i = 0; i < stCount; i++)
+            {
+                string key = r.ReadString();
+                var value = ReadVariant(r, ctx);
+                seenKeys.Add(key);
+                if (keyToSlot.TryGetValue(key, out int slot)) _statics[slot] = value;
+                else report.MissingStatics.Add(key);   // поле исчезло из программы
+            }
+            foreach (var kv in keyToSlot)
+                if (!seenKeys.Contains(kv.Key))
+                    report.NewStatics.Add(kv.Key);     // поле появилось — осталось от <init>
 
             // --- содержимое: коллекции ---
-            foreach (var (kind, newId, len) in collOrder)
+            foreach (var (kind, handle, len) in collOrder)
             {
                 switch (kind)
                 {
                     case VariantType.Array:
                     {
-                        var arr = Collections.GetArrayData(newId);
+                        var arr = Collections.GetArrayData(handle.CollId);
                         for (int i = 0; i < len; i++) arr[i] = ReadVariant(r, ctx);
                         break;
                     }
                     case VariantType.List:
-                        for (int i = 0; i < len; i++) Collections.LoadListAdd(newId, ReadVariant(r, ctx));
+                        for (int i = 0; i < len; i++) Collections.LoadListAdd(handle.CollId, ReadVariant(r, ctx));
                         break;
                     default:
                         for (int i = 0; i < len; i++)
                         {
                             var k = ReadVariant(r, ctx);
                             var v = ReadVariant(r, ctx);
-                            Collections.LoadMapSet(newId, k, v);
+                            Collections.LoadMapSet(handle.CollId, k, v);
                         }
                         break;
                 }
             }
 
-            // --- содержимое: поля подписок (дропнутые — читаем и выбрасываем) ---
-            foreach (var (att, fieldCount, dropped) in attOrder)
+            // --- содержимое: поля подписок ПО ИМЕНАМ (дропнутые — читаем и выбрасываем) ---
+            foreach (var (att, savedFields, dropped) in attOrder)
             {
-                for (int i = 0; i < fieldCount; i++)
+                Dictionary<string, int> nameToSlot = null;
+                if (!dropped)
+                {
+                    var names = _prog.Listeners[att.ListenerId].FieldNames ?? Array.Empty<string>();
+                    nameToSlot = new Dictionary<string, int>(names.Length, StringComparer.Ordinal);
+                    for (int k = 0; k < names.Length; k++) nameToSlot[names[k] ?? ""] = k;
+                }
+
+                for (int i = 0; i < savedFields.Length; i++)
                 {
                     var v = ReadVariant(r, ctx);
-                    if (!dropped && att.Fields != null && i < att.Fields.Length) att.Fields[i] = v;
+                    if (dropped || att.Fields == null) continue;
+                    if (nameToSlot.TryGetValue(savedFields[i] ?? "", out int slot) && slot < att.Fields.Length)
+                        att.Fields[slot] = v;
+                    // поля, которого больше нет в listener, просто нет: его значение теряется
                 }
             }
 
@@ -665,7 +818,7 @@ namespace Dsl.Runtime
                 f.IterDepth = iterCounts.Length;
             }
 
-            // --- очереди/таймеры ---
+            // --- очереди/таймеры (дропнутые файберы не разрезолвятся и просто выпадут) ---
             int timerCount = ReadCount(r, 1 << 20, "число таймеров");
             for (int i = 0; i < timerCount; i++)
             {
@@ -691,6 +844,17 @@ namespace Dsl.Runtime
 
             if (r.ReadInt32() != SaveEndMarker)
                 throw new SaveStateException("Сейв повреждён (нет завершающего маркера).");
+
+            return report;
+        }
+
+        private void NoteDroppedFiber(SaveMigrationReport report, int triggerId)
+        {
+            report.DroppedFibers++;
+            string name = (uint)triggerId < (uint)_prog.Triggers.Length
+                ? _prog.Triggers[triggerId].Name
+                : "(без триггера)";
+            if (!report.DroppedFiberTriggers.Contains(name)) report.DroppedFiberTriggers.Add(name);
         }
 
         private static long Pack(int index, int version) => ((long)version << 32) | (uint)index;
@@ -753,17 +917,17 @@ namespace Dsl.Runtime
                 case VariantType.Array:
                 {
                     int id = r.ReadInt32();
-                    return ctx.ArrMap.TryGetValue(id, out var nid) ? Variant.Coll(VariantType.Array, nid) : Variant.Nil;
+                    return ctx.ArrMap.TryGetValue(id, out var h) ? h : Variant.Nil;
                 }
                 case VariantType.List:
                 {
                     int id = r.ReadInt32();
-                    return ctx.ListMap.TryGetValue(id, out var nid) ? Variant.Coll(VariantType.List, nid) : Variant.Nil;
+                    return ctx.ListMap.TryGetValue(id, out var h) ? h : Variant.Nil;
                 }
                 default:
                 {
                     int id = r.ReadInt32();
-                    return ctx.MapMap.TryGetValue(id, out var nid) ? Variant.Coll(VariantType.Map, nid) : Variant.Nil;
+                    return ctx.MapMap.TryGetValue(id, out var h) ? h : Variant.Nil;
                 }
             }
         }

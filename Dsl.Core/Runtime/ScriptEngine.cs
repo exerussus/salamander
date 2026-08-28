@@ -53,6 +53,9 @@ namespace Dsl.Runtime
         /// <summary>Порог динамических строк, после которого Tick запускает свип. 0 — отключить.</summary>
         public int StringSweepThreshold = 4096;
 
+        /// <summary>Порог живых коллекций, после которого Tick запускает свип. 0 — отключить.</summary>
+        public int CollectionSweepThreshold = 4096;
+
         // ===== бюджет исполнения ===========================================
 
         /// <summary>Суммарный лимит инструкций скриптов на один Tick (≈ кадр).
@@ -294,8 +297,11 @@ namespace Dsl.Runtime
 
             DrainRunQueue();
 
-            if (StringSweepThreshold > 0 && Strings.DynamicCount > StringSweepThreshold)
-                CollectStrings();
+            // сборка идёт МЕЖДУ файберами (конец тика), поэтому корнями гарантированно
+            // накрыт весь живой рантайм: _current здесь всегда null
+            bool needSweep = (StringSweepThreshold > 0 && Strings.DynamicCount > StringSweepThreshold)
+                          || (CollectionSweepThreshold > 0 && Collections.LiveCount > CollectionSweepThreshold);
+            if (needSweep) Collect();
         }
 
         /// <summary>Начать поднятие события: пишите аргументы и вызовите Commit.</summary>
@@ -1043,20 +1049,46 @@ namespace Dsl.Runtime
             return true;
         }
 
-        /// <summary>Mark-and-sweep динамических строк.</summary>
-        public int CollectStrings()
-        {
-            Strings.BeginSweep();
+        /// <summary>Mark-and-sweep динамических строк (совместимость; зовёт общий Collect).</summary>
+        public int CollectStrings() => Collect().Strings;
 
-            for (int i = 0; i < _statics.Length; i++)
-                if (_statics[i].Type == VariantType.Str) Strings.Mark(_statics[i].StrId);
+        /// <summary>Что освободила сборка.</summary>
+        public readonly struct SweepResult
+        {
+            public readonly int Strings;
+            public readonly int Collections;
+            public SweepResult(int strings, int collections) { Strings = strings; Collections = collections; }
+        }
+
+        // рабочий список трассировки: коллекции могут содержать коллекции.
+        // Циклов быть не может (рекурсивный тип невыразим), но разделяемые ссылки
+        // — да, поэтому MarkCollection отсекает повторную пометку.
+        private readonly Stack<Variant> _gcWork = new Stack<Variant>();
+
+        /// <summary>
+        /// Общая сборка строк и коллекций: один обход корней, две пометки.
+        /// Корни: статики, стеки живых файберов, снапшоты for-in, поля активных
+        /// подписок, аргументы поднимаемого события.
+        ///
+        /// ЧТО КОРНЕМ НЕ ЯВЛЯЕТСЯ: Variant, который придержал у себя хостовый код
+        /// между тиками. Благодаря версиям хэндлов это не тихая порча, а понятная
+        /// ScriptError при следующем обращении — но полагаться на такой хэндл нельзя.
+        /// </summary>
+        public SweepResult Collect()
+        {
+            _gcWork.Clear();   // страховка: после исключения посреди трассировки список мог остаться грязным
+            Strings.BeginSweep();
+            Collections.BeginSweep();
+
+            for (int i = 0; i < _statics.Length; i++) MarkValue(_statics[i]);
+
+            for (int i = 0; i < _raiseArgCount && i < _raiseArgs.Length; i++) MarkValue(_raiseArgs[i]);
 
             for (int i = 0; i < _fibers.SlotCount; i++)
             {
                 var f = _fibers.Slot(i);
                 if (f == null || f.State == FiberState.Free) continue;
-                for (int s = 0; s < f.Sp; s++)
-                    if (f.Stack[s].Type == VariantType.Str) Strings.Mark(f.Stack[s].StrId);
+                for (int s = 0; s < f.Sp; s++) MarkValue(f.Stack[s]);
 
                 // снапшоты активных for-in — ПОЛНОЦЕННЫЙ корень: элемент может быть
                 // удалён из исходной коллекции прямо в теле цикла (что язык явно
@@ -1067,8 +1099,7 @@ namespace Dsl.Runtime
                     if (buf == null) continue;
                     int n = f.IterCounts[d];
                     if (n > buf.Length) n = buf.Length;
-                    for (int k = 0; k < n; k++)
-                        if (buf[k].Type == VariantType.Str) Strings.Mark(buf[k].StrId);
+                    for (int k = 0; k < n; k++) MarkValue(buf[k]);
                 }
             }
 
@@ -1076,12 +1107,65 @@ namespace Dsl.Runtime
             {
                 var a = _attachments[i];
                 if (!a.Active || a.Fields == null) continue;
-                for (int s = 0; s < a.Fields.Length; s++)
-                    if (a.Fields[s].Type == VariantType.Str) Strings.Mark(a.Fields[s].StrId);
+                for (int s = 0; s < a.Fields.Length; s++) MarkValue(a.Fields[s]);
             }
 
-            Collections.MarkStrings(Strings);
-            return Strings.EndSweep();
+            TraceReachable();
+
+            int coll = Collections.EndSweep();
+            int strs = Strings.EndSweep();
+            _tick.StringsSwept += strs;
+            _tick.CollectionsSwept += coll;
+            return new SweepResult(strs, coll);
+        }
+
+        private void MarkValue(Variant v)
+        {
+            switch (v.Type)
+            {
+                case VariantType.Str:
+                    Strings.Mark(v.StrId);
+                    break;
+                case VariantType.Array:
+                case VariantType.List:
+                case VariantType.Map:
+                    if (Collections.MarkCollection(v)) _gcWork.Push(v);
+                    break;
+            }
+        }
+
+        /// <summary>Транзитивный обход содержимого достижимых коллекций.</summary>
+        private void TraceReachable()
+        {
+            while (_gcWork.Count > 0)
+            {
+                var c = _gcWork.Pop();
+                switch (c.Type)
+                {
+                    case VariantType.Array:
+                    {
+                        var a = Collections.GetArrayData(c.CollId);
+                        if (a == null) break;
+                        for (int i = 0; i < a.Length; i++) MarkValue(a[i]);
+                        break;
+                    }
+                    case VariantType.List:
+                    {
+                        Collections.GetListData(c.CollId, out var buf, out int n);
+                        for (int i = 0; i < n; i++) MarkValue(buf[i]);
+                        break;
+                    }
+                    default:
+                    {
+                        foreach (var kv in Collections.GetMapData(c.CollId))
+                        {
+                            MarkValue(kv.Key);
+                            MarkValue(kv.Value);
+                        }
+                        break;
+                    }
+                }
+            }
         }
 
         internal void ReportFiberError(Fiber f, string message)

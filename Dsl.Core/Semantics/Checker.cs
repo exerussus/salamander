@@ -220,7 +220,7 @@ namespace Dsl.Semantics
                 switch (m)
                 {
                     case FieldMember f:
-                        CollectMergedField(sym.Fields, sym.FieldDecls, f, blockFields);
+                        CollectMergedField(sym.Fields, sym.FieldDecls, f, blockFields, "c:" + sym.Name);
                         break;
                     case FuncMember fn when fn.Kind == FuncKind.Event:
                         _diag.Error("E0105", "'event' разрешён только внутри trigger.", fn.Pos);
@@ -274,7 +274,7 @@ namespace Dsl.Semantics
                         if (f.IsConst)
                             _diag.Error("E0108", "const внутри trigger не поддерживается — вынесите в class.", f.Pos);
                         else
-                            CollectMergedField(sym.Fields, sym.FieldDecls, f, blockFields);
+                            CollectMergedField(sym.Fields, sym.FieldDecls, f, blockFields, "t:" + sym.Name);
                         break;
 
                     case FuncMember fn when fn.Kind == FuncKind.Event:
@@ -337,7 +337,7 @@ namespace Dsl.Semantics
                         if (f.IsConst)
                             _diag.Error("E0205", "const внутри блока-архетипа не поддерживается — вынесите в class.", f.Pos);
                         else
-                            CollectMergedField(sym.Fields, sym.FieldDecls, f, blockFields);
+                            CollectMergedField(sym.Fields, sym.FieldDecls, f, blockFields, "a:" + sym.Kind + ":" + sym.Id);
                         break;
 
                     case FuncMember fn when fn.Kind == FuncKind.Event:
@@ -562,7 +562,7 @@ namespace Dsl.Semantics
         // ===================================================================
 
         private void CollectMergedField(Dictionary<string, FieldSymbol> fields, List<FieldMember> fieldDecls,
-                                        FieldMember f, HashSet<string> blockNames)
+                                        FieldMember f, HashSet<string> blockNames, string ownerKey)
         {
             if (!blockNames.Add(f.Name))
             {
@@ -590,7 +590,7 @@ namespace Dsl.Semantics
                 {
                     // позднее значение константы видят ВСЕ использования:
                     // тела проверяются после полного сбора деклараций
-                    var ns = new FieldSymbol { Name = f.Name, IsConst = true, Type = type, Decl = f };
+                    var ns = new FieldSymbol { Name = f.Name, OwnerKey = ownerKey, IsConst = true, Type = type, Decl = f };
                     FoldConst(f, ns);
                     fields[f.Name] = ns;
                 }
@@ -599,13 +599,13 @@ namespace Dsl.Semantics
                     // тот же статик-слот; поздний инициализатор перезапишет в <init>
                     f.StaticSlot = existing.Slot;
                     if (f.Init != null)
-                        _staticInitOverrides.Add(new FieldSymbol { Name = f.Name, Type = type, Decl = f, Slot = existing.Slot });
+                        _staticInitOverrides.Add(new FieldSymbol { Name = f.Name, OwnerKey = ownerKey, Type = type, Decl = f, Slot = existing.Slot });
                 }
                 fieldDecls.Add(f);
                 return;
             }
 
-            var nsym = new FieldSymbol { Name = f.Name, IsConst = f.IsConst, Type = type, Decl = f };
+            var nsym = new FieldSymbol { Name = f.Name, OwnerKey = ownerKey, IsConst = f.IsConst, Type = type, Decl = f };
             if (f.IsConst)
             {
                 FoldConst(f, nsym);

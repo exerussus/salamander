@@ -49,6 +49,8 @@ namespace Dsl.Runtime
         public int FibersDeferredThisTick;    // перенесено в следующий тик из-за бюджета
         public int SpawnsDroppedThisTick;     // спавны, отклонённые лимитом (спавн-бомба)
         public bool BudgetExhaustedThisTick;  // упёрлись в TickInstructionBudget
+        public int StringsSwept;              // строк освобождено сборкой в этом тике
+        public int CollectionsSwept;          // коллекций освобождено сборкой в этом тике
 
         public double Time;                   // модельное время движка
     }
