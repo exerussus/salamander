@@ -100,6 +100,18 @@ namespace Dsl.Tools.Lsp
                             RefreshAll();
                             break;
 
+                        case "workspace/didChangeConfiguration":
+                            // клиент может передать настройки и после старта
+                            ApplySettings(p?["settings"] as JObject);
+                            RefreshAll();
+                            break;
+                        case "workspace/didChangeWatchedFiles":
+                            // манифест могли переэкспортировать или переместить —
+                            // сбрасываем найденный путь, чтобы не держаться за старый
+                            _resolvedApiPath = null;
+                            RefreshAll();
+                            break;
+
                         case "textDocument/completion": _rpc.Reply(id, Completion(p)); break;
                         case "textDocument/signatureHelp": _rpc.Reply(id, SignatureHelp(p)); break;
                         case "textDocument/semanticTokens/full": _rpc.Reply(id, SemanticTokens(p)); break;
@@ -120,6 +132,58 @@ namespace Dsl.Tools.Lsp
                 }
             }
         }
+
+        // ===================================================================
+        // Настройки клиента: где искать манифест и модули
+        // ===================================================================
+        // Без них сервер знает только корень воркспейса — а его задаёт IDE, и в
+        // Unity-проекте это корень ВСЕГО проекта: модули лежат глубоко в
+        // StreamingAssets, манифест рядом с ними. Клиент (LSP4IJ,
+        // расширение VS Code) может указать всё явно; пути — абсолютные либо
+        // относительно корня воркспейса.
+
+        private string _cfgApiManifest;   // salamander.apiManifest
+        private string _cfgModulesRoot;   // salamander.modulesRoot
+        private string _cfgBuildFile;     // salamander.buildFile
+        private string _resolvedApiPath;  // кэш найденного манифеста (обход не на каждый рефреш)
+
+        private void ApplySettings(JObject settings)
+        {
+            if (settings == null) return;
+            // принимаем и плоский вид ({"salamander.apiManifest": ...}), и вложенный
+            // ({"salamander": {"apiManifest": ...}}) — клиенты шлют по-разному
+            var s = settings["salamander"] as JObject;
+
+            string Get(string key)
+            {
+                var v = (string)(settings[key] ?? settings["salamander." + key] ?? s?[key]);
+                return string.IsNullOrWhiteSpace(v) ? null : v.Trim();
+            }
+
+            _cfgApiManifest = Get("apiManifest");
+            _cfgModulesRoot = Get("modulesRoot");
+            _cfgBuildFile = Get("buildFile");
+            _resolvedApiPath = null;
+
+            if (_cfgApiManifest != null) Console.Error.WriteLine($"salamander-lsp: apiManifest = {_cfgApiManifest}");
+            if (_cfgModulesRoot != null) Console.Error.WriteLine($"salamander-lsp: modulesRoot = {_cfgModulesRoot}");
+            if (_cfgBuildFile != null) Console.Error.WriteLine($"salamander-lsp: buildFile = {_cfgBuildFile}");
+        }
+
+        /// <summary>Путь из настройки: абсолютный как есть, относительный — от корня воркспейса.</summary>
+        private string ResolveConfigured(string value)
+        {
+            if (value == null || _root == null) return null;
+            try
+            {
+                return Path.IsPathRooted(value) ? Path.GetFullPath(value)
+                                                : Path.GetFullPath(Path.Combine(_root, value));
+            }
+            catch { return null; }
+        }
+
+        /// <summary>Корень поиска модулей: настройка, иначе корень воркспейса.</summary>
+        private string ModulesRoot() => ResolveConfigured(_cfgModulesRoot) ?? _root;
 
         private JObject Initialize(JObject p)
         {
@@ -142,6 +206,8 @@ namespace Dsl.Tools.Lsp
             }
             _root ??= Directory.GetCurrentDirectory();
             Console.Error.WriteLine($"salamander-lsp: корень воркспейса: {_root}");
+
+            ApplySettings(p?["initializationOptions"] as JObject);
 
             return new JObject
             {
@@ -179,22 +245,50 @@ namespace Dsl.Tools.Lsp
             catch { return null; }
         }
 
+        /// <summary>
+        /// Где лежит salamander-api.json: настройка клиента → корень воркспейса →
+        /// ближайший к корню в подпапках. Найденный путь кэшируется: обход дерева
+        /// на каждое нажатие клавиши — то, из-за чего сервер и «не видел» манифест
+        /// в большом проекте. Кэш сбрасывается на смене настроек и на
+        /// didChangeWatchedFiles.
+        /// </summary>
+        private string ResolveApiManifestPath()
+        {
+            const string Name = "salamander-api.json";
+
+            var configured = ResolveConfigured(_cfgApiManifest);
+            if (configured != null) return configured;   // сказали явно — не спорим, даже если файла нет
+
+            if (_resolvedApiPath != null && File.Exists(_resolvedApiPath)) return _resolvedApiPath;
+
+            string root = ModulesRoot();
+            string atRoot = Path.Combine(root, Name);
+            if (File.Exists(atRoot)) return _resolvedApiPath = atRoot;
+
+            // манифест обычно экспортируется в StreamingAssets/<modsFolder>,
+            // а не в корень воркспейса — ищем ближайший к корню
+            var found = ModuleLoader.FindNearestFile(root, Name);
+            if (found != null) return _resolvedApiPath = found;
+
+            _resolvedApiPath = null;
+            return atRoot;   // путь для сообщения «не найден»
+        }
+
         private void RefreshAll()
         {
             if (!_initialized || _root == null) return;
 
             // --- синтакс-индекс всех *.sal (диск + оверлеи), с кэшем по хэшу ---
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            try
+            // обход с ограничением глубины и пропуском Library/Temp/obj/.git:
+            // корнем может оказаться весь Unity-проект, и голый AllDirectories
+            // прочёсывал бы десятки тысяч файлов на КАЖДЫЙ рефреш
+            foreach (var f in ModuleLoader.EnumerateFiles(ModulesRoot(), "*.sal"))
             {
-                foreach (var f in Directory.EnumerateFiles(_root, "*.sal", SearchOption.AllDirectories))
-                {
-                    var abs = Path.GetFullPath(f);
-                    seen.Add(abs);
-                    IndexFile(abs, GetText(abs));
-                }
+                var abs = Path.GetFullPath(f);
+                seen.Add(abs);
+                IndexFile(abs, GetText(abs));
             }
-            catch { /* корень мог исчезнуть — не падаем */ }
             foreach (var kv in _open)
                 if (kv.Key.EndsWith(".sal", StringComparison.OrdinalIgnoreCase) && seen.Add(kv.Key))
                     IndexFile(kv.Key, kv.Value);
@@ -211,22 +305,7 @@ namespace Dsl.Tools.Lsp
                 return arr;
             }
 
-            string apiPath = Path.Combine(_root, "salamander-api.json");
-            // манифест обычно экспортируется в StreamingAssets/<modsFolder>, а не в
-            // корень воркспейса — если в корне нет, ищем ближайший в подпапках
-            if (!File.Exists(apiPath))
-            {
-                try
-                {
-                    var found = Directory.GetFiles(_root, "salamander-api.json", SearchOption.AllDirectories);
-                    if (found.Length > 0)
-                    {
-                        Array.Sort(found, (a, b) => a.Length - b.Length); // ближе к корню — короче путь
-                        apiPath = found[0];
-                    }
-                }
-                catch { /* нет доступа к обходу — останемся на корневом пути */ }
-            }
+            string apiPath = ResolveApiManifestPath();
             Semantics.HostRegistry registry;
             int apiVersion = 1;
             _api = null;
@@ -249,7 +328,9 @@ namespace Dsl.Tools.Lsp
                 registry = new Semantics.HostRegistry();
                 Bucket(apiPath).Add(LspDiag(1, 1, 1, 2, "W0401",
                     "salamander-api.json не найден — события и API хоста неизвестны " +
-                    "(запустите игру в редакторе один раз, манифест экспортируется автоматически)."));
+                    "(запустите игру в редакторе один раз, манифест экспортируется автоматически; " +
+                    "если он лежит в другом месте — укажите настройку salamander.apiManifest)."));
+                Console.Error.WriteLine($"salamander-lsp: манифест не найден, искали от {ModulesRoot()}");
             }
 
             var logicalToAbs = new Dictionary<string, string>();
@@ -258,7 +339,9 @@ namespace Dsl.Tools.Lsp
             // «ешь то, что дал сборщик»: если он экспортировал salamander-build.json
             // (упорядоченный список папок модулей) — берём РОВНО его; обход папки
             // остаётся дев-режимом без сборщика
-            string buildPath = Path.Combine(_root, "salamander-build.json");
+            string modulesRoot = ModulesRoot();
+            string buildPath = ResolveConfigured(_cfgBuildFile)
+                               ?? Path.Combine(modulesRoot, "salamander-build.json");
             List<ModuleSourceSet> modules;
             if (File.Exists(buildPath))
             {
@@ -266,8 +349,11 @@ namespace Dsl.Tools.Lsp
                 {
                     var build = Newtonsoft.Json.Linq.JObject.Parse(File.ReadAllText(buildPath));
                     var dirs = new List<string>();
+                    // пути в build-файле — относительно ЕГО папки: так его можно
+                    // положить и в корень проекта, и рядом с модулями
+                    string baseDir = Path.GetDirectoryName(Path.GetFullPath(buildPath)) ?? modulesRoot;
                     foreach (var t in build["modules"] ?? new Newtonsoft.Json.Linq.JArray())
-                        dirs.Add(Path.GetFullPath(Path.Combine(_root, (string)t)));
+                        dirs.Add(Path.GetFullPath(Path.Combine(baseDir, (string)t)));
                     modules = ModuleLoader.LoadFromList(dirs, onLoadError, logicalToAbs);
                 }
                 catch (Exception ex)
@@ -278,8 +364,15 @@ namespace Dsl.Tools.Lsp
             }
             else
             {
-                modules = ModuleLoader.LoadFromFolder(_root, onLoadError, logicalToAbs);
+                // обход ВГЛУБЬ: корень задаёт IDE, и в Unity-проекте модули лежат
+                // в StreamingAssets/..., а не прямыми детьми корня
+                modules = ModuleLoader.LoadFromTree(modulesRoot, onLoadError, logicalToAbs);
             }
+
+            if (modules.Count == 0)
+                Console.Error.WriteLine(
+                    $"salamander-lsp: модулей не найдено под {modulesRoot} — " +
+                    "укажите salamander.modulesRoot или положите salamander-build.json.");
 
             // оверлеи: несохранённые правки важнее диска
             foreach (var set in modules)

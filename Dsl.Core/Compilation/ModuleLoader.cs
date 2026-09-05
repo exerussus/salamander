@@ -118,6 +118,145 @@ namespace Dsl.Compilation
             return result;
         }
 
+        /// <summary>Глубина обхода по умолчанию для LoadFromTree/EnumerateFiles/FindNearestFile.</summary>
+        public const int DefaultScanDepth = 8;
+
+        // Папки, в которые обход не заходит НИКОГДА. Инструменту их содержимое
+        // бесполезно, а в Unity-проекте Library/ и Temp/ — это десятки тысяч
+        // файлов, из-за которых обход всего проекта переставал быть дешёвым.
+        private static readonly HashSet<string> IgnoredDirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "Library", "Temp", "Logs", "UserSettings", "obj", "bin",
+            "Build", "Builds", "node_modules", "publish",
+        };
+
+        /// <summary>Служебная папка, в которую инструменты не заходят (кэши IDE, сборки, VCS).</summary>
+        public static bool IsIgnoredDirectory(string name)
+            => string.IsNullOrEmpty(name)
+               || name[0] == '.'          // .git, .vs, .idea, .vscode
+               || IgnoredDirs.Contains(name);
+
+        /// <summary>
+        /// Обход с ограничением глубины, пропуском служебных папок и устойчивостью
+        /// к недоступным каталогам. Порядок детерминированный (по пути).
+        /// Замена Directory.EnumerateFiles(..., AllDirectories) там, где корнем
+        /// может оказаться целый проект игры.
+        /// </summary>
+        public static List<string> EnumerateFiles(string rootPath, string searchPattern,
+                                                  int maxDepth = DefaultScanDepth)
+        {
+            var result = new List<string>();
+            if (!Directory.Exists(rootPath)) return result;
+
+            var level = new List<string> { Path.GetFullPath(rootPath) };
+            for (int depth = 0; depth <= maxDepth && level.Count > 0; depth++)
+            {
+                var next = new List<string>();
+                level.Sort(StringComparer.Ordinal);
+                foreach (var dir in level)
+                {
+                    try { result.AddRange(Directory.GetFiles(dir, searchPattern)); }
+                    catch { /* каталог исчез или недоступен — не роняем обход */ }
+
+                    if (depth == maxDepth) continue;
+                    try
+                    {
+                        foreach (var sub in Directory.GetDirectories(dir))
+                            if (!IsIgnoredDirectory(Path.GetFileName(sub))) next.Add(sub);
+                    }
+                    catch { /* то же самое */ }
+                }
+                level = next;
+            }
+            result.Sort(StringComparer.Ordinal);
+            return result;
+        }
+
+        /// <summary>
+        /// Ближайший к корню файл с таким именем (сначала сам корень, потом вглубь).
+        /// null — не найден. Используется для поиска salamander-api.json, когда
+        /// корень воркспейса задан IDE и манифест лежит где-то в подпапках.
+        /// </summary>
+        public static string FindNearestFile(string rootPath, string fileName,
+                                             int maxDepth = DefaultScanDepth)
+        {
+            if (!Directory.Exists(rootPath)) return null;
+
+            var level = new List<string> { Path.GetFullPath(rootPath) };
+            for (int depth = 0; depth <= maxDepth && level.Count > 0; depth++)
+            {
+                var next = new List<string>();
+                level.Sort(StringComparer.Ordinal);
+                foreach (var dir in level)
+                {
+                    string candidate = Path.Combine(dir, fileName);
+                    try { if (File.Exists(candidate)) return candidate; }
+                    catch { /* недоступен — пробуем дальше */ }
+
+                    if (depth == maxDepth) continue;
+                    try
+                    {
+                        foreach (var sub in Directory.GetDirectories(dir))
+                            if (!IsIgnoredDirectory(Path.GetFileName(sub))) next.Add(sub);
+                    }
+                    catch { }
+                }
+                level = next;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Модули ГДЕ-ТО под корнем: обход вглубь с пропуском служебных папок.
+        /// Нужен инструментам, которым корень задаёт IDE: в Unity-проекте модули
+        /// лежат в StreamingAssets/..., а не прямыми детьми корня, и одноуровневый
+        /// LoadFromFolder их просто не видит.
+        ///
+        /// Внутрь найденного модуля обход НЕ спускается: подпапки модуля — его
+        /// исходники, а не вложенные модули. Порядок — по пути (детерминирован).
+        /// </summary>
+        public static List<ModuleSourceSet> LoadFromTree(
+            string rootPath,
+            Action<string, string> onError,
+            Dictionary<string, string> logicalToAbsolute = null,
+            int maxDepth = DefaultScanDepth)
+        {
+            var result = new List<ModuleSourceSet>();
+            if (!Directory.Exists(rootPath)) return result;
+
+            var moduleDirs = new List<string>();
+            var level = new List<string> { Path.GetFullPath(rootPath) };
+            for (int depth = 0; depth <= maxDepth && level.Count > 0; depth++)
+            {
+                var next = new List<string>();
+                foreach (var dir in level)
+                {
+                    bool isModule;
+                    try { isModule = File.Exists(Path.Combine(dir, "module.json")); }
+                    catch { continue; }
+
+                    if (isModule) { moduleDirs.Add(dir); continue; } // внутрь модуля не идём
+
+                    if (depth == maxDepth) continue;
+                    try
+                    {
+                        foreach (var sub in Directory.GetDirectories(dir))
+                            if (!IsIgnoredDirectory(Path.GetFileName(sub))) next.Add(sub);
+                    }
+                    catch { }
+                }
+                level = next;
+            }
+
+            moduleDirs.Sort(StringComparer.Ordinal);
+            foreach (var dir in moduleDirs)
+            {
+                var set = LoadModuleDir(dir, onError, logicalToAbsolute);
+                if (set != null) result.Add(set);
+            }
+            return result;
+        }
+
         /// <param name="rootPath">Корень с модулями.</param>
         /// <param name="onError">Колбэк ошибок загрузки: (файл, сообщение).</param>
         /// <param name="logicalToAbsolute">

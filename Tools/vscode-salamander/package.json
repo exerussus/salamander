@@ -1,77 +1,92 @@
 {
-    "name": "salamander",
-    "displayName": "Salamander (игровой скриптовый язык)",
-    "description": "Подсветка синтаксиса, ошибки компиляции и автодополнение для .sal — триггеры, события, файберы.",
-    "version": "0.1.0",
-    "publisher": "local",
-    "license": "MIT",
-    "engines": {
-        "vscode": "^1.85.0"
-    },
-    "categories": [
-        "Programming Languages",
-        "Linters",
-        "Snippets"
+  "name": "salamander",
+  "displayName": "Salamander (игровой скриптовый язык)",
+  "description": "Подсветка синтаксиса, ошибки компиляции и автодополнение для .sal — триггеры, события, файберы.",
+  "version": "0.1.0",
+  "publisher": "local",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Linters",
+    "Snippets"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onLanguage:salamander",
+    "workspaceContains:**/salamander-api.json"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "salamander",
+        "aliases": [
+          "Salamander",
+          "salamander"
+        ],
+        "extensions": [
+          ".sal"
+        ],
+        "configuration": "./language-configuration.json"
+      }
     ],
-    "main": "./out/extension.js",
-    "activationEvents": [
-        "onLanguage:salamander",
-        "workspaceContains:**/salamander-api.json"
+    "grammars": [
+      {
+        "language": "salamander",
+        "scopeName": "source.salamander",
+        "path": "./syntaxes/salamander.tmLanguage.json"
+      }
     ],
-    "contributes": {
-        "languages": [
-            {
-                "id": "salamander",
-                "aliases": [
-                    "Salamander",
-                    "salamander"
-                ],
-                "extensions": [
-                    ".sal"
-                ],
-                "configuration": "./language-configuration.json"
-            }
-        ],
-        "grammars": [
-            {
-                "language": "salamander",
-                "scopeName": "source.salamander",
-                "path": "./syntaxes/salamander.tmLanguage.json"
-            }
-        ],
-        "snippets": [
-            {
-                "language": "salamander",
-                "path": "./snippets/salamander.json"
-            }
-        ],
-        "commands": [
-            {
-                "command": "salamander.check",
-                "title": "Salamander: проверить скрипты (компиляция)"
-            }
-        ],
-        "configuration": {
-            "title": "Salamander",
-            "properties": {
-                "salamander.server.path": {
-                    "type": "string",
-                    "default": "",
-                    "description": "Путь к DslLsp.dll (LSP-сервер). Пусто — искать в воркспейсе (Tools/DslLsp/bin/...)."
-                }
-            }
+    "snippets": [
+      {
+        "language": "salamander",
+        "path": "./snippets/salamander.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "salamander.check",
+        "title": "Salamander: проверить скрипты (компиляция)"
+      }
+    ],
+    "configuration": {
+      "title": "Salamander",
+      "properties": {
+        "salamander.server.path": {
+          "type": "string",
+          "default": "",
+          "description": "Путь к DslLsp.dll (LSP-сервер). Пусто — искать в воркспейсе (Tools/DslLsp/bin/...)."
+        },
+        "salamander.apiManifest": {
+          "type": "string",
+          "default": "",
+          "description": "Путь к salamander-api.json. Пусто — искать в корне воркспейса, затем ближайший в подпапках. Абсолютный или относительно корня; поддерживается ${workspaceFolder}."
+        },
+        "salamander.modulesRoot": {
+          "type": "string",
+          "default": "",
+          "description": "Папка, под которой искать модули (module.json) и .sal. Пусто — корень воркспейса. В Unity-проекте укажите сюда, например, Assets/StreamingAssets/Core."
+        },
+        "salamander.buildFile": {
+          "type": "string",
+          "default": "",
+          "description": "Путь к salamander-build.json (упорядоченный список папок модулей). Пусто — искать в корне модулей. Если файл есть, берутся РОВНО перечисленные в нём модули."
         }
-    },
-    "scripts": {
-        "compile": "tsc -p ./",
-        "watch": "tsc -w -p ./"
-    },
-    "devDependencies": {
-        "@types/node": "^20.11.0",
-        "@types/vscode": "^1.85.0",
-        "typescript": "^5.4.0"
-    },
-    "dependencies": {
-        "vscode-languageclient": "^9.0.1"
+      }
     }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -w -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.4.0"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  }
 }

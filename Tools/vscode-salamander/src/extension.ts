@@ -30,6 +30,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     };
     const clientOptions: LanguageClientOptions = {
         documentSelector: [{ language: 'salamander' }],
+        // сервер знает только корень воркспейса, а в Unity-проекте модули лежат
+        // глубоко в StreamingAssets — эти настройки позволяют указать всё явно
+        initializationOptions: serverSettings(),
         synchronize: {
             // сервер перечитывает манифест и module.json при каждом рефреше,
             // но события об их изменении ускоряют реакцию
@@ -40,6 +43,25 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     client = new LanguageClient('salamander', 'Salamander LSP', serverOptions, clientOptions);
     context.subscriptions.push({ dispose: () => client?.stop() });
     await client.start();
+
+    // правка настроек не должна требовать перезапуска окна
+    context.subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
+        if (!e.affectsConfiguration('salamander')) return;
+        client?.sendNotification('workspace/didChangeConfiguration', { settings: serverSettings() });
+    }));
+}
+
+// Настройки, которые понимает сервер. Пути — абсолютные либо относительно
+// корня воркспейса; ${workspaceFolder} поддержан для единообразия с задачами VS Code.
+function serverSettings(): Record<string, string> {
+    const cfg = vscode.workspace.getConfiguration('salamander');
+    const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
+    const out: Record<string, string> = {};
+    for (const key of ['apiManifest', 'modulesRoot', 'buildFile']) {
+        const value = cfg.get<string>(key);
+        if (value) out[key] = value.replace(/\$\{workspaceFolder\}/g, root);
+    }
+    return out;
 }
 
 export function deactivate(): Thenable<void> | undefined {
