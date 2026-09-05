@@ -56,7 +56,8 @@ STATS.md             бюджет исполнения и статистика: 
 enum Phase { Intro, Combat }
 
 class Balance {                       // классы статичны, экземпляров нет
-    const float K = 2.5;
+    const float K = 2.5;              // сворачивается в байткод
+    readonly int bossHp = 750;        // слот есть, но пишется только в объявлении
     int counter = 0;
     func Scale(float x) -> float { return x * K; }
 }
@@ -279,14 +280,17 @@ engine.LoadState(save, resolver);           // `wait 300.0` продолжитс
 var spell  = host.Archetype("spell");
 var onCast = spell.Event<Unit, Unit>("OnCast");
 spell.KnownIds(gameData.SpellIds);   // опционально: опечатка в id = ошибка компиляции
+spell.Const<int>("damage", required: true)   // опционально: контракт полей блока
+     .Const<int>("cooldown_ticks");          // (см. «Константы контента» ниже)
 ```
 
 ```
 spell "arcane_missile"
 {
-    int damage = 3;                                   // статик, как у class
+    readonly int damage = 3;                          // рецепт: только объявление
+    int casts = 0;                                    // состояние: меняется в рантайме
 
-    event OnCast(Unit caster, Unit target) { UnitApi.Damage(target, damage); }
+    event OnCast(Unit caster, Unit target) { casts = casts + 1; UnitApi.Damage(target, damage); }
     event OnObtain(Unit unit) { Engine.Log($"{unit.name} выучил снаряд"); }
 }
 ```
@@ -302,6 +306,109 @@ onCast.Raise(engine, h, caster, target);
 engine.HasArchetype("spell", "arcane_missile");
 engine.GetArchetypeIds("spell", idsBuffer);
 ```
+
+## Константы контента: забрать рецепт, объявленный в DSL
+
+Поля блока-архетипа — это данные сущности, «рецепт», который пишет модер.
+Хост читает их по (вид, id, поле) и умеет перечислить, не зная имён заранее:
+
+```csharp
+// адресно — когда набор полей наш контракт (оружие, NPC):
+if (engine.TryGetArchetypeConst("weapon", "sword", "damage", out var v))
+    weapon.Damage = v.ToF();                    // строка — engine.ResolveString(v)
+
+// перечислением — когда набор ОТКРЫТ и хосту неизвестен принципиально:
+engine.GetArchetypeConsts("attribute", "stubbornness", fieldsBuffer);
+foreach (var field in fieldsBuffer) { /* атрибут пака вложился в свой слой */ }
+```
+
+Читается живой статик, то есть уже итог мержа: значение из патч-блока
+побеждает ровно так же, как его видят скрипты. Разбор ключей — один раз при
+`LoadProgram`, на чтении ни строк, ни аллокаций.
+
+### readonly: рецепт против состояния
+
+Поле блока по умолчанию изменяемое — это состояние сущности, оно уезжает в сейв.
+Модификатор `readonly` делает поле рецептом: значение задаётся ТОЛЬКО в
+объявлении, присваивание из обработчика — ошибка компиляции (E0225/E0226).
+
+```
+weapon sword {
+    readonly float damage = 12.5;   // рецепт
+    int hits = 0;                   // состояние
+    event OnHit(Unit u) { hits = hits + 1; }
+}
+```
+
+`readonly` разрешён везде, где есть поля — `class`, `trigger`, `listener`,
+блок-архетип. Слово **контекстное**: поле или локаль с именем `readonly`
+по-прежнему компилируется.
+
+Главное следствие — **сейв**. readonly-поля не сериализуются и всегда
+переинициализируются из текущей программы, поэтому балансный патч доезжает до
+СТАРЫХ сохранений: правка `damage = 12 → 20` меняет урон и у тех, кто грузит
+сейв, а не только в новой игре. Изменяемые поля восстанавливаются как раньше.
+
+`readonly` — про «не меняется после загрузки», а НЕ про «нельзя переопределить»:
+патч-блок вправе объявить своё значение, это декларация, а не присваивание.
+Мерж ужесточает: если хоть один блок написал `readonly`, поле readonly у всех.
+
+### Дефолты: вид как схема сущности
+
+`ConstOr<T>` даёт константе значение по умолчанию. Поле после этого есть у
+КАЖДОЙ сущности вида — блок вправе его не объявлять, и **скрипт всё равно
+читает его по имени**:
+
+```csharp
+host.Archetype("weapon")
+    .Const<float>("damage", required: true)    // блок ОБЯЗАН объявить
+    .ConstOr<int>("windup_ticks", 3)           // может не объявлять — будет 3
+    .ConstOr<string>("tooltip", null);
+```
+
+```
+weapon dagger {
+    event OnHit(Unit u) { UnitApi.Windup(windup_ticks); }   // 3, нигде не написано
+}
+weapon greatsword {
+    float damage = 30.0;
+    int windup_ticks = 9;                                   // переопределение
+    event OnHit(Unit u) { ... }
+}
+```
+
+Константа вида **readonly по определению** — модификатор в блоке писать не
+обязательно (можно, он просто дублирует контракт). Поэтому дефолт и не может
+быть затёрт в рантайме и не уезжает в сейв: правка дефолта в новой версии игры
+доезжает до старых сохранений.
+
+`required` и дефолт взаимоисключающи (ошибка регистрации). Константа без того и
+без другого не засевается намеренно: иначе необъявленное поле молча читалось бы
+как `0`/`false`/`null` — тот самый тихий ноль, от которого контракт и защищает.
+`ImplementsConst(kind, id, field)` отвечает, объявил ли поле сам блок или взят
+дефолт вида.
+
+Для ЗАКРЫТЫХ наборов хост может объявить ожидаемые поля — и тогда компилятор
+ловит забытую или опечатанную константу так же, как `KnownIds` ловит опечатку
+в id (механизм вместо договорённости: меч без `damage` больше не собирается
+молча, чтобы ничего не делать на плейтесте):
+
+```csharp
+host.Archetype("weapon")
+    .KnownIds(gameData.WeaponIds)
+    .Const<float>("damage", required: true, doc: "урон удара")
+    .Const<int>("windup_ticks");
+```
+
+- нет обязательной константы — **E0223**;
+- тип поля разошёлся с объявленным — **E0224**;
+- поле вне объявленного набора — предупреждение **W0101** (вероятная опечатка;
+  собственное состояние блока законно, поэтому не ошибка).
+
+Проверяется ИТОГ мержа: базовый блок вправе не объявлять поле, если его
+добавляет патч. Ничего не объявлено — набор открыт, чекер молчит (это и есть
+режим атрибутов). Объявленный контракт уезжает в `salamander-api.json`, так что
+CLI-чекер и LSP ловят ту же ошибку вне игры.
 
 ## Переопределение: поздние блоки патчат ранние
 
@@ -343,8 +450,11 @@ listener Burn  { event OnUnitDamageTaken(Unit t, Unit s, float a, DamageType d);
 ни имён видов, ни id: `GetArchetypeKinds` (все виды), `GetArchetypeIds(kind)`
 (все id вида), `GetImplementedEvents(kind, id)` (что реально заполнено), плюс
 `GetArchetypeEvents(kind)` (полный список событий вида — сам шаблон) и
-`ImplementsEvent(kind, id, name)`. Контракт «обязательно реализовать» — сверка
-реализованного с требуемым набором и отказ загрузки матча при недостаче.
+`ImplementsEvent(kind, id, name)`. Данные сущности берутся тем же обходом:
+`GetArchetypeConsts(kind, id)` (какие поля объявлены) и
+`TryGetArchetypeConst(kind, id, field)` (значение). Контракт «обязательно
+реализовать» — сверка реализованного с требуемым набором и отказ загрузки матча
+при недостаче.
 
 ## Граница: движок НЕ сборщик
 
@@ -455,7 +565,11 @@ listener Burn  { event OnUnitDamageTaken(Unit t, Unit s, float a, DamageType d);
   `self`, авто-detach при смерти цели, гибель файберов подписки на detach.
 - **Архетипы**: адресный диспатч по (вид, id), id интернированы в int (горячий
   путь без строк), API сборщика `HasArchetype`/`GetArchetypeIds`, KnownIds ловят
-  опечатки на компиляции.
+  опечатки на компиляции. Константы контента читаются хостом
+  (`TryGetArchetypeConst`/`GetArchetypeConsts`), `Const<T>`/`ConstOr<T>`
+  объявляют ожидаемые поля и их дефолты — забытая константа ломает сборку, а не
+  плейтест; `readonly`-поля не уезжают в сейв, поэтому балансный патч доезжает
+  до старых сохранений.
 - **Хост-API**: fluent (`Class/Prop/Fn/Act/Event/Enum/Archetype`) и атрибуты
   (`[SalamanderClass]`/`[SalamanderApi]`, инстанс-API); json-манифест API для
   оффлайн-чекера и IDE.

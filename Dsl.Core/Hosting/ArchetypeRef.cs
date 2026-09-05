@@ -31,6 +31,73 @@ namespace Dsl.Hosting
 
         public ArchetypeBuilder KnownIds(params string[] ids) => KnownIds((IEnumerable<string>)ids);
 
+        /// <summary>
+        /// Ожидаемая константа контента: «у сущности этого вида есть поле damage
+        /// типа float». То же, что KnownIds, но про поля: объявленный набор
+        /// непуст — чекер сверяет с ним каждый блок вида. Нет обязательной —
+        /// E0223, не тот тип — E0224, поле вне набора — предупреждение W0101
+        /// (вероятная опечатка в имени).
+        ///
+        /// Объявляйте ТОЛЬКО закрытые наборы (оружие, NPC — контракт игры). Там,
+        /// где набор полей открыт принципиально (атрибуты сами решают, в какие
+        /// слои вкладываются), не объявляйте ничего: рецепт читается рантаймом
+        /// через engine.GetArchetypeConsts / TryGetArchetypeConst.
+        /// </summary>
+        /// <param name="name">Имя поля в блоке.</param>
+        /// <param name="required">true — блок без этого поля не компилируется.</param>
+        /// <param name="doc">Описание для манифеста и подсказок редактора.</param>
+        public ArchetypeBuilder Const<T>(string name, bool required = false, string doc = null)
+        {
+            _host.Registry.DefineArchetypeConst(KindId, name, _host.Types.RefOf<T>(), required, doc);
+            return this;
+        }
+
+        /// <summary>
+        /// Константа со значением по умолчанию: «замах 3 тика, если блок не сказал
+        /// иначе». Поле есть у КАЖДОЙ сущности вида — блок вправе его не объявлять,
+        /// и скрипты всё равно читают его по имени, а хост — через
+        /// TryGetArchetypeConst. Объявление в блоке просто перекрывает значение.
+        ///
+        /// Отдельное имя метода, а не перегрузка Const: у Const&lt;bool&gt;("flag", true)
+        /// «дефолт true» и «required: true» были бы неразличимы.
+        /// </summary>
+        public ArchetypeBuilder ConstOr<T>(string name, T value, string doc = null)
+        {
+            var type = _host.Types.RefOf<T>();
+            EncodeDefault(type, value, out var variant, out var str);
+            _host.Registry.DefineArchetypeConst(KindId, name, type, false, doc, true, variant, str);
+            return this;
+        }
+
+        /// <summary>
+        /// Значение дефолта → форма, в которой его хранит реестр. Строки идут
+        /// отдельным полем: их id раздаёт StringTable уже при загрузке программы,
+        /// а на регистрации никакого движка ещё нет.
+        /// </summary>
+        private static void EncodeDefault<T>(Semantics.TypeRef type, T value, out Variant variant, out string str)
+        {
+            variant = Variant.Nil;
+            str = null;
+            switch (type.Kind)
+            {
+                case Semantics.TypeKind.Bool: variant = Variant.Bool((bool)(object)value); return;
+                case Semantics.TypeKind.Int: variant = Variant.Int((int)(object)value); return;
+                case Semantics.TypeKind.Float: variant = Variant.Float((float)(object)value); return;
+                case Semantics.TypeKind.Double: variant = Variant.Double((double)(object)value); return;
+                case Semantics.TypeKind.Str: str = (string)(object)value; return;
+                case Semantics.TypeKind.Enum:
+                    // значения енума в реестре обязаны быть 0..N-1, поэтому
+                    // числовое значение и есть индекс имени
+                    variant = Variant.Enum(type.EnumId, System.Convert.ToInt32(value));
+                    return;
+                default:
+                    throw new ArgumentException(
+                        $"Дефолт для константы '{typeof(T).Name}' не поддержан: значением по умолчанию " +
+                        "может быть только литерал (bool/int/float/double/string) или элемент енума. " +
+                        "Сущности и коллекции константами быть не могут.");
+            }
+        }
+
         private int Define(string name, MethodDoc doc, params Semantics.TypeRef[] ps)
         {
             if (doc != null && doc.Names.Count != ps.Length)

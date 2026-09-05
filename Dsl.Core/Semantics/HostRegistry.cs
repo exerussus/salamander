@@ -61,6 +61,31 @@ namespace Dsl.Semantics
     }
 
     /// <summary>
+    /// Ожидаемая константа вида — «контракт контента»: какое поле обязан (или
+    /// может) объявить блок этого вида. Роль та же, что у KnownIds для id:
+    /// объявленный набор непуст — чекер сверяет с ним поля каждого блока.
+    /// Ничего не объявлено — набор ОТКРЫТ (так живут атрибуты: имена слотов
+    /// знает сам атрибут, кор о них не слышал), проверять нечего.
+    /// </summary>
+    public sealed class ArchetypeConstInfo
+    {
+        public int Index;        // порядок объявления хостом
+        public string Name;
+        public TypeRef Type;
+        public bool Required;    // нет в блоке → ошибка компиляции, а не пустая сущность на плейтесте
+        public string Doc;
+
+        /// <summary>
+        /// Дефолт: блок вправе поле не объявлять — оно всё равно есть, видно
+        /// скриптам и читается хостом. Взаимоисключающ с Required (иначе
+        /// «обязательно, но есть значение по умолчанию» — противоречие).
+        /// </summary>
+        public bool HasDefault;
+        public Variant DefaultValue;   // bool/int/float/double/enum
+        public string DefaultStr;      // string (null-строка — это HasDefault со DefaultStr == null)
+    }
+
+    /// <summary>
     /// Вид игровой сущности, механики которой скрипты описывают блоками
     /// «вид id { event ... }» (spell/item/hero/...). Объявляется хостом;
     /// для языка виды — данные, а не ключевые слова.
@@ -74,6 +99,9 @@ namespace Dsl.Semantics
         public readonly Dictionary<string, ArchetypeEventInfo> EventByName = new Dictionary<string, ArchetypeEventInfo>();
         /// <summary>Известные игре id (опционально): непусто — чекер ловит опечатки в id блоков.</summary>
         public HashSet<string> KnownIds;
+        /// <summary>Ожидаемые константы (опционально): непусто — чекер сверяет поля блоков.</summary>
+        public readonly List<ArchetypeConstInfo> Consts = new List<ArchetypeConstInfo>();
+        public readonly Dictionary<string, ArchetypeConstInfo> ConstByName = new Dictionary<string, ArchetypeConstInfo>();
     }
 
     public sealed class HostEventInfo
@@ -270,6 +298,42 @@ namespace Dsl.Semantics
             k.Events.Add(e);
             k.EventByName[name] = e;
             return e.LocalId;
+        }
+
+        /// <summary>
+        /// Объявить ожидаемую константу вида (поле блока-архетипа). Дубль —
+        /// ошибка регистрации, как и у событий: молча перезаписанное объявление
+        /// дало бы контракт, которого никто не писал.
+        /// </summary>
+        public int DefineArchetypeConst(int kindId, string name, TypeRef type,
+                                        bool required = false, string doc = null)
+            => DefineArchetypeConst(kindId, name, type, required, doc, false, Variant.Nil, null);
+
+        public int DefineArchetypeConst(int kindId, string name, TypeRef type,
+                                        bool required, string doc,
+                                        bool hasDefault, Variant defaultValue, string defaultStr)
+        {
+            var k = _archKinds[kindId];
+            if (k.ConstByName.ContainsKey(name))
+                throw new System.ArgumentException($"Константа '{name}' уже объявлена у вида '{k.Name}'.");
+            if (required && hasDefault)
+                throw new System.ArgumentException(
+                    $"Константа '{name}' вида '{k.Name}': required и дефолт взаимоисключающи — " +
+                    "либо блок обязан её объявить, либо есть значение по умолчанию.");
+            var c = new ArchetypeConstInfo
+            {
+                Index = k.Consts.Count,
+                Name = name,
+                Type = type ?? TypeRef.Error,
+                Required = required,
+                Doc = doc,
+                HasDefault = hasDefault,
+                DefaultValue = defaultValue,
+                DefaultStr = defaultStr,
+            };
+            k.Consts.Add(c);
+            k.ConstByName[name] = c;
+            return c.Index;
         }
 
         /// <summary>Список id, известных игре (для валидации блоков чекером). null/пусто — любые id.</summary>

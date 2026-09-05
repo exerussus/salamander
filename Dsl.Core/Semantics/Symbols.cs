@@ -21,7 +21,28 @@ namespace Dsl.Semantics
         public int Slot = -1;        // для не-const: индекс статического слота
         public Variant ConstValue;   // для const (bool/int/float/enum)
         public string ConstStr;      // для const string (интернируется компилятором как литерал)
-        public FieldMember Decl;
+        public FieldMember Decl;     // null — поле засеяно контрактом вида, в скриптах не объявлено
+
+        /// <summary>
+        /// readonly: слот есть (хост читает, сейв не трогает), но присваивать можно
+        /// только в объявлении. «Липкое» при мерже: если хоть один блок написал
+        /// readonly — поле readonly у всех.
+        /// </summary>
+        public bool IsReadOnly;
+
+        /// <summary>Имя вида, если поле пришло из его контракта (Const/ConstOr); иначе null.
+        /// Непусто ⇒ поле readonly по определению — константа на то и константа.</summary>
+        public string ContractKind;
+        public bool FromKindContract => ContractKind != null;
+
+        /// <summary>Хоть один блок объявил это поле явно (для ScriptEngine.ImplementsConst).</summary>
+        public bool DeclaredInScript;
+
+        // дефолт из контракта вида: разливается в слот ДО <init>, поэтому
+        // объявление в блоке его перекрывает само собой (тот же слот)
+        public bool HasDefault;
+        public Variant DefaultValue;  // bool/int/float/double/enum
+        public string DefaultStr;     // string (интернируется компилятором как литерал)
     }
 
     public sealed class EnumSymbol : Symbol

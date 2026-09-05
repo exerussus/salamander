@@ -83,6 +83,29 @@ namespace Dsl.Codegen
         /// переживают правку скриптов, по индексам — нет.
         /// </summary>
         public string[] StaticKeys = System.Array.Empty<string>();
+
+        /// <summary>
+        /// readonly-слоты: значение задаётся только в объявлении. Сейв их НЕ пишет
+        /// и НЕ восстанавливает — они всегда переинициализируются из текущей
+        /// программы, поэтому балансный патч доезжает до старых сохранений
+        /// (иначе меч в сохранёнке навсегда остался бы со старым уроном).
+        /// </summary>
+        public bool[] StaticReadOnly = System.Array.Empty<bool>();
+
+        /// <summary>
+        /// Значения по умолчанию из контракта вида (ConstOr): разливаются в слоты
+        /// ПЕРЕД &lt;init&gt;, поэтому объявление в блоке перекрывает их само собой.
+        /// Nil — дефолта нет. Строки лежат как Variant.Str с индексом в
+        /// StringLiterals: настоящий id раздаёт StringTable уже при загрузке.
+        /// </summary>
+        public Dsl.Runtime.Variant[] StaticDefaults = System.Array.Empty<Dsl.Runtime.Variant>();
+
+        /// <summary>
+        /// Объявлен ли слот в самих скриптах (а не пришёл только из дефолта вида).
+        /// Нужен ScriptEngine.ImplementsConst: «модер переопределил или взял как есть».
+        /// </summary>
+        public bool[] StaticDeclared = System.Array.Empty<bool>();
+
         public string[] StringLiterals;        // пул строковых литералов
         public TriggerRuntimeInfo[] Triggers;
         public EventHandlerRef[][] EventHandlers; // [hostEventId] -> упорядоченные обработчики

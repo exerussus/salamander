@@ -264,11 +264,17 @@ namespace Dsl.Runtime
             }
 
             // --- содержимое: статики ПО КЛЮЧАМ (модуль-независимым) ---
+            // readonly-слоты пропускаем: это не состояние, а объявленные значения.
+            // Их восстановление из сейва означало бы, что балансный патч не доезжает
+            // до старых сохранений — меч навсегда остался бы со старым уроном.
             var keys = _prog.StaticKeys ?? Array.Empty<string>();
-            int stCount = Math.Min(_statics.Length, keys.Length);
+            int limit = Math.Min(_statics.Length, keys.Length);
+            int stCount = 0;
+            for (int i = 0; i < limit; i++) if (!IsReadOnlyStatic(i)) stCount++;
             w.Write(stCount);
-            for (int i = 0; i < stCount; i++)
+            for (int i = 0; i < limit; i++)
             {
+                if (IsReadOnlyStatic(i)) continue;
                 w.Write(keys[i] ?? "");
                 WriteVariant(w, _statics[i], resolver);
             }
@@ -443,6 +449,13 @@ namespace Dsl.Runtime
         }
 
         /// <summary>Привести рантайм к заведомо пустому состоянию после неудачной загрузки.</summary>
+        /// <summary>readonly-слот: объявленное значение, а не состояние — в сейв не идёт.</summary>
+        private bool IsReadOnlyStatic(int slot)
+        {
+            var ro = _prog.StaticReadOnly;
+            return ro != null && (uint)slot < (uint)ro.Length && ro[slot];
+        }
+
         private void ResetRuntimeAfterFailedLoad()
         {
             KillAllFibers();
@@ -727,10 +740,16 @@ namespace Dsl.Runtime
             }
 
             // --- содержимое: статики ПО КЛЮЧАМ ---
+            // readonly-слоты в карту не попадают: их значение уже поставил RunInit
+            // из ТЕКУЩЕЙ программы, и перезаписывать его сохранённым нельзя
             var keyToSlot = new Dictionary<string, int>(StringComparer.Ordinal);
+            var readOnlyKeys = new HashSet<string>(StringComparer.Ordinal);
             var progKeys = _prog.StaticKeys ?? Array.Empty<string>();
             for (int i = 0; i < progKeys.Length && i < _statics.Length; i++)
-                keyToSlot[progKeys[i] ?? ""] = i;
+            {
+                if (IsReadOnlyStatic(i)) readOnlyKeys.Add(progKeys[i] ?? "");
+                else keyToSlot[progKeys[i] ?? ""] = i;
+            }
 
             int stCount = ReadCount(r, 1 << 22, "число статических полей");
             var seenKeys = new HashSet<string>(StringComparer.Ordinal);
@@ -740,7 +759,9 @@ namespace Dsl.Runtime
                 var value = ReadVariant(r, ctx);
                 seenKeys.Add(key);
                 if (keyToSlot.TryGetValue(key, out int slot)) _statics[slot] = value;
-                else report.MissingStatics.Add(key);   // поле исчезло из программы
+                // поле стало readonly в новой версии скриптов: значение из сейва
+                // молча отбрасываем — это не потеря данных, а обновление баланса
+                else if (!readOnlyKeys.Contains(key)) report.MissingStatics.Add(key);
             }
             foreach (var kv in keyToSlot)
                 if (!seenKeys.Contains(kv.Key))

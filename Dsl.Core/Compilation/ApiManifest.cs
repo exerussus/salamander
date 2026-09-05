@@ -63,11 +63,30 @@ namespace Dsl.Compilation
             [JsonProperty("methods")] public MethodDef[] Methods = Array.Empty<MethodDef>();
         }
 
+        /// <summary>Ожидаемая константа вида (поле блока-архетипа) — контракт контента.</summary>
+        public sealed class ConstDef
+        {
+            [JsonProperty("name")] public string Name;
+            [JsonProperty("type")] public string Type;
+            [JsonProperty("required")] public bool Required;
+            [JsonProperty("doc", NullValueHandling = NullValueHandling.Ignore)] public string Doc;
+
+            /// <summary>
+            /// Значение по умолчанию. Присутствие ключа = дефолт есть (в том числе
+            /// "default": null — «по умолчанию строки нет»), поэтому Ignore здесь
+            /// НЕ ставится, а факт наличия читается через hasDefault.
+            /// Енум пишется ИМЕНЕМ элемента: перенумеровали енум — дефолт не поехал.
+            /// </summary>
+            [JsonProperty("default")] public object Default;
+            [JsonProperty("hasDefault")] public bool HasDefault;
+        }
+
         public sealed class ArchetypeKindDef
         {
             [JsonProperty("name")] public string Name;
             [JsonProperty("summary", NullValueHandling = NullValueHandling.Ignore)] public string Summary;
             [JsonProperty("knownIds", NullValueHandling = NullValueHandling.Ignore)] public string[] KnownIds;
+            [JsonProperty("consts", NullValueHandling = NullValueHandling.Ignore)] public ConstDef[] Consts;
             [JsonProperty("events")] public EventDef[] Events = Array.Empty<EventDef>();
         }
 
@@ -155,11 +174,32 @@ namespace Dsl.Compilation
                         info.KnownIds.CopyTo(known);
                         Array.Sort(known, StringComparer.Ordinal); // стабильный порядок в json
                     }
+                    ConstDef[] consts = null;
+                    if (info.Consts.Count > 0)
+                    {
+                        // порядок объявления хостом — он же порядок в json
+                        consts = new ConstDef[info.Consts.Count];
+                        for (int c = 0; c < consts.Length; c++)
+                        {
+                            var ci = info.Consts[c];
+                            consts[c] = new ConstDef
+                            {
+                                Name = ci.Name,
+                                Type = TypeToString(r, ci.Type),
+                                Required = ci.Required,
+                                Doc = ci.Doc,
+                                HasDefault = ci.HasDefault,
+                                Default = ci.HasDefault ? EncodeDefault(r, ci) : null,
+                            };
+                        }
+                    }
+
                     kinds.Add(new ArchetypeKindDef
                     {
                         Name = info.Name,
                         Summary = info.Summary,
                         KnownIds = known,
+                        Consts = consts,
                         Events = kevents.ToArray(),
                     });
                 }
@@ -241,6 +281,12 @@ namespace Dsl.Compilation
                     SplitParams(r, ev.Params, out var types, out var names, out var docs);
                     r.DefineArchetypeEvent(kid, ev.Name, types, ev.Summary, names, docs);
                 }
+                foreach (var c in k.Consts ?? Array.Empty<ConstDef>())
+                {
+                    var ct = ParseType(r, c.Type);
+                    DecodeDefault(r, c, ct, out var dv, out var ds);
+                    r.DefineArchetypeConst(kid, c.Name, ct, c.Required, c.Doc, c.HasDefault, dv, ds);
+                }
                 if (k.KnownIds != null && k.KnownIds.Length > 0)
                     r.SetArchetypeKnownIds(kid, k.KnownIds);
             }
@@ -263,6 +309,64 @@ namespace Dsl.Compilation
             }
         }
 
+        // ===================================================================
+        // Дефолты констант ⇄ json
+        // ===================================================================
+
+        private static object EncodeDefault(HostRegistry r, ArchetypeConstInfo c)
+        {
+            switch (c.Type.Kind)
+            {
+                case TypeKind.Bool: return c.DefaultValue.AsBool;
+                case TypeKind.Int: return c.DefaultValue.AsInt;
+                case TypeKind.Float: return c.DefaultValue.ToF();
+                case TypeKind.Double: return c.DefaultValue.ToD();
+                case TypeKind.Str: return c.DefaultStr;
+                case TypeKind.Enum:
+                    // именем, а не индексом: перенумеровали енум — дефолт не съехал
+                    if (r.TryGetEnumById(c.Type.EnumId, out var en)
+                        && (uint)c.DefaultValue.EnumValue < (uint)en.Names.Length)
+                        return en.Names[c.DefaultValue.EnumValue];
+                    return c.DefaultValue.EnumValue;
+                default: return null;
+            }
+        }
+
+        private static void DecodeDefault(HostRegistry r, ConstDef c, TypeRef type,
+                                          out Variant value, out string str)
+        {
+            value = Variant.Nil;
+            str = null;
+            if (!c.HasDefault) return;
+
+            // Newtonsoft отдаёт числа как long/double — приводим по ОБЪЯВЛЕННОМУ
+            // типу, а не по тому, что угадал json (3 и 3.0 неразличимы в тексте)
+            switch (type.Kind)
+            {
+                case TypeKind.Bool: value = Variant.Bool(Convert.ToBoolean(c.Default)); return;
+                case TypeKind.Int: value = Variant.Int(Convert.ToInt32(c.Default)); return;
+                case TypeKind.Float: value = Variant.Float(Convert.ToSingle(c.Default)); return;
+                case TypeKind.Double: value = Variant.Double(Convert.ToDouble(c.Default)); return;
+                case TypeKind.Str: str = c.Default as string; return;
+                case TypeKind.Enum:
+                {
+                    if (!r.TryGetEnumById(type.EnumId, out var en))
+                        throw new FormatException(
+                            $"salamander-api.json: дефолт константы '{c.Name}' ссылается на неизвестный енум.");
+                    string member = c.Default as string;
+                    if (member == null || !en.Members.TryGetValue(member, out int v))
+                        throw new FormatException(
+                            $"salamander-api.json: '{c.Default}' не является элементом енума '{en.Name}' " +
+                            $"(дефолт константы '{c.Name}').");
+                    value = Variant.Enum(en.Id, v);
+                    return;
+                }
+                default:
+                    throw new FormatException(
+                        $"salamander-api.json: у константы '{c.Name}' типа '{c.Type}' не может быть дефолта.");
+            }
+        }
+
         private static Variant StubGetter(IHostContext ctx, object o) => Variant.Nil;
         private static void StubSetter(IHostContext ctx, object o, Variant v) { }
         private static void StubFunction(ref CallContext ctx) { }
@@ -280,6 +384,10 @@ namespace Dsl.Compilation
                 case TypeKind.Bool: return "bool";
                 case TypeKind.Int: return "int";
                 case TypeKind.Float: return "float";
+                // double — полноценный тип языка; без этой ветки он уезжал в
+                // default и печатался как "void": инструменты видели в манифесте
+                // не тот тип, чем ломали проверку у себя
+                case TypeKind.Double: return "double";
                 case TypeKind.Str: return "string";
                 case TypeKind.Fiber: return "Fiber";
                 case TypeKind.Sub: return "Subscription";
@@ -322,6 +430,7 @@ namespace Dsl.Compilation
                 case "bool": return TypeRef.Bool;
                 case "int": return TypeRef.Int;
                 case "float": return TypeRef.Float;
+                case "double": return TypeRef.Double;
                 case "string": return TypeRef.Str;
                 case "Fiber": return TypeRef.Fiber;
                 case "Subscription": return TypeRef.Subscription;

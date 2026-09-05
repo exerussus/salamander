@@ -98,6 +98,8 @@ namespace Dsl.Syntax
         public TypeSyntax DeclType;
         public Expr Init;      // может быть null
         public bool IsConst;
+        /// <summary>Модификатор readonly: слот есть, но присваивать можно только в объявлении.</summary>
+        public bool IsReadOnly;
 
         // аннотации семантики:
         public TypeRef Type;

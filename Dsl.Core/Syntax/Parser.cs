@@ -229,6 +229,15 @@ namespace Dsl.Syntax
                 case TokenKind.KwFunc: return ParseFunc(FuncKind.Func);
                 case TokenKind.KwAction: return ParseFunc(FuncKind.Action);
                 case TokenKind.KwEvent: return ParseFunc(FuncKind.Event);
+
+                // 'readonly' — КОНТЕКСТНОЕ слово, а не ключевое: иначе скрипты, где
+                // так называется поле или локаль, перестали бы компилироваться.
+                // Модификатором оно считается только перед типом, а тип всегда
+                // начинается с идентификатора (int/float/List/Unit — все Ident).
+                case TokenKind.Ident when Cur.Text == "readonly" && Peek().Kind == TokenKind.Ident:
+                    Advance();
+                    return ParseField(readOnly: true);
+
                 default: return ParseField();
             }
         }
@@ -244,7 +253,7 @@ namespace Dsl.Syntax
             return new FieldMember { Name = name, DeclType = ty, Init = init, IsConst = true, Pos = pos };
         }
 
-        private FieldMember ParseField()
+        private FieldMember ParseField(bool readOnly = false)
         {
             var pos = Cur.Pos;
             var ty = ParseType();
@@ -252,7 +261,11 @@ namespace Dsl.Syntax
             Expr init = null;
             if (Match(TokenKind.Assign)) init = ParseExpr();
             Expect(TokenKind.Semicolon, "E0020", "';'");
-            return new FieldMember { Name = name, DeclType = ty, Init = init, IsConst = false, Pos = pos };
+            return new FieldMember
+            {
+                Name = name, DeclType = ty, Init = init,
+                IsConst = false, IsReadOnly = readOnly, Pos = pos,
+            };
         }
 
         private FuncMember ParseFunc(FuncKind kind)

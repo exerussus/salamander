@@ -127,7 +127,7 @@
                 },
                 {
                     "name": "keyword.other.salamander",
-                    "match": "\\b(spawn|new|const|var|disabled)\\b"
+                    "match": "\\b(spawn|new|const|readonly|var|disabled)\\b"
                 }
             ]
         },
@@ -324,7 +324,7 @@
         },
         "archetype-decl": {
             "comment": "Блок-архетип: вид (объявлен хостом) + id. spell fireball { / item \"sword.v2\" {",
-            "match": "^\\s*(?!(?:trigger|class|enum|listener|func|action|event|if|else|while|for|in|break|continue|return|wait|until|spawn|new|const|var|disabled|true|false|null|int|float|bool|string|void|pass|self)\\b)([A-Za-z_]\\w*)\\s+(\"[^\"]*\"|[A-Za-z_]\\w*)\\s*(?=\\{)",
+            "match": "^\\s*(?!(?:trigger|class|enum|listener|func|action|event|if|else|while|for|in|break|continue|return|wait|until|spawn|new|const|readonly|var|disabled|true|false|null|int|float|bool|string|void|pass|self)\\b)([A-Za-z_]\\w*)\\s+(\"[^\"]*\"|[A-Za-z_]\\w*)\\s*(?=\\{)",
             "captures": {
                 "1": {
                     "name": "storage.type.archetype.salamander"

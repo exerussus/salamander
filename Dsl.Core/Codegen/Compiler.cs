@@ -204,10 +204,21 @@ namespace Dsl.Codegen
             // стабильные ключи статиков: сейв сопоставляет значения по ним, а не
             // по индексу слота (вставка поля в середину сдвигает все следующие)
             var staticKeys = new string[_sem.StaticFields.Count];
+            var staticReadOnly = new bool[staticKeys.Length];
+            var staticDeclared = new bool[staticKeys.Length];
+            var staticDefaults = new Variant[staticKeys.Length];
             for (int i = 0; i < staticKeys.Length; i++)
             {
                 var fs = _sem.StaticFields[i];
                 staticKeys[i] = (fs.OwnerKey ?? "?") + "." + fs.Name;
+                staticReadOnly[i] = fs.IsReadOnly;
+                staticDeclared[i] = fs.DeclaredInScript;
+                if (!fs.HasDefault) continue;
+                // строковый дефолт интернируется в общий пул литералов — так же,
+                // как это делает EmitConst для const string
+                staticDefaults[i] = fs.Type != null && fs.Type.Kind == TypeKind.Str
+                    ? (fs.DefaultStr == null ? Variant.Nil : Variant.Str(LitId(fs.DefaultStr)))
+                    : fs.DefaultValue;
             }
 
             return new CompiledProgram
@@ -215,6 +226,9 @@ namespace Dsl.Codegen
                 Functions = chunks.ToArray(),
                 StaticCount = _sem.StaticFields.Count,
                 StaticKeys = staticKeys,
+                StaticReadOnly = staticReadOnly,
+                StaticDeclared = staticDeclared,
+                StaticDefaults = staticDefaults,
                 StringLiterals = _stringLits.ToArray(),
                 Triggers = triggers,
                 EventHandlers = handlers,
@@ -242,7 +256,9 @@ namespace Dsl.Codegen
             foreach (var fs in _sem.StaticFields)
             {
                 var f = fs.Decl;
-                if (f.Init == null) continue; // дефолт — Nil (читается как 0/false/null)
+                // Decl == null — поле засеяно контрактом вида и в скриптах не
+                // объявлено: его значение приходит из StaticDefaults до <init>
+                if (f == null || f.Init == null) continue; // дефолт — Nil (читается как 0/false/null)
                 SetLine(f.Pos);
                 EmitExpr(f.Init);
                 Emit(OpCode.StoreStatic, fs.Slot);

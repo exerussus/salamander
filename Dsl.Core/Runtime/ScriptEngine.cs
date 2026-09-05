@@ -147,6 +147,18 @@ namespace Dsl.Runtime
         // ===== архетипы =====
         private readonly Dictionary<string, int> _archKindByName = new Dictionary<string, int>();
 
+        /// <summary>Поля одного блока-архетипа: имя → слот в _statics (порядок объявления).</summary>
+        private sealed class ArchConsts
+        {
+            public static readonly ArchConsts Empty = new ArchConsts();
+            public string[] Names = Array.Empty<string>();
+            public int[] Slots = Array.Empty<int>();
+        }
+
+        // [kindId][archIndex] — «рецепт» сущности: что модер объявил в блоке.
+        // Строится один раз в LoadProgram (см. BuildArchetypeConstIndex).
+        private ArchConsts[][] _archConsts = Array.Empty<ArchConsts[]>();
+
         private sealed class TriggerRuntimeStats
         {
             public long TimesFired;
@@ -225,6 +237,7 @@ namespace Dsl.Runtime
             _archKindByName.Clear();
             for (int i = 0; i < prog.ArchetypeKinds.Length; i++)
                 _archKindByName[prog.ArchetypeKinds[i].Name] = i;
+            BuildArchetypeConstIndex();
 
             _moduleIndex.Clear();
             _moduleEnabled = new bool[prog.Modules.Length];
@@ -239,6 +252,7 @@ namespace Dsl.Runtime
 
         private void RunInit()
         {
+            ApplyStaticDefaults();
             var f = CreateFiber(CompiledProgram.InitFuncIndex, null, 0, 0, -1);
             _current = f;
             f.State = FiberState.Running;
@@ -252,6 +266,29 @@ namespace Dsl.Runtime
                 OnError?.Invoke($"<init>: инициализация статических полей не уложилась в {InitInstructionLimit} " +
                                 "инструкций и прервана — вероятно, инициализатор вызывает зацикленную функцию.");
             _fibers.Return(f);
+        }
+
+        /// <summary>
+        /// Значения по умолчанию из контракта вида — ДО &lt;init&gt;: инициализатор
+        /// блока пишет в тот же слот и перекрывает дефолт сам собой. Зовётся и из
+        /// LoadState (он тоже гоняет RunInit), поэтому readonly-константы после
+        /// загрузки сейва берутся из ТЕКУЩЕЙ программы, а не из сохранённой.
+        /// </summary>
+        private void ApplyStaticDefaults()
+        {
+            var defs = _prog.StaticDefaults;
+            if (defs == null) return;
+            int n = Math.Min(defs.Length, _statics.Length);
+            for (int i = 0; i < n; i++)
+            {
+                var d = defs[i];
+                if (d.IsNil) continue;
+                // строковый дефолт лежит как индекс в пуле литералов — настоящий
+                // id в StringTable раздан только что, при загрузке программы
+                _statics[i] = d.Type == VariantType.Str
+                    ? Variant.Str(_litIds[d.StrId])
+                    : d;
+            }
         }
 
         // ===================================================================
@@ -340,6 +377,127 @@ namespace Dsl.Runtime
             into.Clear();
             if (_prog == null || !_archKindByName.TryGetValue(kind, out int k)) return;
             into.AddRange(_prog.ArchetypeKinds[k].Ids);
+        }
+
+        // ===================================================================
+        // Константы контента: забрать рецепт, объявленный в блоке-архетипе
+        // ===================================================================
+        // Поле блока — обычный статик со стабильным ключом "a:вид:id.поле"
+        // (CompiledProgram.StaticKeys). Ключи разбираются ОДИН раз при загрузке
+        // программы, дальше чтение — две индексации и короткий линейный поиск
+        // имени: полей у сущности единицы, строк и аллокаций на пути нет.
+
+        private void BuildArchetypeConstIndex()
+        {
+            var kinds = _prog.ArchetypeKinds;
+            var names = new List<string>[kinds.Length][];
+            var slots = new List<int>[kinds.Length][];
+            for (int i = 0; i < kinds.Length; i++)
+            {
+                names[i] = new List<string>[kinds[i].Ids.Length];
+                slots[i] = new List<int>[kinds[i].Ids.Length];
+            }
+
+            var keys = _prog.StaticKeys;
+            int n = keys == null ? 0 : Math.Min(keys.Length, _statics.Length);
+            for (int i = 0; i < n; i++)
+            {
+                // Нужны только поля блоков-архетипов: "a:вид:id.поле" (у классов
+                // "c:", у триггеров "t:"). Вид — идентификатор, двоеточий не
+                // содержит; имя поля — идентификатор, точек не содержит; а вот id
+                // может быть строковым литералом с чем угодно внутри. Поэтому
+                // режем по ПЕРВОМУ ':' после "a:" и по ПОСЛЕДНЕЙ точке.
+                var key = keys[i];
+                if (key == null || !key.StartsWith("a:", StringComparison.Ordinal)) continue;
+                int colon = key.IndexOf(':', 2);
+                int dot = key.LastIndexOf('.');
+                if (colon < 0 || dot <= colon + 1 || dot == key.Length - 1) continue;
+
+                if (!_archKindByName.TryGetValue(key.Substring(2, colon - 2), out int k)) continue;
+                int a = ResolveArchetype(k, key.Substring(colon + 1, dot - colon - 1));
+                if (a < 0) continue;
+
+                (names[k][a] ??= new List<string>()).Add(key.Substring(dot + 1));
+                (slots[k][a] ??= new List<int>()).Add(i);
+            }
+
+            _archConsts = new ArchConsts[kinds.Length][];
+            for (int k = 0; k < kinds.Length; k++)
+            {
+                _archConsts[k] = new ArchConsts[kinds[k].Ids.Length];
+                for (int a = 0; a < _archConsts[k].Length; a++)
+                    _archConsts[k][a] = names[k][a] == null
+                        ? ArchConsts.Empty
+                        : new ArchConsts { Names = names[k][a].ToArray(), Slots = slots[k][a].ToArray() };
+            }
+        }
+
+        /// <summary>
+        /// Значение «константы контента» — поля, объявленного в блоке-архетипе
+        /// (<c>weapon sword { float damage = 12.0; }</c>). Читается из живых
+        /// статиков, то есть уже с учётом мержа: побеждает поздний инициализатор
+        /// патч-блока, ровно как это видят сами скрипты.
+        /// false — нет такого вида, id или поля.
+        /// Строку из результата распаковывает <see cref="ResolveString"/>,
+        /// число — <c>value.AsInt</c> / <c>value.ToF()</c>.
+        /// </summary>
+        public bool TryGetArchetypeConst(string kind, string id, string field, out Variant value)
+        {
+            value = Variant.Nil;
+            if (_prog == null || kind == null || field == null) return false;
+            if (!_archKindByName.TryGetValue(kind, out int k)) return false;
+            int a = ResolveArchetype(k, id);
+            if (a < 0) return false;
+
+            var c = _archConsts[k][a];
+            for (int i = 0; i < c.Names.Length; i++)
+            {
+                if (!string.Equals(c.Names[i], field, StringComparison.Ordinal)) continue;
+                value = _statics[c.Slots[i]];
+                return true;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Имена всех констант, объявленных у сущности (вид, id), в порядке
+        /// объявления. Нужно там, где набор полей ОТКРЫТ и хосту неизвестен
+        /// принципиально: атрибут сам решает, в какие слои вкладывается, и может
+        /// вложиться в тот, о котором кор никогда не слышал. Без перечисления
+        /// такой рецепт нечем прочитать.
+        /// </summary>
+        public void GetArchetypeConsts(string kind, string id, List<string> into)
+        {
+            into.Clear();
+            if (_prog == null || kind == null) return;
+            if (!_archKindByName.TryGetValue(kind, out int k)) return;
+            int a = ResolveArchetype(k, id);
+            if (a < 0) return;
+            into.AddRange(_archConsts[k][a].Names);
+        }
+
+        /// <summary>
+        /// Объявил ли эту константу сам блок, или она пришла из дефолта вида.
+        /// Симметрично ImplementsEvent: перечисление отдаёт ИТОГОВЫЙ набор полей,
+        /// а игре иногда важно знать, тронул ли его модер (сверка покрытия,
+        /// «этот меч кастомизирован»).
+        /// </summary>
+        public bool ImplementsConst(string kind, string id, string field)
+        {
+            if (_prog == null || kind == null || field == null) return false;
+            if (!_archKindByName.TryGetValue(kind, out int k)) return false;
+            int a = ResolveArchetype(k, id);
+            if (a < 0) return false;
+
+            var c = _archConsts[k][a];
+            var declared = _prog.StaticDeclared;
+            for (int i = 0; i < c.Names.Length; i++)
+            {
+                if (!string.Equals(c.Names[i], field, StringComparison.Ordinal)) continue;
+                int slot = c.Slots[i];
+                return declared != null && (uint)slot < (uint)declared.Length && declared[slot];
+            }
+            return false;
         }
 
         // ===================================================================

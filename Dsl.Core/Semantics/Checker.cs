@@ -117,10 +117,13 @@ namespace Dsl.Semantics
             // мерж-сущность обязана иметь хотя бы одно событие; отдельный блок
             // может быть и чистым патчем полей — проверяем итог, а не блок
             foreach (var asym in _archetypes)
+            {
                 if (asym.Events.Count == 0 && asym.Decls.Count > 0)
                     _diag.Error("E0199",
                         $"'{asym.Kind} {asym.Id}' не содержит ни одного события вида (ни в одном из блоков).",
                         asym.Decls[0].Pos);
+                CheckArchetypeConsts(asym);
+            }
 
             foreach (var tr in _triggers)
                 if (tr.Events.Count == 0 && tr.Decls.Count > 0)
@@ -322,6 +325,7 @@ namespace Dsl.Semantics
                 sym = new ArchetypeSymbol { Kind = a.Kind, Id = a.Name, Module = a.Module, Decl = a, KindId = kind.Id };
                 _archByKey[key] = sym;
                 _archetypes.Add(sym); // порядок первого появления
+                SeedArchetypeDefaults(sym, kind);
             }
             sym.Decls.Add(a);
 
@@ -335,9 +339,14 @@ namespace Dsl.Semantics
                 {
                     case FieldMember f:
                         if (f.IsConst)
-                            _diag.Error("E0205", "const внутри блока-архетипа не поддерживается — вынесите в class.", f.Pos);
+                            _diag.Error("E0205",
+                                "const внутри блока-архетипа не поддерживается: он сворачивается в байткод, " +
+                                "слота не имеет и снаружи не читается. Для константы контента используйте " +
+                                "readonly-поле (или объявите её у вида через Const/ConstOr).", f.Pos);
                         else
-                            CollectMergedField(sym.Fields, sym.FieldDecls, f, blockFields, "a:" + sym.Kind + ":" + sym.Id);
+                            CollectMergedField(sym.Fields, sym.FieldDecls, f, blockFields,
+                                "a:" + sym.Kind + ":" + sym.Id,
+                                kind.ConstByName.ContainsKey(f.Name) ? sym.Kind : null);
                         break;
 
                     case FuncMember fn when fn.Kind == FuncKind.Event:
@@ -356,6 +365,119 @@ namespace Dsl.Semantics
         }
 
 
+
+        /// <summary>
+        /// Засев полей из контракта вида: константа с дефолтом есть у КАЖДОЙ
+        /// сущности вида, даже если блок её не объявил. Слот раздаётся здесь, до
+        /// разбора членов блока, поэтому объявление в блоке идёт по обычной ветке
+        /// переопределения — тот же слот, поздний инициализатор побеждает.
+        /// Константы БЕЗ дефолта не засеваются намеренно: иначе необъявленное
+        /// поле молча читалось бы как Nil (0/false/null) — ровно тот тихий ноль,
+        /// от которого контракт и защищает.
+        /// </summary>
+        private void SeedArchetypeDefaults(ArchetypeSymbol sym, ArchetypeKindInfo kind)
+        {
+            if (kind.Consts.Count == 0) return;
+            string ownerKey = "a:" + sym.Kind + ":" + sym.Id;
+            foreach (var c in kind.Consts)
+            {
+                if (!c.HasDefault) continue;
+                var fs = new FieldSymbol
+                {
+                    Name = c.Name,
+                    OwnerKey = ownerKey,
+                    Type = c.Type,
+                    ContractKind = sym.Kind,
+                    IsReadOnly = true,
+                    HasDefault = true,
+                    DefaultValue = c.DefaultValue,
+                    DefaultStr = c.DefaultStr,
+                    Slot = _staticFields.Count,
+                    Decl = null,        // объявления в скриптах нет — <init> его пропустит
+                };
+                _staticFields.Add(fs);
+                sym.Fields[c.Name] = fs;
+            }
+        }
+
+        /// <summary>
+        /// Имя типа для сообщения контентщику: TypeRef.ToString печатает
+        /// сущности и енумы как Entity#3 / Enum#1, а в диагностике контракта
+        /// констант человек должен видеть Unit и School.
+        /// </summary>
+        private string TypeName(TypeRef t)
+        {
+            if (t == null) return "<нет типа>";
+            switch (t.Kind)
+            {
+                case TypeKind.Entity:
+                    return _host.TryGetClassById(t.HostTypeId, out var cls) ? cls.Name : t.ToString();
+                case TypeKind.Enum:
+                    if (_host.TryGetEnumById(t.EnumId, out var en)) return en.Name;
+                    foreach (var se in _scriptEnums) if (se.Id == t.EnumId) return se.Name;
+                    return t.ToString();
+                case TypeKind.Array: return TypeName(t.Elem) + "[]";
+                case TypeKind.List: return "List<" + TypeName(t.Elem) + ">";
+                case TypeKind.Map: return "Map<" + TypeName(t.Key) + ", " + TypeName(t.Val) + ">";
+                default: return t.ToString();
+            }
+        }
+
+        /// <summary>
+        /// Сверка полей мерж-сущности с набором констант, объявленным хостом
+        /// (ArchetypeBuilder.Const&lt;T&gt;). Набор пуст — вид ничего не обещает
+        /// (открытый набор у атрибутов), проверять нечего: ровно так же ведёт
+        /// себя KnownIds. Проверяется ИТОГ мержа, а не отдельный блок: патч
+        /// вправе состоять из одного поля, а базовый блок — не объявлять его.
+        /// </summary>
+        private void CheckArchetypeConsts(ArchetypeSymbol asym)
+        {
+            if (asym.KindId < 0 || asym.Decls.Count == 0) return;
+            var kind = _host.GetArchetypeKind(asym.KindId);
+            if (kind.Consts.Count == 0) return;
+
+            foreach (var c in kind.Consts)
+            {
+                if (!asym.Fields.TryGetValue(c.Name, out var fs))
+                {
+                    if (c.Required)
+                        _diag.Error("E0223",
+                            $"'{asym.Kind} {asym.Id}': не объявлена обязательная константа '{c.Name}' ({TypeName(c.Type)}). " +
+                            "Вид требует её у каждой сущности — без неё блок компилируется чисто и молча ничего не делает.",
+                            asym.Decls[0].Pos);
+                    continue;
+                }
+                // 'float damage;' проходит проверку «поле есть», но значения не даёт:
+                // сущность снова компилируется чисто и молча ничего не делает —
+                // ровно тот случай, ради которого required и заведён
+                if (c.Required && fs.Decl != null && fs.Decl.Init == null)
+                    _diag.Error("E0223",
+                        $"'{asym.Kind} {asym.Id}': обязательная константа '{c.Name}' объявлена без значения. " +
+                        "Вид требует именно значение — допишите инициализатор.",
+                        fs.Decl.Pos);
+
+                if (fs.Type == null || fs.Type.IsError) continue; // тип не разрешился — ошибка уже выдана
+                if (!c.Type.Same(fs.Type))
+                    _diag.Error("E0224",
+                        $"Константа '{c.Name}' вида '{asym.Kind}' объявлена хостом как {TypeName(c.Type)}, в блоке — {TypeName(fs.Type)}.",
+                        fs.Decl?.Pos ?? asym.Decls[0].Pos);
+            }
+
+            // поле вне объявленного набора — почти всегда опечатка в имени
+            // константы. Но блок вправе держать и собственное состояние
+            // (счётчик на сущность), поэтому это предупреждение, а не ошибка.
+            // Идём по FieldDecls (порядок объявления — диагностики стабильны),
+            // каждое имя показываем один раз: у мержа их бывает несколько.
+            var warned = new HashSet<string>();
+            foreach (var f in asym.FieldDecls)
+            {
+                if (kind.ConstByName.ContainsKey(f.Name) || !warned.Add(f.Name)) continue;
+                _diag.Warning("W0101",
+                    $"'{asym.Kind} {asym.Id}': поле '{f.Name}' не входит в набор констант вида " +
+                    "(опечатка в имени? если это собственное состояние блока — всё в порядке).",
+                    f.Pos);
+            }
+        }
 
         private void CollectArchetypeEvent(ArchetypeSymbol sym, ArchetypeKindInfo kind, FuncMember fn, ArchetypeDecl a, HashSet<string> blockNames)
         {
@@ -473,13 +595,23 @@ namespace Dsl.Semantics
                     return;
                 }
                 if (f.Init != null)
-                    sym.Fields[f.Name] = new FieldSymbol { Name = f.Name, IsConst = false, Type = type, Decl = f, Slot = existing.Slot };
+                    sym.Fields[f.Name] = new FieldSymbol
+                    {
+                        Name = f.Name, IsConst = false, Type = type, Decl = f, Slot = existing.Slot,
+                        IsReadOnly = existing.IsReadOnly || f.IsReadOnly, // «липкое», как у статиков
+                    };
+                else
+                    existing.IsReadOnly |= f.IsReadOnly;
                 sym.FieldDecls.Add(f);
                 return;
             }
 
             // слот в блоке ПОДПИСКИ (не статик): у каждой подписки свой массив полей
-            var fs = new FieldSymbol { Name = f.Name, IsConst = false, Type = type, Decl = f, Slot = sym.FieldCount++ };
+            var fs = new FieldSymbol
+            {
+                Name = f.Name, IsConst = false, Type = type, Decl = f,
+                Slot = sym.FieldCount++, IsReadOnly = f.IsReadOnly,
+            };
             sym.Fields[f.Name] = fs;
             sym.FieldDecls.Add(f);
         }
@@ -561,8 +693,13 @@ namespace Dsl.Semantics
         // по-имённо, поздний выигрывает, дубли ловим только внутри блока
         // ===================================================================
 
+        /// <param name="contractKind">
+        /// Имя вида, если это поле объявлено контрактом вида (Const/ConstOr) — тогда
+        /// оно readonly независимо от того, написал ли контентщик модификатор.
+        /// </param>
         private void CollectMergedField(Dictionary<string, FieldSymbol> fields, List<FieldMember> fieldDecls,
-                                        FieldMember f, HashSet<string> blockNames, string ownerKey)
+                                        FieldMember f, HashSet<string> blockNames, string ownerKey,
+                                        string contractKind = null)
         {
             if (!blockNames.Add(f.Name))
             {
@@ -598,6 +735,11 @@ namespace Dsl.Semantics
                 {
                     // тот же статик-слот; поздний инициализатор перезапишет в <init>
                     f.StaticSlot = existing.Slot;
+                    // readonly «липкое»: рассогласование между блоками не ошибка, а
+                    // ужесточение. Иначе патч, забывший модификатор, молча снимал бы
+                    // защиту с константы — а это как раз то, от чего она и нужна
+                    existing.IsReadOnly |= f.IsReadOnly;
+                    existing.DeclaredInScript = true;
                     if (f.Init != null)
                         _staticInitOverrides.Add(new FieldSymbol { Name = f.Name, OwnerKey = ownerKey, Type = type, Decl = f, Slot = existing.Slot });
                 }
@@ -605,7 +747,17 @@ namespace Dsl.Semantics
                 return;
             }
 
-            var nsym = new FieldSymbol { Name = f.Name, OwnerKey = ownerKey, IsConst = f.IsConst, Type = type, Decl = f };
+            var nsym = new FieldSymbol
+            {
+                Name = f.Name,
+                OwnerKey = ownerKey,
+                IsConst = f.IsConst,
+                Type = type,
+                Decl = f,
+                ContractKind = contractKind,
+                IsReadOnly = f.IsReadOnly || contractKind != null,
+                DeclaredInScript = true,
+            };
             if (f.IsConst)
             {
                 FoldConst(f, nsym);
@@ -1262,6 +1414,17 @@ namespace Dsl.Semantics
             a.Value = val;
         }
 
+        /// <summary>
+        /// Сообщение про запрет присваивания readonly-полю. Откуда взялась
+        /// readonly-ность, видно не всегда: у контрактного поля модификатор в
+        /// блоке писать не обязательно, поэтому ошибка обязана назвать источник.
+        /// </summary>
+        private static string ReadOnlyMessage(FieldSymbol fs)
+            => fs.FromKindContract
+                ? $"'{fs.Name}' — константа вида '{fs.ContractKind}', объявленная игрой. " +
+                  "Значение задаётся в объявлении блока, присваивать его нельзя."
+                : $"Нельзя присвоить readonly-полю '{fs.Name}' — значение задаётся только в объявлении.";
+
         /// <summary>Проверка выражения-цели присваивания; возвращает его тип.</summary>
         private TypeRef CheckLValue(Expr target)
         {
@@ -1272,13 +1435,30 @@ namespace Dsl.Semantics
                     var e = (Expr)id;
                     var t = CheckExpr(ref e); // Ident не подменяется
                     if (id.IdKind == IdentKind.Local) return t;
-                    if (id.IdKind == IdentKind.AttachField) return t; // поле подписки listener
+                    if (id.IdKind == IdentKind.AttachField)
+                    {
+                        // поле подписки listener: readonly здесь = «фиксируется на attach»
+                        if (id.Sym is FieldSymbol afs && afs.IsReadOnly)
+                        {
+                            _diag.Error("E0225", ReadOnlyMessage(afs), id.Pos);
+                            return TypeRef.Error;
+                        }
+                        return t;
+                    }
                     if (id.IdKind == IdentKind.StaticField)
                     {
-                        if (id.Sym is FieldSymbol fs && fs.IsConst)
+                        if (id.Sym is FieldSymbol fs)
                         {
-                            _diag.Error("E0143", $"Нельзя присвоить константе '{id.Name}'.", id.Pos);
-                            return TypeRef.Error;
+                            if (fs.IsConst)
+                            {
+                                _diag.Error("E0143", $"Нельзя присвоить константе '{id.Name}'.", id.Pos);
+                                return TypeRef.Error;
+                            }
+                            if (fs.IsReadOnly)
+                            {
+                                _diag.Error("E0225", ReadOnlyMessage(fs), id.Pos);
+                                return TypeRef.Error;
+                            }
                         }
                         return t;
                     }
@@ -1299,6 +1479,9 @@ namespace Dsl.Semantics
                             return t;
                         case MemberKind.StaticField when me.Sym is FieldSymbol fs && fs.IsConst:
                             _diag.Error("E0146", $"Нельзя присвоить константе '{me.Name}'.", me.Pos);
+                            return TypeRef.Error;
+                        case MemberKind.StaticField when me.Sym is FieldSymbol fsr && fsr.IsReadOnly:
+                            _diag.Error("E0226", ReadOnlyMessage(fsr), me.Pos);
                             return TypeRef.Error;
                         case MemberKind.StaticField:
                             return t;
