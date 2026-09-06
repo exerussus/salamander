@@ -564,10 +564,57 @@ namespace Dsl.Runtime
                     $"host.Struct<{typeof(T).Name}>(...).Build(v => ...) — или читайте поля " +
                     "по одному через engine.TryGetStructField.");
 
-            var fields = new Variant[info.Fields.Count];
-            for (int i = 0; i < fields.Length; i++)
-                fields[i] = Collections.Get(value, Variant.Int(i + 1));
-            return factory(new StructValue(info, fields, this));
+            return factory(new StructValue(info, value, this));
+        }
+
+        // ----- IHostContext: доступ к структурам по индексу поля ------------
+        // Через это работает передача структур в хостовые методы: слой Hosting
+        // не знает ни про CollectionStore, ни про нулевой слот с id типа.
+
+        /// <summary>Id типа структуры или -1, если значение структурой не является.</summary>
+        public int StructIdOf(Variant value)
+            => TryOpenStruct(value, out var info, out _) ? info.Id : -1;
+
+        /// <summary>Поле по индексу объявления.</summary>
+        public Variant StructGet(Variant value, int fieldIndex)
+        {
+            if (!TryOpenStruct(value, out var info, out _))
+                throw new ScriptError("Значение не является структурой.");
+            if ((uint)fieldIndex >= (uint)info.Fields.Count)
+                throw new ScriptError(
+                    $"У структуры '{info.Name}' нет поля с индексом {fieldIndex} " +
+                    $"(полей: {info.Fields.Count}).");
+            return Collections.Get(value, Variant.Int(fieldIndex + 1));
+        }
+
+        /// <summary>
+        /// Пустое значение структуры: слот типа уже заполнен, поля — Nil.
+        /// Заполняйте StructSet сразу же, до возврата в скрипт: значения структур
+        /// неизменяемы, и менять то, что скрипт уже держит, нельзя.
+        /// </summary>
+        public Variant StructNew(int structId, int fieldCount)
+        {
+            if (!Host.TryGetStructById(structId, out var info))
+                throw new ScriptError($"Структура #{structId} не зарегистрирована.");
+            if (fieldCount != info.Fields.Count)
+                throw new ScriptError(
+                    $"Структура '{info.Name}': полей {info.Fields.Count}, передано {fieldCount}.");
+
+            var v = Collections.NewArray(fieldCount + 1);
+            Collections.Set(v, Variant.Int(0), Variant.Int(structId));
+            return v;
+        }
+
+        /// <summary>Записать поле собираемого значения (см. StructNew).</summary>
+        public void StructSet(Variant value, int fieldIndex, Variant fieldValue)
+        {
+            if (!TryOpenStruct(value, out var info, out _))
+                throw new ScriptError("Значение не является структурой.");
+            if ((uint)fieldIndex >= (uint)info.Fields.Count)
+                throw new ScriptError(
+                    $"У структуры '{info.Name}' нет поля с индексом {fieldIndex} " +
+                    $"(полей: {info.Fields.Count}).");
+            Collections.Set(value, Variant.Int(fieldIndex + 1), fieldValue);
         }
 
         // ===================================================================

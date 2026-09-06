@@ -10,6 +10,16 @@ namespace Dsl.Runtime
         string ResolveString(Variant v);        // Nil -> null
         Variant WrapObject(object o);            // зарегистрировать/найти хэндл сущности
         object ResolveObject(Variant v);         // бросает ScriptError, если хэндл протух
+
+        // ===== структуры хоста =============================================
+        // Значение структуры для хостового кода — непрозрачный Variant: раскладку
+        // (нулевой слот — id типа, поля дальше) знает только движок. Индекс поля
+        // здесь — номер В ПОРЯДКЕ ОБЪЯВЛЕНИЯ хостом, как в HostStructInfo.Fields.
+
+        int StructIdOf(Variant value);                             // -1, если это не структура
+        Variant StructGet(Variant structValue, int fieldIndex);
+        Variant StructNew(int structId, int fieldCount);
+        void StructSet(Variant structValue, int fieldIndex, Variant value);
     }
 
     // Геттер/сеттер хостового свойства. target — уже разрешённый объект хоста.

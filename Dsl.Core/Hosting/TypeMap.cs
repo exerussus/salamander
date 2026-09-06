@@ -71,21 +71,18 @@ namespace Dsl.Hosting
         }
 
         /// <summary>
-        /// Структура хоста. В v1 граница односторонняя: скрипт СОБИРАЕТ значение,
-        /// игра его ЧИТАЕТ через engine.ReadStruct&lt;T&gt; / TryGetStructField.
-        /// Прямая передача структуры в параметр хостового метода потребовала бы
-        /// доступа к хранилищу коллекций из IHostContext — сознательно не тянем
-        /// это в первую версию, поэтому reader/writer объясняют, куда идти.
+        /// Структура хоста. Читатель и писатель идут через <paramref name="io"/>:
+        /// фабрику и геттеры полей туда доливает StructBuilder уже ПОСЛЕ этой
+        /// записи, поэтому объявлять поля можно в любом порядке, а понятная
+        /// ошибка про «нет фабрики»/«нет геттера» всплывает только если этой
+        /// стороной границы реально воспользовались.
         /// </summary>
-        public void AddStruct<T>(TypeRef structRef)
+        public void AddStruct<T>(TypeRef structRef, StructIO<T> io)
         {
+            if (io == null) throw new ArgumentNullException(nameof(io));
             Add(structRef,
-                (ValueReader<T>)((h, v) => throw new InvalidOperationException(
-                    $"Структуру {typeof(T).Name} нельзя принять параметром хостового метода. " +
-                    "Читайте её из движка: engine.ReadStruct<" + typeof(T).Name + ">(value).")),
-                (VariantWriter<T>)((h, x) => throw new InvalidOperationException(
-                    $"Структуру {typeof(T).Name} нельзя вернуть из хостового метода: значения " +
-                    "структур собирает скрипт (new " + typeof(T).Name + "(...)).")));
+                (ValueReader<T>)((h, v) => io.Read(h, v)),
+                (VariantWriter<T>)((h, x) => io.Write(h, x)));
         }
 
         /// <summary>

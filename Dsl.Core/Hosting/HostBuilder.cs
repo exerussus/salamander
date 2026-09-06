@@ -28,7 +28,7 @@ namespace Dsl.Hosting
     /// _evDied.Raise(Engine, target, attacker);
     /// </code>
     ///
-    /// Порядок важен: тип должен быть объявлен (Class/Enum) до первого
+    /// Порядок важен: тип должен быть объявлен (Class/Enum/Struct) до первого
     /// использования в свойствах/методах/событиях — иначе понятная ошибка.
     /// </summary>
     public sealed class HostBuilder
@@ -104,13 +104,18 @@ namespace Dsl.Hosting
         /// Незаданные поля берут значение по умолчанию, полю присвоить нельзя.
         /// Под капотом значение — массив Variant, поэтому сборщик и сейв о
         /// структурах ничего знать не обязаны.
+        ///
+        /// Структуру можно принимать параметром хостового метода (нужна фабрика
+        /// из .Build(...)) и отдавать скрипту — из метода, свойства или события
+        /// (нужны геттеры полей, см. перегрузку Field с getter).
         /// </summary>
         public StructBuilder<T> Struct<T>(string name = null, string summary = null)
         {
             name ??= typeof(T).Name;
             int id = Registry.DefineStruct(name, summary);
-            Types.AddStruct<T>(Semantics.TypeRef.StructOf(id));
-            return new StructBuilder<T>(this, id);
+            var io = new StructIO<T>(id, Registry.GetStruct(id));
+            Types.AddStruct<T>(Semantics.TypeRef.StructOf(id), io);
+            return new StructBuilder<T>(this, id, io);
         }
 
         // ===================================================================

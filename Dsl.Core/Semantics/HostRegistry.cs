@@ -183,6 +183,9 @@ namespace Dsl.Semantics
             if (_enums.ContainsKey(name))
                 throw new System.InvalidOperationException(
                     $"Енум '{name}' уже зарегистрирован. Регистрируйте каждый тип ровно один раз.");
+            if (_classes.ContainsKey(name) || _structByName.ContainsKey(name))
+                throw new System.InvalidOperationException(
+                    $"Имя '{name}' уже занято классом или структурой хоста.");
             var info = new HostEnumInfo { Id = _enums.Count, Name = name, Names = members, Summary = summary };
             for (int i = 0; i < members.Length; i++) info.Members[members[i]] = i;
             _enums[name] = info;
@@ -196,6 +199,11 @@ namespace Dsl.Semantics
             if (_classes.ContainsKey(name))
                 throw new System.InvalidOperationException(
                     $"Класс '{name}' уже зарегистрирован. Регистрируйте каждый тип ровно один раз.");
+            // имя типа в скрипте одно на всех: молча разрешить дубль — значит
+            // отдать разрешение имени на откуп порядку проверок в чекере
+            if (_enums.ContainsKey(name) || _structByName.ContainsKey(name))
+                throw new System.InvalidOperationException(
+                    $"Имя '{name}' уже занято енумом или структурой хоста.");
             var info = new HostClassInfo { Id = _classes.Count, Name = name, Summary = summary };
             _classes[name] = info;
             return info.Id;

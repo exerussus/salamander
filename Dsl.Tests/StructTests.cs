@@ -25,7 +25,7 @@ namespace Dsl.Tests
     /// </summary>
     public sealed class StructTests
     {
-        public sealed class Unit { public long Id; public string Name; }
+        public sealed class Unit { public long Id; public string Name; public Damage LastHit; }
 
         public enum School { Fire, Frost }
 
@@ -39,6 +39,13 @@ namespace Dsl.Tests
             }
         }
 
+        /// <summary>Вторая структура — для случаев «одна сторона границы не объявлена».</summary>
+        public readonly struct Resist
+        {
+            public readonly float Fire;
+            public Resist(float fire) { Fire = fire; }
+        }
+
         private sealed class Resolver : ISaveEntityResolver
         {
             public long GetStableId(object entity) => entity is Unit u ? u.Id : 0;
@@ -47,28 +54,35 @@ namespace Dsl.Tests
 
         private HostBuilder _host;
         private EventRef<Unit> _onPing;
+        private EventRef<Unit, Damage> _onHurt;
         private ArchEventRef<Unit> _onHit;
         private List<string> _log;
+        private List<string> _errors;
         private readonly List<string> _buf = new List<string>();
 
         [SetUp]
         public void SetUp()
         {
             _log = new List<string>();
+            _errors = new List<string>();
             _host = new HostBuilder();
             _host.Enum<School>();
-            _host.Class<Unit>().Prop("name", u => u.Name);
-            _host.Api("Api").Act("Note", (string s) => _log.Add(s));
-            _onPing = _host.Event<Unit>("OnPing");
-            _onHit = _host.Archetype("weapon").Event<Unit>("OnHit");
 
+            // структура объявляется ДО всего, что её упоминает: свойства, методы
+            // и события берут читателя/писателя прямо на регистрации
             _host.Struct<Damage>("Damage", "Урон по типам.")
-                 .Field<float>("pierce")
-                 .Field<float>("slash")
-                 .Field<float>("blunt")
-                 .Field<float>("fire")
+                 .Field("pierce", (Damage d) => d.Pierce)
+                 .Field("slash", (Damage d) => d.Slash)
+                 .Field("blunt", (Damage d) => d.Blunt)
+                 .Field("fire", (Damage d) => d.Fire)
                  .Build(v => new Damage(v.Float("pierce"), v.Float("slash"),
                                         v.Float("blunt"), v.Float("fire")));
+
+            _host.Class<Unit>().Prop("name", u => u.Name).Prop("lastHit", u => u.LastHit);
+            _host.Api("Api").Act("Note", (string s) => _log.Add(s));
+            _onPing = _host.Event<Unit>("OnPing");
+            _onHurt = _host.Event<Unit, Damage>("OnHurt");
+            _onHit = _host.Archetype("weapon").Event<Unit>("OnHit");
         }
 
         private static ModuleSourceSet Mod(string name, string src)
@@ -102,6 +116,17 @@ namespace Dsl.Tests
             Assert.IsTrue(r.Success, Dump(r));
             var engine = new ScriptEngine(_host.Registry);
             engine.OnError += m => Assert.Fail(m);
+            engine.LoadProgram(r.Program);
+            engine.Tick(0.016f);
+            return engine;
+        }
+
+        /// <summary>Как Load, но ошибки рантайма копятся в _errors, а не валят тест.</summary>
+        private ScriptEngine LoadTolerant(CompilationResult r)
+        {
+            Assert.IsTrue(r.Success, Dump(r));
+            var engine = new ScriptEngine(_host.Registry);
+            engine.OnError += m => _errors.Add(m);
             engine.LoadProgram(r.Program);
             engine.Tick(0.016f);
             return engine;
@@ -446,6 +471,251 @@ namespace Dsl.Tests
         }
 
         // ===================================================================
+        // Граница «скрипт ↔ C#»: структура как аргумент и как результат
+        // ===================================================================
+        // Внутрь структура едет через фабрику из .Build(...), наружу — через
+        // геттеры полей у .Field(...). Обе стороны необязательны: кто не нужен,
+        // тот не объявляется, а понятная ошибка всплывает только при попытке
+        // воспользоваться недостающей стороной.
+
+        [Test]
+        public void HostMethod_TakesStruct()
+        {
+            _host.Api("Fx").Act("Apply", (Damage d) => _log.Add($"{F(d.Slash)}/{F(d.Fire)}"));
+
+            var engine = Load(Compile(@"
+                class Balance { readonly Damage hit = new Damage(slash: 3.0, fire: 1.0); }
+                trigger T {
+                    event OnPing(Unit u) {
+                        Fx.Apply(new Damage(slash: 2.0));
+                        Fx.Apply(Balance.hit);
+                    }
+                }"));
+            Fire(engine);
+
+            Assert.AreEqual(new[] { "2/0", "3/1" }, _log);
+        }
+
+        [Test]
+        public void HostMethod_TakesStruct_AmongOtherArguments()
+        {
+            _host.Api("Fx").Act("Hit",
+                (Unit u, Damage d, float mul) => _log.Add($"{u.Name} {F(d.Slash * mul)}"));
+
+            var engine = Load(Compile(@"
+                trigger T {
+                    event OnPing(Unit u) { Fx.Hit(u, new Damage(slash: 4.0), 1.5); }
+                }"));
+            Fire(engine);
+
+            Assert.AreEqual(new[] { "H 6" }, _log);
+        }
+
+        [Test]
+        public void HostMethod_ReturnsStruct()
+        {
+            _host.Api("Fx").Fn("Double",
+                (Damage d) => new Damage(d.Pierce * 2, d.Slash * 2, d.Blunt * 2, d.Fire * 2));
+
+            var engine = Load(Compile(@"
+                class Balance { readonly Damage hit = new Damage(slash: 3.0, fire: 1.0); }
+                trigger T {
+                    event OnPing(Unit u) {
+                        Damage d = Fx.Double(Balance.hit);
+                        Api.Note($""{d.slash} {d.fire} {d.blunt}"");
+                    }
+                }"));
+            Fire(engine);
+
+            Assert.AreEqual(new[] { "6 2 0" }, _log);
+        }
+
+        [Test]
+        public void HostMethod_RoundTrip_ValueSurvivesBothDirections()
+        {
+            _host.Api("Fx")
+                 .Fn("Make", (float slash) => new Damage(0f, slash, 0f, 0f))
+                 .Act("Apply", (Damage d) => _log.Add(F(d.Slash)));
+
+            var engine = Load(Compile(@"
+                trigger T { event OnPing(Unit u) { Fx.Apply(Fx.Make(7.5)); } }"));
+            Fire(engine);
+
+            Assert.AreEqual(new[] { "7.5" }, _log);
+        }
+
+        [Test]
+        public void Event_CarriesStruct()
+        {
+            var engine = Load(Compile(@"
+                trigger T {
+                    event OnHurt(Unit u, Damage d) { Api.Note($""{u.name} {d.slash} {d.fire}""); }
+                }"));
+
+            _onHurt.Raise(engine, new Unit { Id = 1, Name = "H" }, new Damage(0f, 4f, 0f, 2f));
+            engine.Tick(0.016f);
+
+            Assert.AreEqual(new[] { "H 4 2" }, _log);
+        }
+
+        [Test]
+        public void Property_ReturnsStruct()
+        {
+            var engine = Load(Compile(@"
+                trigger T { event OnPing(Unit u) { Api.Note($""{u.lastHit.blunt}""); } }"));
+
+            _onPing.Raise(engine, new Unit { Id = 1, Name = "H", LastHit = new Damage(0f, 0f, 5f, 0f) });
+            engine.Tick(0.016f);
+
+            Assert.AreEqual(new[] { "5" }, _log);
+        }
+
+        [Test]
+        public void ReturnedStruct_IsOrdinaryValue_AndSurvivesSweep()
+        {
+            // отданное скрипту значение — обычная коллекция: сборщик видит его
+            // через статики, ничего особенного про структуры не зная
+            _host.Api("Fx").Fn("Make", (float slash) => new Damage(0f, slash, 0f, 0f));
+
+            var engine = Load(Compile(@"
+                class Keep { Damage last = new Damage(); }
+                trigger T {
+                    event OnPing(Unit u) {
+                        if (Keep.last.slash > 0.0) { Api.Note($""{Keep.last.slash}""); }
+                        else { Keep.last = Fx.Make(5.0); }
+                    }
+                }"));
+
+            Fire(engine);
+            engine.Collect();
+            Fire(engine);
+
+            Assert.AreEqual(new[] { "5" }, _log);
+        }
+
+        [Test]
+        public void ArchetypeContract_CanRequireStructConst()
+        {
+            // Const<Damage> в контракте вида работает — в отличие от ConstOr,
+            // которому нужен литерал по умолчанию, а литерала структуры нет
+            var armor = _host.Archetype("armor");
+            armor.Const<Damage>("resist", required: true);
+            armor.Event<Unit>("OnBlock");
+
+            var ok = Compile(@"armor plate {
+                readonly Damage resist = new Damage(pierce: 5.0);
+                event OnBlock(Unit u) { Api.Note(""block""); }
+            }");
+            Assert.IsTrue(ok.Success, Dump(ok));
+
+            var missing = Compile(@"armor cloth {
+                event OnBlock(Unit u) { Api.Note(""block""); }
+            }");
+            Assert.IsFalse(missing.Success, Dump(missing));
+
+            // а вот дефолта у структуры быть не может: дефолт — это литерал
+            var ex = Assert.Throws<System.ArgumentException>(
+                () => armor.ConstOr<Damage>("weak", default));
+            StringAssert.Contains("Const<T>", ex.Message);
+        }
+
+        [Test]
+        public void StructsLiveInCollections()
+        {
+            // структура — обычное значение: лежит в списке и в map, ходит по циклу
+            _host.Api("Fx").Act("Apply", (Damage d) => _log.Add(F(d.Slash)));
+
+            var engine = Load(Compile(@"
+                trigger T {
+                    event OnPing(Unit u) {
+                        List<Damage> all = new List<Damage>();
+                        all.Add(new Damage(slash: 1.0));
+                        all.Add(new Damage(slash: 2.0));
+                        for d in all { Fx.Apply(d); }
+
+                        Map<string, Damage> byName = new Map<string, Damage>();
+                        byName[""sword""] = new Damage(slash: 3.0);
+                        Fx.Apply(byName[""sword""]);
+                    }
+                }"));
+            Fire(engine);
+
+            Assert.AreEqual(new[] { "1", "2", "3" }, _log);
+        }
+
+        [Test]
+        public void WrongStructType_InArgument_IsCompileError()
+        {
+            _host.Struct<Resist>("Resist")
+                 .Field("fire", (Resist r) => r.Fire)
+                 .Build(v => new Resist(v.Float("fire")));
+            _host.Api("Fx").Act("Apply", (Damage d) => _log.Add("x"));
+
+            var r = Compile(@"
+                trigger T { event OnPing(Unit u) { Fx.Apply(new Resist(fire: 1.0)); } }");
+
+            Assert.IsFalse(r.Success, Dump(r));
+        }
+
+        [Test]
+        public void Argument_WithoutFactory_SaysWhatToAdd()
+        {
+            // поля объявлены, а собирать C#-значение нечем — .Build не вызван
+            _host.Struct<Resist>("Resist").Field("fire", (Resist r) => r.Fire);
+            _host.Api("Fx").Act("Apply", (Resist r) => _log.Add("никогда"));
+
+            var engine = LoadTolerant(Compile(@"
+                trigger T { event OnPing(Unit u) { Fx.Apply(new Resist(fire: 1.0)); } }"));
+            Fire(engine);
+
+            Assert.IsEmpty(_log);
+            Assert.AreEqual(1, _errors.Count, string.Join("\n", _errors));
+            StringAssert.Contains("Build", _errors[0]);
+        }
+
+        [Test]
+        public void Result_WithoutGetters_SaysWhichFieldIsMissingOne()
+        {
+            // фабрика есть (можно принимать), геттеров нет (нельзя отдавать)
+            _host.Struct<Resist>("Resist")
+                 .Field<float>("fire")
+                 .Build(v => new Resist(v.Float("fire")));
+            _host.Api("Fx").Fn("Zero", () => new Resist(0f));
+
+            var engine = LoadTolerant(Compile(@"
+                trigger T { event OnPing(Unit u) { Resist r = Fx.Zero(); Api.Note($""{r.fire}""); } }"));
+            Fire(engine);
+
+            Assert.IsEmpty(_log);
+            Assert.AreEqual(1, _errors.Count, string.Join("\n", _errors));
+            StringAssert.Contains("fire", _errors[0]);
+            StringAssert.Contains("геттер", _errors[0]);
+        }
+
+        [Test]
+        public void StructValue_ReadsFieldsLazily_WithoutCopying()
+        {
+            // фабрика читает поля прямо из значения: важно, что она видит именно
+            // то, что собрал скрипт, а не снимок неизвестной свежести
+            _host.Struct<Resist>("Resist")
+                 .Field("fire", (Resist r) => r.Fire)
+                 .Build(v =>
+                 {
+                     Assert.AreEqual("Resist", v.TypeName);
+                     Assert.AreEqual(3f, v.Float("fire"), 1e-6f);
+                     Assert.Throws<System.ArgumentException>(() => v.Get("frost"));
+                     return new Resist(v.Float("fire"));
+                 });
+            _host.Api("Fx").Act("Apply", (Resist r) => _log.Add(F(r.Fire)));
+
+            var engine = Load(Compile(@"
+                trigger T { event OnPing(Unit u) { Fx.Apply(new Resist(fire: 3.0)); } }"));
+            Fire(engine);
+
+            Assert.AreEqual(new[] { "3" }, _log);
+        }
+
+        // ===================================================================
         // Сейв и мерж — структура ведёт себя как обычное readonly-значение
         // ===================================================================
 
@@ -569,6 +839,30 @@ namespace Dsl.Tests
         }
 
         [Test]
+        public void Manifest_RoundTrips_StructsInSignatures()
+        {
+            // структура в параметре, в результате, в свойстве класса и в аргументе
+            // события — всё это едет через манифест, значит структуры обязаны
+            // объявляться в нём РАНЬШЕ классов и методов
+            _host.Api("Fx").Fn("Double",
+                (Damage d) => new Damage(d.Pierce * 2, d.Slash * 2, d.Blunt * 2, d.Fire * 2));
+
+            var imported = ApiManifest.Import(ApiManifest.Export(_host.Registry, 1), out _);
+
+            var r = ScriptCompiler.Compile(imported, 1, new List<ModuleSourceSet>
+            {
+                Mod("game", @"
+                    trigger T {
+                        event OnHurt(Unit u, Damage d) {
+                            Damage x = Fx.Double(d);
+                            Api.Note($""{x.slash} {u.lastHit.blunt}"");
+                        }
+                    }"),
+            });
+            Assert.IsTrue(r.Success, Dump(r));
+        }
+
+        [Test]
         public void Manifest_ImportedRegistry_CompilesConstruction()
         {
             var imported = ApiManifest.Import(ApiManifest.Export(_host.Registry, 1), out _);
@@ -599,6 +893,16 @@ namespace Dsl.Tests
         {
             Assert.Throws<System.InvalidOperationException>(() => _host.Struct<object>("Unit"));
             Assert.Throws<System.InvalidOperationException>(() => _host.Struct<object>("School"));
+        }
+
+        [Test]
+        public void NameClash_TheOtherWayRound_IsRejectedToo()
+        {
+            // имя типа в скрипте одно на всех: молчаливый дубль решался бы
+            // порядком проверок в чекере, а это не то, на что стоит полагаться
+            Assert.Throws<System.InvalidOperationException>(() => _host.Class<object>("Damage"));
+            Assert.Throws<System.InvalidOperationException>(
+                () => _host.Registry.DefineEnum("Damage", null, new[] { "A" }));
         }
 
         [Test]

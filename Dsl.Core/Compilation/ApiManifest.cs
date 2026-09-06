@@ -114,9 +114,10 @@ namespace Dsl.Compilation
         }
 
         [JsonProperty("apiVersion")] public int ApiVersion;
+        // порядок объявления = порядок зависимостей: енумы ← структуры ← классы
         [JsonProperty("enums")] public EnumDef[] Enums = Array.Empty<EnumDef>();
-        [JsonProperty("classes")] public ClassDef[] Classes = Array.Empty<ClassDef>();
         [JsonProperty("structs", NullValueHandling = NullValueHandling.Ignore)] public StructDef[] Structs;
+        [JsonProperty("classes")] public ClassDef[] Classes = Array.Empty<ClassDef>();
         [JsonProperty("apis")] public ApiDef[] Apis = Array.Empty<ApiDef>();
         [JsonProperty("events")] public EventDef[] Events = Array.Empty<EventDef>();
         [JsonProperty("archetypes", NullValueHandling = NullValueHandling.Ignore)] public ArchetypeKindDef[] Archetypes;
@@ -134,16 +135,8 @@ namespace Dsl.Compilation
                 enums.Add(new EnumDef { Name = e.Name, Summary = e.Summary, Members = e.Names });
             m.Enums = enums.ToArray();
 
-            var classes = new List<ClassDef>();
-            foreach (var c in r.AllClasses)
-            {
-                var props = new List<PropDef>();
-                foreach (var p in c.Props.Values)
-                    props.Add(new PropDef { Name = p.Name, Type = TypeToString(r, p.Type), ReadOnly = p.ReadOnly, Doc = p.Doc });
-                classes.Add(new ClassDef { Name = c.Name, Summary = c.Summary, Props = props.ToArray() });
-            }
-            m.Classes = classes.ToArray();
-
+            // структуры идут перед классами: свойство класса может быть структурой,
+            // а поле структуры классом быть не может — зависимость односторонняя
             var structs = new List<StructDef>();
             foreach (var st in r.AllStructs)
             {
@@ -159,6 +152,16 @@ namespace Dsl.Compilation
                 structs.Add(new StructDef { Name = st.Name, Summary = st.Summary, Fields = fields.ToArray() });
             }
             if (structs.Count > 0) m.Structs = structs.ToArray();
+
+            var classes = new List<ClassDef>();
+            foreach (var c in r.AllClasses)
+            {
+                var props = new List<PropDef>();
+                foreach (var p in c.Props.Values)
+                    props.Add(new PropDef { Name = p.Name, Type = TypeToString(r, p.Type), ReadOnly = p.ReadOnly, Doc = p.Doc });
+                classes.Add(new ClassDef { Name = c.Name, Summary = c.Summary, Props = props.ToArray() });
+            }
+            m.Classes = classes.ToArray();
 
             var apis = new List<ApiDef>();
             foreach (var a in r.AllApis)
@@ -275,6 +278,20 @@ namespace Dsl.Compilation
             foreach (var e in m.Enums ?? Array.Empty<EnumDef>())
                 r.DefineEnum(e.Name, e.Summary, e.Members ?? Array.Empty<string>());
 
+            // структуры — сразу после енумов: поле структуры бывает только
+            // литеральным или элементом енума, а вот свойство класса и параметр
+            // метода уже могут быть структурой
+            foreach (var st in m.Structs ?? Array.Empty<StructDef>())
+            {
+                int sid = r.DefineStruct(st.Name, st.Summary);
+                foreach (var f in st.Fields ?? Array.Empty<StructFieldDef>())
+                {
+                    var ft = ParseType(r, f.Type);
+                    DecodeStructDefault(r, f, ft, out var dv, out var ds);
+                    r.DefineStructField(sid, f.Name, ft, dv, ds, f.Doc);
+                }
+            }
+
             foreach (var c in m.Classes ?? Array.Empty<ClassDef>())
                 r.DefineClass(c.Name, c.Summary);
 
@@ -287,18 +304,6 @@ namespace Dsl.Compilation
                         getter: StubGetter,
                         setter: p.ReadOnly ? null : StubSetter,
                         doc: p.Doc);
-                }
-            }
-
-            // структуры — после енумов и классов: их поля могут ссылаться на енум
-            foreach (var st in m.Structs ?? Array.Empty<StructDef>())
-            {
-                int sid = r.DefineStruct(st.Name, st.Summary);
-                foreach (var f in st.Fields ?? Array.Empty<StructFieldDef>())
-                {
-                    var ft = ParseType(r, f.Type);
-                    DecodeStructDefault(r, f, ft, out var dv, out var ds);
-                    r.DefineStructField(sid, f.Name, ft, dv, ds, f.Doc);
                 }
             }
 
