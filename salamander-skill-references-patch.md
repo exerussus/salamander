@@ -3,8 +3,8 @@
 Обновление под новые фичи движка: **`readonly`-поля**, **константы вида
 (`Const<T>` / `ConstOr<T>` с дефолтами)**, **составные имена API-классов
 (`Api.Weapon.Cut(...)`)**, **константы API-классов
-(`Api.Parts.Grip.sword_01`)**, **структуры хоста (`new Damage(slash: 21)`)** и
-**описания элементов енумов**.
+(`Api.Parts.Grip.sword_01`)**, **структуры хоста (`new Damage(slash: 21)`)**,
+**описания элементов енумов** и **описания узлов составных имён API**.
 `SKILL.md` обновляется отдельно — через карточку предложения скилла; эти два
 файла заменяются вручную.
 
@@ -644,4 +644,31 @@ The raw path takes a parallel array: `DefineEnum(name, summary, members, docs)`,
 In the manifest the docs are a parallel `memberDocs` array next to `members` (same
 length, `null` where absent). A manifest with no documented members has no
 `memberDocs` key at all, so files written by older versions load unchanged.
+````
+
+### 2.8 Дополнить раздел `## Dotted API names` (см. 2.5)
+
+В конец раздела:
+
+````markdown
+### Describing a namespace node
+
+A node of a dotted name (`Api`, `Api.PartsCatalog`) is the first thing a person
+types, and it takes a description of its own:
+
+```csharp
+host.DescribeApiNamespace("Api", "Everything content can reach.");
+host.DescribeApiNamespace("Api.PartsCatalog", "Part ids from the catalogue.");
+```
+
+Order is free — a node that does not exist yet is created, and registering an API
+under it later never overwrites the text.
+
+Do NOT register an empty API class just to attach a summary: that turns the node
+from a namespace into an API class, and its diagnostics get WORSE — E0227 starts
+saying "you can only call a method on it" instead of "add the API name and member".
+
+In the manifest described nodes are an `apiNamespaces` array of `{name, summary}`,
+placed before `apis`. Undescribed nodes are not written: they are derivable from
+the API names, and the importer rebuilds them.
 ````

@@ -375,6 +375,109 @@ namespace Dsl.Tests
             Assert.IsFalse(imported.IsApiNamespace("Flat"));
         }
 
+        // ===================================================================
+        // Описание узла пути
+        // ===================================================================
+        // Узел — первое, что человек набирает («Api.»), и до сих пор он был
+        // единственным объявлением хоста без текста вообще. Обойти это, объявив
+        // пустой API ради summary, нельзя: узел стал бы ApiClassRef, и вместо
+        // «допишите имя API и метод» на нём появилось бы «можно только вызвать
+        // метод» — то есть диагностика стала бы ХУЖЕ ради описания.
+
+        [Test]
+        public void DescribeNamespace_KeepsItANamespace()
+        {
+            _host.Api("Api.PartsCatalog.Weapon.Grip").Const("sword_01", "x");
+            _host.DescribeApiNamespace("Api", "Всё, что доступно контенту.");
+            _host.DescribeApiNamespace("Api.PartsCatalog", "Имена деталей из каталога.");
+
+            Assert.AreEqual("Всё, что доступно контенту.", _host.Registry.ApiNamespaceSummary("Api"));
+            Assert.AreEqual("Имена деталей из каталога.",
+                _host.Registry.ApiNamespaceSummary("Api.PartsCatalog"));
+
+            // главное: узел остался узлом, а не превратился в API-класс
+            Assert.IsTrue(_host.Registry.IsApiNamespace("Api.PartsCatalog"));
+            Assert.IsFalse(_host.Registry.TryGetApi("Api.PartsCatalog", out _));
+
+            var r = Compile(@"
+                trigger T { event OnPing(Unit u) { float x = Api.PartsCatalog; } }");
+            Assert.IsFalse(r.Success);
+            Assert.IsTrue(Has(r, "E0227"), Dump(r));
+            StringAssert.Contains("Допишите имя API", Dump(r));
+        }
+
+        [Test]
+        public void DescribeNamespace_OrderDoesNotMatter()
+        {
+            // описание раньше регистрации — узла ещё нет, он создастся
+            _host.DescribeApiNamespace("Api.PartsCatalog", "Имена деталей из каталога.");
+            _host.Api("Api.PartsCatalog.Weapon.Grip").Const("sword_01", "x");
+
+            Assert.AreEqual("Имена деталей из каталога.",
+                _host.Registry.ApiNamespaceSummary("Api.PartsCatalog"),
+                "регистрация API не должна затирать уже написанный текст");
+            Assert.IsTrue(_host.Registry.IsApiNamespace("Api"));
+            Assert.IsNull(_host.Registry.ApiNamespaceSummary("Api"), "неописанный узел — без текста");
+        }
+
+        [Test]
+        public void DescribeNamespace_IsIdempotentAndValidated()
+        {
+            _host.DescribeApiNamespace("Api", "первое");
+            _host.DescribeApiNamespace("Api", "второе");
+            Assert.AreEqual("второе", _host.Registry.ApiNamespaceSummary("Api"),
+                "описание узла — не объявление типа: переписать его не ошибка");
+
+            Assert.Throws<System.ArgumentException>(() => _host.DescribeApiNamespace("Api..Bad", "x"));
+            Assert.Throws<System.ArgumentException>(() => _host.DescribeApiNamespace("1Api", "x"));
+        }
+
+        [Test]
+        public void DescribeNamespace_DoesNotAffectCalls()
+        {
+            _host.DescribeApiNamespace("Api", "Всё, что доступно контенту.");
+            _host.Api("Api.Weapon").Act("Cut", (float v) => _log.Add($"cut {F(v)}"));
+
+            var engine = Load(Compile(@"
+                trigger T { event OnPing(Unit u) { Api.Weapon.Cut(2.5); } }"));
+            Fire(engine);
+
+            Assert.AreEqual(new[] { "cut " + F(2.5f) }, _log);
+        }
+
+        [Test]
+        public void Manifest_RoundTrips_NamespaceSummaries()
+        {
+            _host.Api("Api.PartsCatalog.Weapon.Grip").Const("sword_01", "x");
+            _host.Api("Api.Weapon").Act("Cut", (float v) => { });
+            _host.DescribeApiNamespace("Api", "Всё, что доступно контенту.");
+            _host.DescribeApiNamespace("Api.PartsCatalog", "Имена деталей из каталога.");
+
+            string json = ApiManifest.Export(_host.Registry, 1);
+            StringAssert.Contains("\"apiNamespaces\"", json);
+            StringAssert.Contains("Имена деталей из каталога.", json);
+
+            var imported = ApiManifest.Import(json, out _);
+            Assert.AreEqual("Всё, что доступно контенту.", imported.ApiNamespaceSummary("Api"));
+            Assert.AreEqual("Имена деталей из каталога.", imported.ApiNamespaceSummary("Api.PartsCatalog"));
+            // неописанные узлы в манифест не пишутся, но восстанавливаются из имён API
+            Assert.IsTrue(imported.IsApiNamespace("Api.PartsCatalog.Weapon"));
+            Assert.IsNull(imported.ApiNamespaceSummary("Api.PartsCatalog.Weapon"));
+        }
+
+        [Test]
+        public void Manifest_WithoutDescriptions_HasNoKeyAtAll()
+        {
+            _host.Api("Api.Weapon").Act("Cut", (float v) => { });
+
+            string json = ApiManifest.Export(_host.Registry, 1);
+            StringAssert.DoesNotContain("apiNamespaces", json);
+
+            var imported = ApiManifest.Import(json, out _);
+            Assert.IsTrue(imported.IsApiNamespace("Api"));
+            Assert.IsNull(imported.ApiNamespaceSummary("Api"));
+        }
+
         [Test]
         public void Manifest_ImportedRegistry_CompilesDottedCalls()
         {

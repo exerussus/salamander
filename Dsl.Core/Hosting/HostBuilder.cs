@@ -127,6 +127,21 @@ namespace Dsl.Hosting
         public ApiBuilder Api(string name) => new ApiBuilder(this, name);
 
         /// <summary>
+        /// Описание УЗЛА составного имени — того, что человек набирает первым:
+        /// <code>
+        /// host.DescribeApiNamespace("Api", "Всё, что доступно контенту.");
+        /// host.DescribeApiNamespace("Api.PartsCatalog", "Имена деталей из каталога.");
+        /// </code>
+        /// Узел — не API-класс: у него нет методов, и вызвать его нельзя. Порядок
+        /// свободный, узла может ещё не быть — он создастся.
+        /// </summary>
+        public HostBuilder DescribeApiNamespace(string name, string summary)
+        {
+            Registry.DescribeApiNamespace(name, summary);
+            return this;
+        }
+
+        /// <summary>
         /// Объявить вид игровой сущности (spell/item/hero/...): скрипты описывают
         /// механики блоками «вид id { event ... }», хост поднимает события адресно
         /// по (вид, id). Виды — данные, а не ключевые слова языка.

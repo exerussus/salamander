@@ -296,7 +296,12 @@ namespace Dsl.Semantics
         // Хранилище было готово (ключ — произвольная строка), добавляется только
         // множество префиксов: чекеру нужно опознать «Api» как узел пространства
         // имён, даже если под таким именем API не зарегистрирован.
-        private readonly HashSet<string> _apiNamespaces = new HashSet<string>(System.StringComparer.Ordinal);
+        // Узлы составных имён: "Api" и "Api.Weapon" для "Api.Weapon.Melee".
+        // Значение — описание узла (null, пока не задано): узел это первое, что
+        // человек набирает, и до сих пор он был единственным местом в объявлениях
+        // хоста без текста вообще.
+        private readonly Dictionary<string, string> _apiNamespaces =
+            new Dictionary<string, string>(System.StringComparer.Ordinal);
 
         public HostApiInfo DefineApiClass(string name)
         {
@@ -305,9 +310,13 @@ namespace Dsl.Semantics
                 ValidateApiName(name);
                 api = new HostApiInfo { Name = name };
                 _apis[name] = api;
-                // "Api.Weapon.Melee" → узлы "Api" и "Api.Weapon"
+                // "Api.Weapon.Melee" → узлы "Api" и "Api.Weapon". Уже описанный
+                // узел не трогаем: порядок регистрации не должен терять текст
                 for (int i = name.IndexOf('.'); i > 0; i = name.IndexOf('.', i + 1))
-                    _apiNamespaces.Add(name.Substring(0, i));
+                {
+                    string node = name.Substring(0, i);
+                    if (!_apiNamespaces.ContainsKey(node)) _apiNamespaces[node] = null;
+                }
             }
             return api;
         }
@@ -335,7 +344,31 @@ namespace Dsl.Semantics
         /// "Api.Weapon"), но не сам API. Нужно разрешению идентификаторов:
         /// голая голова составного имени не должна читаться как ошибка.
         /// </summary>
-        public bool IsApiNamespace(string name) => _apiNamespaces.Contains(name);
+        public bool IsApiNamespace(string name) => _apiNamespaces.ContainsKey(name);
+
+        /// <summary>Описание узла или null. Узла нет — тоже null.</summary>
+        public string ApiNamespaceSummary(string name)
+            => _apiNamespaces.TryGetValue(name, out var s) ? s : null;
+
+        /// <summary>Все узлы составных имён с описаниями (описание может быть null).</summary>
+        public IEnumerable<KeyValuePair<string, string>> ApiNamespaces => _apiNamespaces;
+
+        /// <summary>
+        /// Описание узла составного имени: <c>DescribeApiNamespace("Api.PartsCatalog", "…")</c>.
+        /// Узел, которого ещё нет, создаётся — как и DescribeApi создаёт API-класс:
+        /// иначе описание пришлось бы писать строго ПОСЛЕ регистрации всех API под
+        /// ним, а это ровно тот порядок, который в ConfigureHost читается хуже всего.
+        ///
+        /// Регистрировать узел пустым API ради summary нельзя: он стал бы
+        /// ApiClassRef, и вместо «допишите имя API и метод» на нём начало бы
+        /// появляться «у него можно только вызвать метод».
+        /// </summary>
+        public void DescribeApiNamespace(string name, string summary)
+        {
+            ValidateApiName(name);
+            if (summary != null || !_apiNamespaces.ContainsKey(name))
+                _apiNamespaces[name] = summary;
+        }
 
         /// <summary>Имена API, начинающиеся с "prefix." — для подсказок и диагностики.</summary>
         public IEnumerable<string> ApiNamesUnder(string prefix)

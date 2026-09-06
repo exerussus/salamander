@@ -73,6 +73,17 @@ namespace Dsl.Compilation
             [JsonProperty("consts", NullValueHandling = NullValueHandling.Ignore)] public ApiConstDef[] Consts;
         }
 
+        /// <summary>
+        /// Узел составного имени ("Api", "Api.PartsCatalog") — только описание.
+        /// Сами узлы выводятся из имён API, поэтому в манифест попадают лишь
+        /// описанные: перечислять остальные значило бы дублировать `apis`.
+        /// </summary>
+        public sealed class ApiNamespaceDef
+        {
+            [JsonProperty("name")] public string Name;
+            [JsonProperty("summary")] public string Summary;
+        }
+
         /// <summary>Именованное значение у API-класса: читается без скобок.</summary>
         public sealed class ApiConstDef
         {
@@ -137,6 +148,7 @@ namespace Dsl.Compilation
         [JsonProperty("enums")] public EnumDef[] Enums = Array.Empty<EnumDef>();
         [JsonProperty("structs", NullValueHandling = NullValueHandling.Ignore)] public StructDef[] Structs;
         [JsonProperty("classes")] public ClassDef[] Classes = Array.Empty<ClassDef>();
+        [JsonProperty("apiNamespaces", NullValueHandling = NullValueHandling.Ignore)] public ApiNamespaceDef[] ApiNamespaces;
         [JsonProperty("apis")] public ApiDef[] Apis = Array.Empty<ApiDef>();
         [JsonProperty("events")] public EventDef[] Events = Array.Empty<EventDef>();
         [JsonProperty("archetypes", NullValueHandling = NullValueHandling.Ignore)] public ArchetypeKindDef[] Archetypes;
@@ -187,6 +199,17 @@ namespace Dsl.Compilation
                 classes.Add(new ClassDef { Name = c.Name, Summary = c.Summary, Props = props.ToArray() });
             }
             m.Classes = classes.ToArray();
+
+            // описанные узлы составных имён — перед apis, как и читаются
+            var namespaces = new List<ApiNamespaceDef>();
+            foreach (var ns in r.ApiNamespaces)
+                if (!string.IsNullOrEmpty(ns.Value))
+                    namespaces.Add(new ApiNamespaceDef { Name = ns.Key, Summary = ns.Value });
+            if (namespaces.Count > 0)
+            {
+                namespaces.Sort((x, y) => string.CompareOrdinal(x.Name, y.Name)); // словарь неупорядочен
+                m.ApiNamespaces = namespaces.ToArray();
+            }
 
             var apis = new List<ApiDef>();
             foreach (var a in r.AllApis)
@@ -359,6 +382,11 @@ namespace Dsl.Compilation
                         doc: p.Doc);
                 }
             }
+
+            // узлы описываем ДО API: DefineApiClass создаёт недостающие узлы,
+            // и текст, уже лежащий на узле, он не трогает
+            foreach (var ns in m.ApiNamespaces ?? Array.Empty<ApiNamespaceDef>())
+                r.DescribeApiNamespace(ns.Name, ns.Summary);
 
             foreach (var a in m.Apis ?? Array.Empty<ApiDef>())
             {

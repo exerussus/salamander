@@ -606,9 +606,11 @@ namespace Dsl.Tools.Lsp
                         string seg = dot < 0 ? rest : rest.Substring(0, dot);
                         if (seg.Length == 0 || !seen.Add(seg)) continue;
                         anyApi = true;
+                        string nodeName = target + "." + seg;
                         Add(seg, dot < 0 ? 9 : 3,                       // Class / Module
-                            dot < 0 ? api.Name : target + "." + seg,
-                            dot < 0 ? api.Summary : "пространство имён API");
+                            dot < 0 ? api.Name : nodeName,
+                            dot < 0 ? api.Summary
+                                    : NamespaceSummary(nodeName) ?? "пространство имён API");
                     }
                 }
                 if (anyApi) return items;
@@ -1121,6 +1123,39 @@ namespace Dsl.Tools.Lsp
             return sb.Length == 0 ? null : sb.ToString();
         }
 
+        /// <summary>Описание узла составного имени API, если игра его задала.</summary>
+        private string NamespaceSummary(string name)
+        {
+            if (_api?.ApiNamespaces == null) return null;
+            foreach (var ns in _api.ApiNamespaces)
+                if (ns.Name == name) return string.IsNullOrEmpty(ns.Summary) ? null : ns.Summary;
+            return null;
+        }
+
+        /// <summary>
+        /// Путь через точку, заканчивающийся словом под курсором: для "Weapon" в
+        /// "Api.Parts.Weapon.Cut(...)" вернёт "Api.Parts.Weapon". Работает по
+        /// тексту строки — hover лексер не гоняет.
+        /// </summary>
+        private static string DottedPrefixInLine(string line, int wordCol1, string word)
+        {
+            int i = wordCol1 - 1;                       // индекс первого символа слова
+            var head = new List<string>();
+            while (i >= 1 && line[i - 1] == '.')
+            {
+                int e = i - 2;                          // последний символ предыдущего сегмента
+                if (e < 0) break;
+                int s = e;
+                while (s >= 0 && (char.IsLetterOrDigit(line[s]) || line[s] == '_')) s--;
+                if (s == e) break;                      // перед точкой не идентификатор
+                head.Insert(0, line.Substring(s + 1, e - s));
+                i = s + 1;
+            }
+            if (head.Count == 0) return word;
+            head.Add(word);
+            return string.Join(".", head);
+        }
+
         /// <summary>Пояснение к элементу енума: параллельный массив, может отсутствовать.</summary>
         private static string MemberDoc(ApiManifest.EnumDef en, int index)
             => en.MemberDocs != null && (uint)index < (uint)en.MemberDocs.Length
@@ -1180,6 +1215,29 @@ namespace Dsl.Tools.Lsp
                         foreach (var me in api.Methods)
                             if (me.Name == word)
                             { md = $"```\n{MethodSig(api.Name, me)}\n```\n{MethodDocMd(me) ?? ""}"; break; }
+            // сам путь: узел составного имени или API-класс. Узел — первое, что
+            // человек набирает, и до сих пор наведение на нём молчало
+            if (md == null && _api?.Apis != null)
+            {
+                string dotted = DottedPrefixInLine(lineText, wordCol, word);
+                foreach (var api in _api.Apis)
+                {
+                    if (api.Name != dotted) continue;
+                    md = $"```\napi {api.Name}\n```\n{api.Summary ?? "API игры."}";
+                    break;
+                }
+                if (md == null)
+                {
+                    int under = 0;
+                    foreach (var api in _api.Apis)
+                        if (api.Name.StartsWith(dotted + ".", StringComparison.Ordinal)) under++;
+                    if (under > 0)
+                        md = $"```\nAPI: {dotted}.…\n```\n"
+                           + (NamespaceSummary(dotted) ?? "Пространство имён API.")
+                           + $"\n\nAPI под этим именем: {under}.";
+                }
+            }
+
             // элемент енума — там, где спрашивают про ЕДИНИЦЫ ("Slot.MoveSpeed —
             // это м/с или клетки за тик?"); имя енума перед точкой снимает
             // неоднозначность одинаковых имён элементов в разных енумах
