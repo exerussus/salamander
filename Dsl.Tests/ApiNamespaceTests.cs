@@ -76,6 +76,14 @@ namespace Dsl.Tests
             return engine;
         }
 
+        /// <summary>
+        /// Числа в ОЖИДАНИЯХ теста форматируем инвариантно. Движок так и делает
+        /// (StringTable печатает float/double через InvariantCulture), а вот
+        /// интерполяция на стороне C# берёт текущую культуру: под ru-RU 2.5f
+        /// печатается как "2,5", и тест падал только на машине разработчика.
+        /// </summary>
+        private static string F(float v) => v.ToString(System.Globalization.CultureInfo.InvariantCulture);
+
         private void Fire(ScriptEngine engine)
         {
             _onPing.Raise(engine, new Unit { Name = "H" });
@@ -89,7 +97,7 @@ namespace Dsl.Tests
         [Test]
         public void TwoSegments_CallsThrough()
         {
-            _host.Api("Api.Weapon").Act("Cut", (float x) => _log.Add($"cut {x}"));
+            _host.Api("Api.Weapon").Act("Cut", (float x) => _log.Add($"cut {F(x)}"));
 
             var engine = Load(Compile(@"
                 trigger T { event OnPing(Unit u) { Api.Weapon.Cut(2.5); } }"));
@@ -150,8 +158,8 @@ namespace Dsl.Tests
         [Test]
         public void SameMethodName_InDifferentApis_DoesNotCollide()
         {
-            _host.Api("Api.Weapon").Act("Set", (float v) => _log.Add($"weapon {v}"));
-            _host.Api("Api.Attribute").Act("Set", (float v) => _log.Add($"attr {v}"));
+            _host.Api("Api.Weapon").Act("Set", (float v) => _log.Add($"weapon {F(v)}"));
+            _host.Api("Api.Attribute").Act("Set", (float v) => _log.Add($"attr {F(v)}"));
 
             var engine = Load(Compile(@"
                 trigger T {
@@ -265,10 +273,10 @@ namespace Dsl.Tests
             // раньше второй молча затирал первый, и находилось это по
             // «эта строка рецепта ничего не делает»
             var api = _host.Api("Api.Weapon");
-            api.Act("Cut", (float v) => _log.Add($"a {v}"));
+            api.Act("Cut", (float v) => _log.Add($"a {F(v)}"));
 
             var ex = Assert.Throws<System.InvalidOperationException>(
-                () => api.Act("Cut", (float v) => _log.Add($"b {v}")));
+                () => api.Act("Cut", (float v) => _log.Add($"b {F(v)}")));
             StringAssert.Contains("Cut", ex.Message);
             StringAssert.Contains("Api.Weapon", ex.Message);
         }
@@ -291,7 +299,7 @@ namespace Dsl.Tests
             public WeaponApiImpl(List<string> sink) => _sink = sink;
 
             [SalamanderMethod("Рубящий удар.")]
-            public void Cut([SalamanderParam("сила")] float power) => _sink.Add($"cut {power}");
+            public void Cut([SalamanderParam("сила")] float power) => _sink.Add($"cut {F(power)}");
         }
 
         [SalamanderApi("Части.")]
