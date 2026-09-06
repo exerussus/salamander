@@ -182,14 +182,57 @@ namespace Dsl.Semantics
             return id;
         }
 
+        // Составные имена API ("Api.Weapon"): точка — часть ИМЕНИ, а не оператор.
+        // Хранилище было готово (ключ — произвольная строка), добавляется только
+        // множество префиксов: чекеру нужно опознать «Api» как узел пространства
+        // имён, даже если под таким именем API не зарегистрирован.
+        private readonly HashSet<string> _apiNamespaces = new HashSet<string>(System.StringComparer.Ordinal);
+
         public HostApiInfo DefineApiClass(string name)
         {
             if (!_apis.TryGetValue(name, out var api))
             {
+                ValidateApiName(name);
                 api = new HostApiInfo { Name = name };
                 _apis[name] = api;
+                // "Api.Weapon.Melee" → узлы "Api" и "Api.Weapon"
+                for (int i = name.IndexOf('.'); i > 0; i = name.IndexOf('.', i + 1))
+                    _apiNamespaces.Add(name.Substring(0, i));
             }
             return api;
+        }
+
+        private static void ValidateApiName(string name)
+        {
+            bool bad = string.IsNullOrEmpty(name);
+            if (!bad)
+                foreach (var seg in name.Split('.'))
+                {
+                    if (seg.Length == 0) { bad = true; break; }
+                    if (!(char.IsLetter(seg[0]) || seg[0] == '_')) { bad = true; break; }
+                    foreach (var c in seg)
+                        if (!(char.IsLetterOrDigit(c) || c == '_')) { bad = true; break; }
+                    if (bad) break;
+                }
+            if (bad)
+                throw new System.ArgumentException(
+                    $"Недопустимое имя API '{name}'. Имя — один или несколько сегментов-идентификаторов " +
+                    "через точку: \"WeaponApi\", \"Api.Weapon\".");
+        }
+
+        /// <summary>
+        /// Имя — узел пространства имён API ("Api" при зарегистрированном
+        /// "Api.Weapon"), но не сам API. Нужно разрешению идентификаторов:
+        /// голая голова составного имени не должна читаться как ошибка.
+        /// </summary>
+        public bool IsApiNamespace(string name) => _apiNamespaces.Contains(name);
+
+        /// <summary>Имена API, начинающиеся с "prefix." — для подсказок и диагностики.</summary>
+        public IEnumerable<string> ApiNamesUnder(string prefix)
+        {
+            string head = prefix + ".";
+            foreach (var n in _apis.Keys)
+                if (n.StartsWith(head, System.StringComparison.Ordinal)) yield return n;
         }
 
         /// <summary>Задать краткое описание API-класса (уходит в манифест).</summary>
@@ -205,6 +248,13 @@ namespace Dsl.Semantics
                                 string summary, string[] paramNames, string[] paramDocs)
         {
             var api = DefineApiClass(apiClass);
+            // Дубль молча затирал первую регистрацию, и находилось это по «эта
+            // строка рецепта ничего не делает». Перегрузок в языке нет: два
+            // одноимённых метода — всегда ошибка проводки, а не намерение.
+            if (api.Methods.ContainsKey(method))
+                throw new System.InvalidOperationException(
+                    $"Метод '{method}' уже зарегистрирован у API '{apiClass}'. " +
+                    "Перегрузок в языке нет — дайте методам разные имена.");
             int id = _functions.Count;
             _functions.Add(fn);
             api.Methods[method] = new HostMethodInfo

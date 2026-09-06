@@ -2,6 +2,9 @@
     "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
     "name": "Salamander",
     "scopeName": "source.salamander",
+    "fileTypes": [
+        "sal"
+    ],
     "patterns": [
         {
             "include": "#comments"
@@ -55,7 +58,19 @@
                     }
                 },
                 {
-                    "match": "\\b(func|action|event)\\s+([A-Za-z_]\\w*)",
+                    "comment": "Обработчик события: имя задаёт игра, вызвать его из скрипта нельзя — отдельный скоуп, чтобы красить не как функцию.",
+                    "match": "\\b(event)\\s+([A-Za-z_]\\w*)",
+                    "captures": {
+                        "1": {
+                            "name": "storage.type.event.salamander"
+                        },
+                        "2": {
+                            "name": "entity.name.function.event.salamander"
+                        }
+                    }
+                },
+                {
+                    "match": "\\b(func|action)\\s+([A-Za-z_]\\w*)",
                     "captures": {
                         "1": {
                             "name": "storage.type.function.salamander"

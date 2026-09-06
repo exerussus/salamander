@@ -1624,6 +1624,13 @@ namespace Dsl.Semantics
                 id.IdKind = IdentKind.ApiClassRef;
                 return id.Type = TypeRef.Error;
             }
+            // голова составного имени ("Api" при зарегистрированном "Api.Weapon"):
+            // сама по себе не API, но и не ошибка — путь продолжается точкой
+            if (_host.IsApiNamespace(id.Name))
+            {
+                id.IdKind = IdentKind.ApiNamespaceRef;
+                return id.Type = TypeRef.Error;
+            }
             if (_host.TryGetEnum(id.Name, out var he))
             {
                 id.IdKind = IdentKind.EnumTypeRef;
@@ -1779,6 +1786,23 @@ namespace Dsl.Semantics
                 case IdentKind.EngineRef:
                     _diag.Error("E0162", $"'{me.Name}' — метод; его можно только вызвать.", me.Pos);
                     return me.Type = TypeRef.Error;
+
+                case IdentKind.ApiNamespaceRef:
+                {
+                    // сюда попадаем только ВНЕ вызова: цепочку "Api.Weapon.Cut(...)"
+                    // CheckCall сворачивает целиком, не спускаясь в промежуточные узлы
+                    string full = ((IdentExpr)me.Target).Name + "." + me.Name;
+                    if (_host.TryGetApi(full, out _))
+                        _diag.Error("E0227",
+                            $"'{full}' — API-класс: у него можно только вызвать метод.", me.Pos);
+                    else if (_host.IsApiNamespace(full))
+                        _diag.Error("E0227",
+                            $"'{full}' — пространство имён API, а не значение. " +
+                            "Допишите имя API и метод.", me.Pos);
+                    else
+                        _diag.Error("E0228", $"Нет API или пространства имён '{full}'.", me.Pos);
+                    return me.Type = TypeRef.Error;
+                }
 
                 default:
                 {
@@ -2096,6 +2120,13 @@ namespace Dsl.Semantics
                     return DispatchDottedCall(call, me, tq.IdKind, tq.Sym, tq.Module + "::" + tq.Name);
                 }
 
+                // цель — сама цепочка через точку: "Api.Weapon.Cut(...)". Точка
+                // здесь часть ИМЕНИ API, а не доступ к члену, поэтому цепочка
+                // сворачивается в строку целиком и ищется в реестре — вглубь
+                // промежуточных узлов не спускаемся вовсе
+                if (me.Target is MemberExpr && TryFoldApiPath(me.Target, out string dotted))
+                    return DispatchDottedCall(call, me, IdentKind.ApiClassRef, null, dotted);
+
                 // цель — значение (коллекция): встроенные методы
                 var targetE = me.Target;
                 var tt = CheckExpr(ref targetE);
@@ -2106,6 +2137,42 @@ namespace Dsl.Semantics
             _diag.Error("E0181", "Это выражение нельзя вызвать.", call.Pos);
             CheckArgsLoose(call);
             return call.Type = TypeRef.Error;
+        }
+
+        /// <summary>
+        /// Свернуть цепочку member-access в составное имя API ("Api.Weapon").
+        /// Разворачивается только если ГОЛОВА цепочки — зарегистрированный API
+        /// или узел его пространства имён: иначе это обычный доступ к члену
+        /// значения, и трогать его нельзя. Промежуточные узлы намеренно НЕ
+        /// проверяются CheckExpr — у API-классов нет свойств, и проход по ним
+        /// дал бы ложную ошибку.
+        /// </summary>
+        private bool TryFoldApiPath(Expr target, out string dotted)
+        {
+            dotted = null;
+            var segments = new List<string>();
+            var node = target;
+            while (node is MemberExpr m)
+            {
+                segments.Add(m.Name);
+                node = m.Target;
+            }
+            if (!(node is IdentExpr head)) return false;
+            if (FindLocal(head.Name) != null) return false;                       // локаль важнее
+            if (_ownerFields != null && _ownerFields.ContainsKey(head.Name)) return false;
+            if (!_host.TryGetApi(head.Name, out _) && !_host.IsApiNamespace(head.Name)) return false;
+
+            var sb = new System.Text.StringBuilder(head.Name);
+            for (int i = segments.Count - 1; i >= 0; i--) sb.Append('.').Append(segments[i]);
+            dotted = sb.ToString();
+
+            // узлы пути не проходят CheckExpr — аннотируем их сами
+            head.IdKind = _host.TryGetApi(head.Name, out _)
+                ? IdentKind.ApiClassRef
+                : IdentKind.ApiNamespaceRef;
+            head.Type = TypeRef.Error;
+            for (var n = target; n is MemberExpr mm; n = mm.Target) mm.Type = TypeRef.Error;
+            return true;
         }
 
         private TypeRef DispatchDottedCall(CallExpr call, MemberExpr me, IdentKind kind, object sym, string targetName)
@@ -2125,7 +2192,19 @@ namespace Dsl.Semantics
 
                 case IdentKind.ApiClassRef:
                 {
-                    if (!_host.TryGetApi(targetName, out var api) || !api.TryGetMethod(me.Name, out var m))
+                    if (!_host.TryGetApi(targetName, out var api))
+                    {
+                        // составное имя: разводим «нет такого API» и «нет метода» —
+                        // иначе опечатка в середине пути читалась бы как пропавший метод
+                        _diag.Error("E0228",
+                            _host.IsApiNamespace(targetName)
+                                ? $"'{targetName}' — пространство имён API, а не API. Уточните имя."
+                                : $"Игра не объявляет API '{targetName}'.",
+                            me.Pos);
+                        CheckArgsLoose(call);
+                        return call.Type = TypeRef.Error;
+                    }
+                    if (!api.TryGetMethod(me.Name, out var m))
                     {
                         _diag.Error("E0183", $"У '{targetName}' нет метода '{me.Name}'.", me.Pos);
                         CheckArgsLoose(call);

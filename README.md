@@ -121,6 +121,12 @@ protected override void ConfigureHost(HostRegistry registry)
         .Fn("SpawnUnit", (string name, Team team, float hp, float dmg) =>
             SpawnUnit(name, team, hp, dmg));
 
+    // имя API может быть составным — в скриптах это Api.Weapon.Cut(...):
+    // точка входа одна на всю игру, а группировка остаётся в имени API,
+    // а не уезжает в имена методов (Api.WeaponCut / Api.AttributeFlat)
+    host.Api("Api.Weapon").Act("Cut", (WeaponParameters p, float v) => p.Cut(v));
+    host.Api("Api.Attribute").Act("Flat", (Unit u, float v) => u.Add(v));
+
     _evDied = host.Event<Unit, Unit>("OnUnitDied");
 }
 
@@ -571,8 +577,9 @@ listener Burn  { event OnUnitDamageTaken(Unit t, Unit s, float a, DamageType d);
   плейтест; `readonly`-поля не уезжают в сейв, поэтому балансный патч доезжает
   до старых сохранений.
 - **Хост-API**: fluent (`Class/Prop/Fn/Act/Event/Enum/Archetype`) и атрибуты
-  (`[SalamanderClass]`/`[SalamanderApi]`, инстанс-API); json-манифест API для
-  оффлайн-чекера и IDE.
+  (`[SalamanderClass]`/`[SalamanderApi]`, инстанс-API); составные имена
+  (`Api.Weapon.Cut(...)`) — одна точка входа и группировка сразу;
+  json-манифест API для оффлайн-чекера и IDE.
 - **Модули**: манифесты, зависимости (топологический порядок),
   `Enable/DisableModule`, синхронный режим (`execution: synchronous`),
   **карантин**: в игре сбойный модуль исключается вместе с зависимыми, а не

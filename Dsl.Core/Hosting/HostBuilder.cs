@@ -144,6 +144,17 @@ namespace Dsl.Hosting
             return this;
         }
 
+        /// <summary>
+        /// То же, но с явным именем API в скриптах — в том числе составным
+        /// ("Api.Weapon" → вызов Api.Weapon.Метод(...)). Перебивает
+        /// [SalamanderApi(Name = ...)] и имя C#-типа.
+        /// </summary>
+        public HostBuilder RegisterApi(object instance, string name)
+        {
+            ReflectionRegistrar.RegisterApiInstance(this, instance, name);
+            return this;
+        }
+
         // ===================================================================
         // События — возвращают типизированные ссылки для Raise без Variant
         // ===================================================================

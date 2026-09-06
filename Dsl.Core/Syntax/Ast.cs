@@ -263,6 +263,9 @@ namespace Dsl.Syntax
     {
         Unresolved, Local, StaticField, AttachField,
         ClassRef, TriggerRef, ListenerRef, EnumTypeRef, ApiClassRef, EngineRef, HostTypeRef,
+        // голова составного имени API ("Api" при зарегистрированном "Api.Weapon"):
+        // само по себе не значение и не API — только узел пути
+        ApiNamespaceRef,
     }
 
     public sealed class IdentExpr : Expr

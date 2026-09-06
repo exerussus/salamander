@@ -60,7 +60,11 @@ namespace Dsl.Hosting
         // RegisterApiInstance(instance): API из экземпляра
         // ===================================================================
 
-        public static void RegisterApiInstance(HostBuilder host, object instance)
+        /// <param name="nameOverride">
+        /// Имя API в скриптах. Пусто — берётся [SalamanderApi(Name = ...)], иначе
+        /// имя C#-типа. Допускается составное имя ("Api.Weapon").
+        /// </param>
+        public static void RegisterApiInstance(HostBuilder host, object instance, string nameOverride = null)
         {
             if (instance == null) throw new ArgumentNullException(nameof(instance));
             var type = instance.GetType();
@@ -70,7 +74,10 @@ namespace Dsl.Hosting
                 throw new ArgumentException(
                     $"{type.Name} не помечен [SalamanderApi]. Для сущностей/енумов используйте host.Register(type).");
 
-            string apiName = type.Name;
+            // приоритет: явный аргумент → имя из атрибута → имя типа
+            string apiName = !string.IsNullOrWhiteSpace(nameOverride) ? nameOverride.Trim()
+                           : !string.IsNullOrWhiteSpace(api.Name) ? api.Name.Trim()
+                           : type.Name;
             var builder = host.Api(apiName);
             host.Registry.DescribeApi(apiName, api.Summary);
 

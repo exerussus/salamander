@@ -565,8 +565,9 @@ namespace Dsl.Tools.Lsp
                 items.Add(it);
             }
 
-            // 1) Engine.<...>
-            var mDot = System.Text.RegularExpressions.Regex.Match(before, @"(\w+)\.\w*$");
+            // 1) Engine.<...>  /  Api.Weapon.<...>
+            // владелец может быть составным именем API — забираем всю цепочку
+            var mDot = System.Text.RegularExpressions.Regex.Match(before, @"((?:\w+\.)*\w+)\.\w*$");
             if (mDot.Success)
             {
                 string target = mDot.Groups[1].Value;
@@ -577,16 +578,37 @@ namespace Dsl.Tools.Lsp
                             insert: CallSnippet(em.Name, ParamLabels(em)), snippet: true);
                     return items;
                 }
-                // API хоста
+                // API хоста: сначала методы самого API (если такое имя есть),
+                // затем следующие сегменты составных имён под этим префиксом —
+                // "Api." предлагает Weapon/Parts, "Api.Weapon." предлагает методы
+                bool anyApi = false;
                 if (_api?.Apis != null)
+                {
                     foreach (var api in _api.Apis)
                         if (api.Name == target)
                         {
+                            anyApi = true;
                             foreach (var me in api.Methods)
                                 Add(me.Name, 2, MethodSig(api.Name, me), MethodDocMd(me),
                                     insert: CallSnippet(me.Name, ParamLabels(me)), snippet: true);
-                            return items;
                         }
+
+                    string prefix = target + ".";
+                    var seen = new HashSet<string>(StringComparer.Ordinal);
+                    foreach (var api in _api.Apis)
+                    {
+                        if (!api.Name.StartsWith(prefix, StringComparison.Ordinal)) continue;
+                        string rest = api.Name.Substring(prefix.Length);
+                        int dot = rest.IndexOf('.');
+                        string seg = dot < 0 ? rest : rest.Substring(0, dot);
+                        if (seg.Length == 0 || !seen.Add(seg)) continue;
+                        anyApi = true;
+                        Add(seg, dot < 0 ? 9 : 3,                       // Class / Module
+                            dot < 0 ? api.Name : target + "." + seg,
+                            dot < 0 ? api.Summary : "пространство имён API");
+                    }
+                }
+                if (anyApi) return items;
                 // енумы (манифест + скриптовые)
                 if (_api?.Enums != null)
                     foreach (var en in _api.Enums)
@@ -756,7 +778,7 @@ namespace Dsl.Tools.Lsp
             }
 
             var head = clean.Substring(0, open);
-            var m2 = System.Text.RegularExpressions.Regex.Match(head, "(?:(\\w+)\\.)?(\\w+)\\s*$");
+            var m2 = System.Text.RegularExpressions.Regex.Match(head, "(?:((?:\\w+\\.)*\\w+)\\.)?(\\w+)\\s*$");
             if (!m2.Success) return null;
             string owner = m2.Groups[1].Value;
             string method = m2.Groups[2].Value;
@@ -795,14 +817,41 @@ namespace Dsl.Tools.Lsp
         // любом клиенте (Rider без TextMate тоже цветной)
         // ===================================================================
 
+        // Порядок ЗНАЧИМ: клиент адресует типы индексами в этом массиве, поэтому
+        // новые добавляются только в конец, а неиспользуемые не выкидываются.
         private static readonly string[] TokenTypes =
         {
             "keyword", "type", "class", "function", "property", "variable",
             "string", "number", "comment", "event", "namespace", "enumMember",
+            "decorator",
         };
         private const int TtKeyword = 0, TtType = 1, TtClass = 2, TtFunction = 3, TtProperty = 4,
                           TtVariable = 5, TtString = 6, TtNumber = 7, TtComment = 8, TtEvent = 9,
-                          TtNamespace = 10;
+                          TtNamespace = 10, TtEnumMember = 11, TtDecorator = 12;
+
+        /// <summary>
+        /// Полный путь через точку, заканчивающийся токеном i: для "Weapon" в
+        /// Api.Weapon.Cut(...) вернёт "Api.Weapon". null — токен не продолжает
+        /// цепочку идентификаторов. Нужно, чтобы отличать сегмент составного
+        /// имени API от обычного свойства: по соседним токенам они неразличимы.
+        /// </summary>
+        private static string DottedPathEndingAt(IReadOnlyList<Token> ts, int i)
+        {
+            if (i < 2 || ts[i].Kind != TokenKind.Ident || ts[i - 1].Kind != TokenKind.Dot) return null;
+
+            var parts = new List<string> { ts[i].Text ?? "" };
+            int j = i - 2;
+            while (j >= 0 && ts[j].Kind == TokenKind.Ident)
+            {
+                parts.Add(ts[j].Text ?? "");
+                if (j - 1 < 0 || ts[j - 1].Kind != TokenKind.Dot) { j = -1; break; } // дошли до головы
+                j -= 2;
+            }
+            if (j >= 0) return null; // цепочка началась не с идентификатора
+
+            parts.Reverse();
+            return string.Join(".", parts);
+        }
 
         private JToken SemanticTokens(JObject p)
         {
@@ -829,20 +878,41 @@ namespace Dsl.Tools.Lsp
                 }
             if (_api?.Archetypes != null)
                 foreach (var k in _api.Archetypes) kindNames.Add(k.Name);
+            // Составные имена API ("Api.Weapon") лексер видит как отдельные
+            // токены Api . Weapon — поэтому в множество кладём и полное имя, и
+            // все его префиксы: узлом пути является каждый сегмент
             var apiNames = new HashSet<string>(StringComparer.Ordinal) { "Engine" };
-            if (_api?.Apis != null) foreach (var a in _api.Apis) apiNames.Add(a.Name);
+            if (_api?.Apis != null)
+                foreach (var a in _api.Apis)
+                {
+                    apiNames.Add(a.Name);
+                    for (int d = a.Name.IndexOf('.'); d > 0; d = a.Name.IndexOf('.', d + 1))
+                        apiNames.Add(a.Name.Substring(0, d));
+                }
             var typeNames = new HashSet<string>(EngineDocs.Types, StringComparer.Ordinal);
             if (_api?.Classes != null) foreach (var c in _api.Classes) typeNames.Add(c.Name);
             if (_api?.Enums != null) foreach (var e in _api.Enums) typeNames.Add(e.Name);
 
             // общая классификация токена (главный текст и дырки интерполяции)
-            int Classify(TokenKind kind, string txt, TokenKind prev, TokenKind next)
+            int Classify(TokenKind kind, string txt, TokenKind prev, TokenKind next, string dottedPath)
             {
                 if (kind.ToString().StartsWith("Kw")) return TtKeyword;
                 if (kind == TokenKind.Int || kind == TokenKind.Float) return TtNumber;
                 if (kind != TokenKind.Ident) return -1; // пунктуация — цвет темы
-                if (prev == TokenKind.KwEvent) return TtEvent;
-                if (prev == TokenKind.Dot) return next == TokenKind.LParen ? TtFunction : TtProperty;
+                // Имя обработчика намеренно НЕ "event" и не "function": тип event
+                // редакторы красят так же, как метод, и обработчик сливался с
+                // вызовами вроде Api.Cut(). А обработчик и не вызывается из
+                // скрипта — его поднимает игра, это точка подключения, поэтому
+                // decorator и по смыслу ближе, и цвет у него отдельный.
+                if (prev == TokenKind.KwEvent) return TtDecorator;
+                if (prev == TokenKind.Dot)
+                {
+                    // сегмент составного имени API: "Weapon" в Api.Weapon.Cut(...).
+                    // Отличаем от свойства по ПОЛНОМУ пути, а не по соседям, иначе
+                    // любое поле с таким именем перекрасилось бы заодно
+                    if (dottedPath != null && apiNames.Contains(dottedPath)) return TtNamespace;
+                    return next == TokenKind.LParen ? TtFunction : TtProperty;
+                }
                 if (next == TokenKind.LParen) return TtFunction;
                 if (apiNames.Contains(txt)) return TtNamespace;
                 if (kindNames.Contains(txt)) return TtKeyword;   // spell/item — читаются как слова языка
@@ -864,7 +934,8 @@ namespace Dsl.Tools.Lsp
                     int type = Classify(t.Kind,
                         txt,
                         i > 0 ? toks[i - 1].Kind : TokenKind.Eof,
-                        i + 1 < toks.Count ? toks[i + 1].Kind : TokenKind.Eof);
+                        i + 1 < toks.Count ? toks[i + 1].Kind : TokenKind.Eof,
+                        DottedPathEndingAt(toks, i));
                     if (type >= 0) spans.Add((t.Pos.Line, t.Pos.Column, txt.Length, type));
                 }
             }
@@ -886,7 +957,8 @@ namespace Dsl.Tools.Lsp
                         int type = Classify(t.Kind,
                             txt,
                             i > 0 ? htoks[i - 1].Kind : TokenKind.Eof,
-                            i + 1 < htoks.Count ? htoks[i + 1].Kind : TokenKind.Eof);
+                            i + 1 < htoks.Count ? htoks[i + 1].Kind : TokenKind.Eof,
+                            DottedPathEndingAt(htoks, i));
                         // дырки однострочные: строка та же, колонка со смещением
                         if (type >= 0) spans.Add((hLine, hCol + t.Pos.Column - 1, txt.Length, type));
                     }

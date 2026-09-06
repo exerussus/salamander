@@ -36,6 +36,15 @@ namespace Dsl.Hosting
     public sealed class SalamanderApiAttribute : Attribute
     {
         public string Summary { get; }
+
+        /// <summary>
+        /// Имя API в скриптах. Пусто — имя C#-типа. Может быть составным
+        /// ("Api.Weapon"): тогда вызов выглядит как Api.Weapon.Метод(...), точка
+        /// входа одна на всю игру, а группировка остаётся в имени API, а не
+        /// уезжает в имена методов.
+        /// </summary>
+        public string Name { get; set; }
+
         public SalamanderApiAttribute(string summary = null) => Summary = summary;
     }
 
