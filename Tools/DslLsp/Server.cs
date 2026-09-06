@@ -922,12 +922,17 @@ namespace Dsl.Tools.Lsp
             // токены Api . Weapon — поэтому в множество кладём и полное имя, и
             // все его префиксы: узлом пути является каждый сегмент
             var apiNames = new HashSet<string>(StringComparer.Ordinal) { "Engine" };
+            // константы API кладём ПОЛНЫМ путём: "sword_01" само по себе может
+            // быть чем угодно, красить по короткому имени нельзя
+            var constPaths = new HashSet<string>(StringComparer.Ordinal);
             if (_api?.Apis != null)
                 foreach (var a in _api.Apis)
                 {
                     apiNames.Add(a.Name);
                     for (int d = a.Name.IndexOf('.'); d > 0; d = a.Name.IndexOf('.', d + 1))
                         apiNames.Add(a.Name.Substring(0, d));
+                    foreach (var c in a.Consts ?? Array.Empty<ApiManifest.ApiConstDef>())
+                        constPaths.Add(a.Name + "." + c.Name);
                 }
             var typeNames = new HashSet<string>(EngineDocs.Types, StringComparer.Ordinal);
             if (_api?.Classes != null) foreach (var c in _api.Classes) typeNames.Add(c.Name);
@@ -952,6 +957,9 @@ namespace Dsl.Tools.Lsp
                     // Отличаем от свойства по ПОЛНОМУ пути, а не по соседям, иначе
                     // любое поле с таким именем перекрасилось бы заодно
                     if (dottedPath != null && apiNames.Contains(dottedPath)) return TtNamespace;
+                    // константа API — не свойство сущности: у неё нет владельца-значения,
+                    // и цвет именованного значения ближе по смыслу
+                    if (dottedPath != null && constPaths.Contains(dottedPath)) return TtEnumMember;
                     return next == TokenKind.LParen ? TtFunction : TtProperty;
                 }
                 if (next == TokenKind.LParen) return TtFunction;
