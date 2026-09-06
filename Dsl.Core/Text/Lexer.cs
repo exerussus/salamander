@@ -295,6 +295,8 @@ namespace Dsl.Text
                 case ',': return Tk(TokenKind.Comma, ",", start);
                 case ';': return Tk(TokenKind.Semicolon, ";", start);
                 case '.': return Tk(TokenKind.Dot, ".", start);
+                // '::' уже откушен выше — сюда доходит только одиночное двоеточие
+                case ':': return Tk(TokenKind.Colon, ":", start);
                 case '=': return Tk(TokenKind.Assign, "=", start);
                 case '+': return Tk(TokenKind.Plus, "+", start);
                 case '-': return Tk(TokenKind.Minus, "-", start);

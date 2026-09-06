@@ -17,6 +17,7 @@ namespace Dsl.Semantics
         Array,     // T[]
         List,      // List<T>
         Map,       // Map<K,V>
+        Struct,    // структура хоста (Damage и т.п.), несёт StructId
     }
 
     /// <summary>
@@ -29,14 +30,17 @@ namespace Dsl.Semantics
         public readonly TypeKind Kind;
         public readonly int HostTypeId; // для Entity
         public readonly int EnumId;     // для Enum
+        public readonly int StructId;   // для Struct
         public readonly TypeRef Elem;   // Array/List
         public readonly TypeRef Key;    // Map
         public readonly TypeRef Val;    // Map
 
         private TypeRef(TypeKind kind, int hostTypeId = -1, int enumId = -1,
-                        TypeRef elem = null, TypeRef key = null, TypeRef val = null)
+                        TypeRef elem = null, TypeRef key = null, TypeRef val = null,
+                        int structId = -1)
         {
             Kind = kind;
+            StructId = structId;
             HostTypeId = hostTypeId;
             EnumId = enumId;
             Elem = elem;
@@ -57,6 +61,7 @@ namespace Dsl.Semantics
 
         public static TypeRef Entity(int hostTypeId) => new TypeRef(TypeKind.Entity, hostTypeId: hostTypeId);
         public static TypeRef EnumOf(int enumId) => new TypeRef(TypeKind.Enum, enumId: enumId);
+        public static TypeRef StructOf(int structId) => new TypeRef(TypeKind.Struct, structId: structId);
         public static TypeRef ArrayOf(TypeRef elem) => new TypeRef(TypeKind.Array, elem: elem);
         public static TypeRef ListOf(TypeRef elem) => new TypeRef(TypeKind.List, elem: elem);
         public static TypeRef MapOf(TypeRef key, TypeRef val) => new TypeRef(TypeKind.Map, key: key, val: val);
@@ -69,7 +74,8 @@ namespace Dsl.Semantics
         // "ссылочные" типы, которым разрешён null и сравнение с null
         public bool IsRefLike => Kind == TypeKind.Entity || Kind == TypeKind.Str
                                   || Kind == TypeKind.Fiber || Kind == TypeKind.Sub || Kind == TypeKind.Array
-                                  || Kind == TypeKind.List || Kind == TypeKind.Map;
+                                  || Kind == TypeKind.List || Kind == TypeKind.Map
+                                  || Kind == TypeKind.Struct;
 
         /// <summary>Структурное равенство типов.</summary>
         public bool Same(TypeRef o)
@@ -80,6 +86,7 @@ namespace Dsl.Semantics
             {
                 case TypeKind.Entity: return HostTypeId == o.HostTypeId;
                 case TypeKind.Enum: return EnumId == o.EnumId;
+                case TypeKind.Struct: return StructId == o.StructId;
                 case TypeKind.Array:
                 case TypeKind.List: return Elem.Same(o.Elem);
                 case TypeKind.Map: return Key.Same(o.Key) && Val.Same(o.Val);
@@ -115,6 +122,7 @@ namespace Dsl.Semantics
                 case TypeKind.Sub: return "Subscription";
                 case TypeKind.Entity: return $"Entity#{HostTypeId}";
                 case TypeKind.Enum: return $"Enum#{EnumId}";
+                case TypeKind.Struct: return $"Struct#{StructId}";
                 case TypeKind.Array: return $"{Elem}[]";
                 case TypeKind.List: return $"List<{Elem}>";
                 case TypeKind.Map: return $"Map<{Key}, {Val}>";

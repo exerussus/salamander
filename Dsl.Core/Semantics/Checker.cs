@@ -930,6 +930,7 @@ namespace Dsl.Semantics
                         case "Subscription": return TypeRef.Subscription;
                     }
                     if (_host.TryGetClass(n.Name, out var hc)) return TypeRef.Entity(hc.Id);
+                    if (_host.TryGetStruct(n.Name, out var hs)) return TypeRef.StructOf(hs.Id);
                     if (TryResolveEnumType(n.Name, out int eid, out _)) return TypeRef.EnumOf(eid);
                     _diag.Error("E0121", $"Неизвестный тип '{n.Name}'.", n.Pos);
                     return TypeRef.Error;
@@ -1475,6 +1476,13 @@ namespace Dsl.Semantics
                         case MemberKind.HostProperty when me.ReadOnly:
                             _diag.Error("E0145", $"Свойство '{me.Name}' только для чтения.", me.Pos);
                             return TypeRef.Error;
+                        case MemberKind.StructField:
+                            // неизменяемость — не ограничение, а то, что снимает вопрос
+                            // о копиях: алиасинг у неизменяемого значения ненаблюдаем
+                            _diag.Error("E0236",
+                                $"Структуры неизменяемы: полю '{me.Name}' присвоить нельзя. " +
+                                "Соберите новое значение через new.", me.Pos);
+                            return TypeRef.Error;
                         case MemberKind.HostProperty:
                             return t;
                         case MemberKind.StaticField when me.Sym is FieldSymbol fs && fs.IsConst:
@@ -1551,6 +1559,7 @@ namespace Dsl.Semantics
                     return nm.Type = TypeRef.MapOf(nm.KeyTypeRef, nm.ValTypeRef);
                 }
                 case ArrayLitExpr al: return CheckArrayLit(al);
+                case NewStructExpr nst: return CheckNewStruct(nst);
                 case BinaryExpr b: return CheckBinary(b);
                 case UnaryExpr u: return CheckUnary(u);
                 case ConvertExpr cv: return cv.Type;
@@ -1832,6 +1841,21 @@ namespace Dsl.Semantics
                     return me.Type = TypeRef.Error;
                 }
 
+                case TypeKind.Struct:
+                {
+                    if (_host.TryGetStructById(targetT.StructId, out var si)
+                        && si.TryGetField(me.Name, out var sf))
+                    {
+                        me.MKind = MemberKind.StructField;
+                        me.Id = sf.Index;
+                        me.ReadOnly = true;          // структуры неизменяемы by design
+                        return me.Type = sf.Type;
+                    }
+                    _diag.Error("E0232",
+                        $"У структуры '{StructName(targetT.StructId)}' нет поля '{me.Name}'.", me.Pos);
+                    return me.Type = TypeRef.Error;
+                }
+
                 case TypeKind.Array when me.Name == "length":
                 case TypeKind.List when me.Name == "count":
                 case TypeKind.Map when me.Name == "count":
@@ -1904,6 +1928,91 @@ namespace Dsl.Semantics
             return na.Type = TypeRef.ArrayOf(na.ElemTypeRef);
         }
 
+        private string StructName(int id)
+            => _host.TryGetStructById(id, out var si) ? si.Name : $"Struct#{id}";
+
+        /// <summary>
+        /// new Damage(slash: 21) — сборка значения структуры хоста. Аргументы
+        /// только именованные: у структуры с восемью числовыми полями позиционный
+        /// вызов нечитаем и ломается от вставки поля. Незаданные поля берут
+        /// объявленный дефолт, поэтому «остальные 0» писать не нужно.
+        ///
+        /// Раскладываем в порядок полей прямо здесь: дальше это обычный литерал
+        /// массива, и ни VM, ни сборщик, ни сейв о структурах не знают.
+        /// </summary>
+        private TypeRef CheckNewStruct(NewStructExpr ns)
+        {
+            if (!_host.TryGetStruct(ns.TypeName, out var si))
+            {
+                _diag.Error("E0233",
+                    $"Игра не объявляет структуру '{ns.TypeName}'. " +
+                    "Структуры объявляет хост (host.Struct<T>), скрипт их только собирает.",
+                    ns.Pos);
+                foreach (var a in ns.Args) { var e = a.Value; CheckExpr(ref e); a.Value = e; }
+                return ns.Type = TypeRef.Error;
+            }
+
+            ns.StructId = si.Id;
+            var given = new Expr[si.Fields.Count];
+            var seen = new HashSet<string>(System.StringComparer.Ordinal);
+
+            foreach (var a in ns.Args)
+            {
+                var val = a.Value;
+                var vt = CheckExpr(ref val);
+
+                if (!si.TryGetField(a.Name, out var f))
+                {
+                    _diag.Error("E0234",
+                        $"У структуры '{si.Name}' нет поля '{a.Name}'.", a.Pos);
+                    a.Value = val;
+                    continue;
+                }
+                if (!seen.Add(a.Name))
+                {
+                    _diag.Error("E0235", $"Поле '{a.Name}' задано дважды.", a.Pos);
+                    a.Value = val;
+                    continue;
+                }
+                CoerceAssign(ref val, f.Type, vt, a.Pos, $"поле '{a.Name}'");
+                a.Value = val;
+                given[f.Index] = val;
+            }
+
+            // порядок полей + дефолты вместо незаданных
+            ns.Ordered.Clear();
+            foreach (var f in si.Fields)
+                ns.Ordered.Add(given[f.Index] ?? DefaultExprFor(f, ns.Pos));
+
+            return ns.Type = TypeRef.StructOf(si.Id);
+        }
+
+        /// <summary>Литерал значения по умолчанию для незаданного поля структуры.</summary>
+        private static Expr DefaultExprFor(HostStructFieldInfo f, SourcePos pos)
+        {
+            switch (f.Type.Kind)
+            {
+                case TypeKind.Bool:
+                    return new LiteralExpr { LKind = LiteralKind.Bool, BoolValue = f.Default.AsBool, Type = f.Type, Pos = pos };
+                case TypeKind.Int:
+                    return new LiteralExpr { LKind = LiteralKind.Int, IntValue = f.Default.AsInt, Type = f.Type, Pos = pos };
+                case TypeKind.Float:
+                    return new LiteralExpr { LKind = LiteralKind.Float, FloatValue = f.Default.ToF(), Type = f.Type, Pos = pos };
+                case TypeKind.Double:
+                    return new LiteralExpr { LKind = LiteralKind.Double, FloatValue = f.Default.ToD(), Type = f.Type, Pos = pos };
+                case TypeKind.Str:
+                    return f.DefaultStr == null
+                        ? new LiteralExpr { LKind = LiteralKind.Null, Type = f.Type, Pos = pos }
+                        : new LiteralExpr { LKind = LiteralKind.Str, StrValue = f.DefaultStr, Type = f.Type, Pos = pos };
+                case TypeKind.Enum:
+                    // енум сворачивается компилятором в число — литерала для него нет,
+                    // поэтому кладём готовое значение отдельным узлом
+                    return new EnumConstExpr { Value = f.Default, Type = f.Type, Pos = pos };
+                default:
+                    return new LiteralExpr { LKind = LiteralKind.Null, Type = f.Type, Pos = pos };
+            }
+        }
+
         private TypeRef CheckArrayLit(ArrayLitExpr al)
         {
             if (al.Elems.Count == 0)
@@ -1970,6 +2079,15 @@ namespace Dsl.Semantics
                 case TokenKind.EqEq:
                 case TokenKind.NotEq:
                 {
+                    if (lt.Kind == TypeKind.Struct || rt.Kind == TypeKind.Struct)
+                    {
+                        // сравнение шло бы по хэндлу значения, и две одинаковые по
+                        // содержимому структуры оказались бы неравны — это ловушка,
+                        // которую честнее закрыть, чем объяснять
+                        _diag.Error("E0237",
+                            "Структуры нельзя сравнивать: сравните нужные поля явно.", b.Pos);
+                        return b.Type = TypeRef.Bool;
+                    }
                     bool ok =
                         (lt.IsNumeric && rt.IsNumeric) ||
                         lt.Same(rt) ||

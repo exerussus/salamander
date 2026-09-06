@@ -104,6 +104,37 @@ namespace Dsl.Semantics
         public readonly Dictionary<string, ArchetypeConstInfo> ConstByName = new Dictionary<string, ArchetypeConstInfo>();
     }
 
+    /// <summary>Поле структуры: имя, тип, значение по умолчанию (если в new его не задали).</summary>
+    public sealed class HostStructFieldInfo
+    {
+        public int Index;            // позиция в значении
+        public string Name;
+        public TypeRef Type;
+        public Variant Default;      // bool/int/float/double/enum; для string — DefaultStr
+        public string DefaultStr;
+        public string Doc;
+    }
+
+    /// <summary>
+    /// Структура хоста: именованный НЕИЗМЕНЯЕМЫЙ набор полей, который скрипт
+    /// собирает через «new Damage(slash: 21)». Объявляет её игра, а не скрипт:
+    /// это контракт, который игра потом читает обратно.
+    ///
+    /// Значение в рантайме — обычный массив Variant фиксированной длины, поэтому
+    /// хранилище, сборщик и сейв не знают о структурах ничего: им это массив.
+    /// Неизменяемость (полю нельзя присвоить) снимает вопрос о семантике
+    /// присваивания: алиасинг ненаблюдаем, копировать нечего.
+    /// </summary>
+    public sealed class HostStructInfo
+    {
+        public int Id;
+        public string Name;
+        public string Summary;
+        public readonly List<HostStructFieldInfo> Fields = new List<HostStructFieldInfo>();
+        public readonly Dictionary<string, HostStructFieldInfo> FieldByName = new Dictionary<string, HostStructFieldInfo>();
+        public bool TryGetField(string n, out HostStructFieldInfo f) => FieldByName.TryGetValue(n, out f);
+    }
+
     public sealed class HostEventInfo
     {
         public int Id;
@@ -307,6 +338,72 @@ namespace Dsl.Semantics
         public bool TryGetClass(string n, out HostClassInfo c) => _classes.TryGetValue(n, out c);
         public bool TryGetApi(string n, out HostApiInfo a) => _apis.TryGetValue(n, out a);
         public bool TryGetEvent(string n, out HostEventInfo e) => _events.TryGetValue(n, out e);
+
+        // ===== структуры ====================================================
+
+        private readonly List<HostStructInfo> _structs = new List<HostStructInfo>();
+        private readonly Dictionary<string, HostStructInfo> _structByName = new Dictionary<string, HostStructInfo>();
+
+        public int StructCount => _structs.Count;
+        public HostStructInfo GetStruct(int id) => _structs[id];
+        public bool TryGetStruct(string name, out HostStructInfo s) => _structByName.TryGetValue(name, out s);
+        public bool TryGetStructById(int id, out HostStructInfo s)
+        {
+            if ((uint)id >= (uint)_structs.Count) { s = null; return false; }
+            s = _structs[id];
+            return true;
+        }
+        public IEnumerable<HostStructInfo> AllStructs => _structs;
+
+        public int DefineStruct(string name, string summary = null)
+        {
+            if (_structByName.ContainsKey(name))
+                throw new System.InvalidOperationException(
+                    $"Структура '{name}' уже зарегистрирована. Регистрируйте каждый тип ровно один раз.");
+            if (_classes.ContainsKey(name) || _enums.ContainsKey(name))
+                throw new System.InvalidOperationException(
+                    $"Имя '{name}' уже занято классом или енумом хоста.");
+            var s = new HostStructInfo { Id = _structs.Count, Name = name, Summary = summary };
+            _structs.Add(s);
+            _structByName[name] = s;
+            return s.Id;
+        }
+
+        public int DefineStructField(int structId, string name, TypeRef type,
+                                     Variant defaultValue = default, string defaultStr = null, string doc = null)
+        {
+            var s = _structs[structId];
+            if (s.FieldByName.ContainsKey(name))
+                throw new System.ArgumentException($"Поле '{name}' уже объявлено у структуры '{s.Name}'.");
+            var f = new HostStructFieldInfo
+            {
+                Index = s.Fields.Count,
+                Name = name,
+                Type = type ?? TypeRef.Error,
+                Default = defaultValue,
+                DefaultStr = defaultStr,
+                Doc = doc,
+            };
+            s.Fields.Add(f);
+            s.FieldByName[name] = f;
+            return f.Index;
+        }
+
+        public TypeRef StructType(string name) =>
+            _structByName.TryGetValue(name, out var s) ? TypeRef.StructOf(s.Id) : TypeRef.Error;
+
+        // Фабрика C#-значения из полей: нужна только engine.ReadStruct<T>.
+        // Хранится как object, чтобы реестр не зависел от Dsl.Hosting.
+        private readonly Dictionary<int, System.Delegate> _structFactories = new Dictionary<int, System.Delegate>();
+
+        public void SetStructFactory(int structId, System.Delegate factory)
+        {
+            _ = _structs[structId];               // проверка диапазона
+            _structFactories[structId] = factory;
+        }
+
+        public System.Delegate StructFactory(int structId)
+            => _structFactories.TryGetValue(structId, out var f) ? f : null;
 
         // ===== виды архетипов ==============================================
 

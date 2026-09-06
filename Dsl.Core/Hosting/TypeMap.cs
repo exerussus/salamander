@@ -71,6 +71,24 @@ namespace Dsl.Hosting
         }
 
         /// <summary>
+        /// Структура хоста. В v1 граница односторонняя: скрипт СОБИРАЕТ значение,
+        /// игра его ЧИТАЕТ через engine.ReadStruct&lt;T&gt; / TryGetStructField.
+        /// Прямая передача структуры в параметр хостового метода потребовала бы
+        /// доступа к хранилищу коллекций из IHostContext — сознательно не тянем
+        /// это в первую версию, поэтому reader/writer объясняют, куда идти.
+        /// </summary>
+        public void AddStruct<T>(TypeRef structRef)
+        {
+            Add(structRef,
+                (ValueReader<T>)((h, v) => throw new InvalidOperationException(
+                    $"Структуру {typeof(T).Name} нельзя принять параметром хостового метода. " +
+                    "Читайте её из движка: engine.ReadStruct<" + typeof(T).Name + ">(value).")),
+                (VariantWriter<T>)((h, x) => throw new InvalidOperationException(
+                    $"Структуру {typeof(T).Name} нельзя вернуть из хостового метода: значения " +
+                    "структур собирает скрипт (new " + typeof(T).Name + "(...)).")));
+        }
+
+        /// <summary>
         /// Енум хоста. Требование движка: значения строго 0..N-1 (значение = индекс
         /// имени). Чтение int→TEnum идёт через таблицу без боксинга; запись
         /// TEnum→int — линейным поиском по таблице (енумы маленькие, боксинга нет).

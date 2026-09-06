@@ -63,6 +63,22 @@ namespace Dsl.Compilation
             [JsonProperty("methods")] public MethodDef[] Methods = Array.Empty<MethodDef>();
         }
 
+        /// <summary>Поле структуры хоста.</summary>
+        public sealed class StructFieldDef
+        {
+            [JsonProperty("name")] public string Name;
+            [JsonProperty("type")] public string Type;
+            [JsonProperty("default")] public object Default;
+            [JsonProperty("doc", NullValueHandling = NullValueHandling.Ignore)] public string Doc;
+        }
+
+        public sealed class StructDef
+        {
+            [JsonProperty("name")] public string Name;
+            [JsonProperty("summary", NullValueHandling = NullValueHandling.Ignore)] public string Summary;
+            [JsonProperty("fields")] public StructFieldDef[] Fields = Array.Empty<StructFieldDef>();
+        }
+
         /// <summary>Ожидаемая константа вида (поле блока-архетипа) — контракт контента.</summary>
         public sealed class ConstDef
         {
@@ -100,6 +116,7 @@ namespace Dsl.Compilation
         [JsonProperty("apiVersion")] public int ApiVersion;
         [JsonProperty("enums")] public EnumDef[] Enums = Array.Empty<EnumDef>();
         [JsonProperty("classes")] public ClassDef[] Classes = Array.Empty<ClassDef>();
+        [JsonProperty("structs", NullValueHandling = NullValueHandling.Ignore)] public StructDef[] Structs;
         [JsonProperty("apis")] public ApiDef[] Apis = Array.Empty<ApiDef>();
         [JsonProperty("events")] public EventDef[] Events = Array.Empty<EventDef>();
         [JsonProperty("archetypes", NullValueHandling = NullValueHandling.Ignore)] public ArchetypeKindDef[] Archetypes;
@@ -126,6 +143,22 @@ namespace Dsl.Compilation
                 classes.Add(new ClassDef { Name = c.Name, Summary = c.Summary, Props = props.ToArray() });
             }
             m.Classes = classes.ToArray();
+
+            var structs = new List<StructDef>();
+            foreach (var st in r.AllStructs)
+            {
+                var fields = new List<StructFieldDef>();
+                foreach (var f in st.Fields)
+                    fields.Add(new StructFieldDef
+                    {
+                        Name = f.Name,
+                        Type = TypeToString(r, f.Type),
+                        Default = EncodeStructDefault(r, f),
+                        Doc = f.Doc,
+                    });
+                structs.Add(new StructDef { Name = st.Name, Summary = st.Summary, Fields = fields.ToArray() });
+            }
+            if (structs.Count > 0) m.Structs = structs.ToArray();
 
             var apis = new List<ApiDef>();
             foreach (var a in r.AllApis)
@@ -257,6 +290,18 @@ namespace Dsl.Compilation
                 }
             }
 
+            // структуры — после енумов и классов: их поля могут ссылаться на енум
+            foreach (var st in m.Structs ?? Array.Empty<StructDef>())
+            {
+                int sid = r.DefineStruct(st.Name, st.Summary);
+                foreach (var f in st.Fields ?? Array.Empty<StructFieldDef>())
+                {
+                    var ft = ParseType(r, f.Type);
+                    DecodeStructDefault(r, f, ft, out var dv, out var ds);
+                    r.DefineStructField(sid, f.Name, ft, dv, ds, f.Doc);
+                }
+            }
+
             foreach (var a in m.Apis ?? Array.Empty<ApiDef>())
             {
                 r.DescribeApi(a.Name, a.Summary);
@@ -367,6 +412,57 @@ namespace Dsl.Compilation
             }
         }
 
+        private static object EncodeStructDefault(HostRegistry r, HostStructFieldInfo f)
+        {
+            switch (f.Type.Kind)
+            {
+                case TypeKind.Bool: return f.Default.AsBool;
+                case TypeKind.Int: return f.Default.AsInt;
+                case TypeKind.Float: return f.Default.ToF();
+                case TypeKind.Double: return f.Default.ToD();
+                case TypeKind.Str: return f.DefaultStr;
+                case TypeKind.Enum:
+                    // именем, а не индексом: перенумеровали енум — дефолт не съехал
+                    if (r.TryGetEnumById(f.Type.EnumId, out var en)
+                        && (uint)f.Default.EnumValue < (uint)en.Names.Length)
+                        return en.Names[f.Default.EnumValue];
+                    return f.Default.EnumValue;
+                default: return null;
+            }
+        }
+
+        private static void DecodeStructDefault(HostRegistry r, StructFieldDef f, TypeRef type,
+                                                out Variant value, out string str)
+        {
+            value = Variant.Nil;
+            str = null;
+            // приводим по ОБЪЯВЛЕННОМУ типу: 3 и 3.0 в json неразличимы
+            switch (type.Kind)
+            {
+                case TypeKind.Bool: value = Variant.Bool(Convert.ToBoolean(f.Default ?? false)); return;
+                case TypeKind.Int: value = Variant.Int(Convert.ToInt32(f.Default ?? 0)); return;
+                case TypeKind.Float: value = Variant.Float(Convert.ToSingle(f.Default ?? 0f)); return;
+                case TypeKind.Double: value = Variant.Double(Convert.ToDouble(f.Default ?? 0d)); return;
+                case TypeKind.Str: str = f.Default as string; return;
+                case TypeKind.Enum:
+                {
+                    if (!r.TryGetEnumById(type.EnumId, out var en))
+                        throw new FormatException(
+                            $"salamander-api.json: поле '{f.Name}' ссылается на неизвестный енум.");
+                    string member = f.Default as string;
+                    if (member == null) { value = Variant.Enum(en.Id, 0); return; }
+                    if (!en.Members.TryGetValue(member, out int v))
+                        throw new FormatException(
+                            $"salamander-api.json: '{member}' не элемент енума '{en.Name}' (поле '{f.Name}').");
+                    value = Variant.Enum(en.Id, v);
+                    return;
+                }
+                default:
+                    throw new FormatException(
+                        $"salamander-api.json: поле структуры '{f.Name}' не может быть типа '{f.Type}'.");
+            }
+        }
+
         private static Variant StubGetter(IHostContext ctx, object o) => Variant.Nil;
         private static void StubSetter(IHostContext ctx, object o, Variant v) { }
         private static void StubFunction(ref CallContext ctx) { }
@@ -395,6 +491,8 @@ namespace Dsl.Compilation
                     return r.TryGetClassById(t.HostTypeId, out var cls) ? cls.Name : "<entity>";
                 case TypeKind.Enum:
                     return r.TryGetEnumById(t.EnumId, out var en) ? en.Name : "<enum>";
+                case TypeKind.Struct:
+                    return r.TryGetStructById(t.StructId, out var st) ? st.Name : "<struct>";
                 case TypeKind.Array: return TypeToString(r, t.Elem) + "[]";
                 case TypeKind.List: return "List<" + TypeToString(r, t.Elem) + ">";
                 case TypeKind.Map: return "Map<" + TypeToString(r, t.Key) + ", " + TypeToString(r, t.Val) + ">";
@@ -437,6 +535,7 @@ namespace Dsl.Compilation
             }
 
             if (r.TryGetClass(s, out var cls)) return TypeRef.Entity(cls.Id);
+            if (r.TryGetStruct(s, out var st)) return TypeRef.StructOf(st.Id);
             if (r.TryGetEnum(s, out var en)) return TypeRef.EnumOf(en.Id);
 
             throw new FormatException(

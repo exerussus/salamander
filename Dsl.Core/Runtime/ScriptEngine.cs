@@ -501,6 +501,76 @@ namespace Dsl.Runtime
         }
 
         // ===================================================================
+        // Структуры: прочитать значение, собранное скриптом
+        // ===================================================================
+        // Значение структуры — массив Variant, в нулевом слоте лежит id типа,
+        // поля начинаются с первого. Отсюда самоидентификация: игра получает из
+        // TryGetArchetypeConst обычный Variant и по нему узнаёт, чьи это поля.
+
+        private bool TryOpenStruct(Variant value, out HostStructInfo info, out int arrayId)
+        {
+            info = null;
+            arrayId = -1;
+            if (value.Type != VariantType.Array) return false;
+            if (Collections.Len(value) < 1) return false;
+
+            var head = Collections.Get(value, Variant.Int(0));
+            if (head.Type != VariantType.Int) return false;
+            if (!Host.TryGetStructById(head.AsInt, out info)) return false;
+            arrayId = value.CollId;
+            return true;
+        }
+
+        /// <summary>Имя структуры, если это её значение. null — не структура.</summary>
+        public string GetStructTypeName(Variant value)
+            => TryOpenStruct(value, out var info, out _) ? info.Name : null;
+
+        /// <summary>
+        /// Поле структуры по имени. false — значение не структура либо такого
+        /// поля у её типа нет.
+        /// </summary>
+        public bool TryGetStructField(Variant value, string field, out Variant fieldValue)
+        {
+            fieldValue = Variant.Nil;
+            if (field == null || !TryOpenStruct(value, out var info, out _)) return false;
+            if (!info.TryGetField(field, out var f)) return false;
+            fieldValue = Collections.Get(value, Variant.Int(f.Index + 1)); // слот 0 — id типа
+            return true;
+        }
+
+        /// <summary>Имена полей структуры в порядке объявления хостом.</summary>
+        public void GetStructFields(Variant value, List<string> into)
+        {
+            into.Clear();
+            if (!TryOpenStruct(value, out var info, out _)) return;
+            foreach (var f in info.Fields) into.Add(f.Name);
+        }
+
+        /// <summary>
+        /// Собрать C#-значение из структуры — через фабрику, заданную в
+        /// host.Struct&lt;T&gt;(...).Build(...). Без фабрики бросает: поля всё равно
+        /// доступны через TryGetStructField.
+        /// </summary>
+        public T ReadStruct<T>(Variant value)
+        {
+            if (!TryOpenStruct(value, out var info, out _))
+                throw new InvalidOperationException(
+                    $"Значение не является структурой (ожидалась {typeof(T).Name}).");
+
+            var factory = Host.StructFactory(info.Id) as Func<StructValue, T>;
+            if (factory == null)
+                throw new InvalidOperationException(
+                    $"У структуры '{info.Name}' нет фабрики C#-значения. Добавьте " +
+                    $"host.Struct<{typeof(T).Name}>(...).Build(v => ...) — или читайте поля " +
+                    "по одному через engine.TryGetStructField.");
+
+            var fields = new Variant[info.Fields.Count];
+            for (int i = 0; i < fields.Length; i++)
+                fields[i] = Collections.Get(value, Variant.Int(i + 1));
+            return factory(new StructValue(info, fields, this));
+        }
+
+        // ===================================================================
         // Интроспекция: пройтись по тому, что модеры описали в DSL
         // ===================================================================
         // Хост объявляет ВИДЫ и их события (шаблон для заполнения), DSL создаёт

@@ -664,6 +664,20 @@ namespace Dsl.Codegen
                     foreach (var el in al.Elems) EmitExpr(el);
                     Emit(OpCode.ArrayLit, al.Elems.Count);
                     break;
+                // значение структуры — тот же литерал массива: поля уже разложены
+                // чекером по порядку, дефолты подставлены. Отдельного опкода,
+                // хранилища и ветки в сборщике структурам не нужно
+                case NewStructExpr ns:
+                    // Нулевым элементом — id структуры: значение обязано знать
+                    // свой тип, иначе игра, получив его из TryGetArchetypeConst,
+                    // не поймёт, чьи это поля. Поэтому поле k лежит в слоте k+1.
+                    Emit(OpCode.PushInt, ns.StructId);
+                    foreach (var el in ns.Ordered) EmitExpr(el);
+                    Emit(OpCode.ArrayLit, ns.Ordered.Count + 1);
+                    break;
+                case EnumConstExpr ec:
+                    Emit(OpCode.PushEnum, ec.Value.EnumTypeId, ec.Value.EnumValue);
+                    break;
                 case BinaryExpr b: EmitBinary(b); break;
                 case UnaryExpr u:
                     EmitExpr(u.Operand);
@@ -783,6 +797,12 @@ namespace Dsl.Codegen
         {
             switch (me.MKind)
             {
+                case MemberKind.StructField:
+                    // значение — массив; слот 0 занят id структуры, поля с 1
+                    EmitExpr(me.Target);
+                    Emit(OpCode.PushInt, me.Id + 1);
+                    Emit(OpCode.Index);
+                    break;
                 case MemberKind.EnumValue:
                     Emit(OpCode.PushEnum, me.Type.EnumId, me.Id);
                     break;

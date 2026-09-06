@@ -289,6 +289,7 @@ namespace Dsl.Syntax
     public enum MemberKind : byte
     {
         Unresolved, HostProperty, StaticField, EnumValue, CollLen,
+        StructField,   // поле структуры хоста: индекс в значении-массиве
     }
 
     public sealed class MemberExpr : Expr
@@ -336,6 +337,38 @@ namespace Dsl.Syntax
         public TypeSyntax ElemType;
         public Expr Size;
         public TypeRef ElemTypeRef;
+    }
+
+    /// <summary>
+    /// Готовое значение енума: для литералов в исходнике есть MemberExpr
+    /// (Team.Heroes), а этот узел синтезирует чекер — под дефолт поля структуры,
+    /// который пришёл из реестра уже свёрнутым.
+    /// </summary>
+    public sealed class EnumConstExpr : Expr
+    {
+        public Dsl.Runtime.Variant Value;
+    }
+
+    /// <summary>Именованный аргумент конструирования структуры: «slash: 21».</summary>
+    public sealed class NamedArg : Node
+    {
+        public string Name;
+        public Expr Value;
+    }
+
+    /// <summary>
+    /// new Damage(slash: 21) — сборка значения структуры хоста. Незаданные поля
+    /// берут значение по умолчанию из объявления. Чекер раскладывает аргументы
+    /// по порядку полей в Ordered, дальше это обычный литерал массива.
+    /// </summary>
+    public sealed class NewStructExpr : Expr
+    {
+        public string TypeName;
+        public List<NamedArg> Args = new List<NamedArg>();
+
+        // аннотации семантики: значения в ПОРЯДКЕ ПОЛЕЙ (дефолты подставлены)
+        public int StructId = -1;
+        public List<Expr> Ordered = new List<Expr>();
     }
 
     public sealed class NewListExpr : Expr

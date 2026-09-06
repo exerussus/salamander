@@ -26,7 +26,7 @@ namespace Dsl.Text
 
         // разделители
         LBrace, RBrace, LParen, RParen, LBracket, RBracket,
-        Comma, Semicolon, Dot, DotDot, ColonColon, Arrow,
+        Comma, Semicolon, Dot, DotDot, Colon, ColonColon, Arrow,
 
         // операторы
         Assign, PlusAssign, MinusAssign, StarAssign, SlashAssign,

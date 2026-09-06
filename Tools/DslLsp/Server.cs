@@ -650,6 +650,42 @@ namespace Dsl.Tools.Lsp
                 return items;
             }
 
+            // 1.5) new Damage(<...>) — поля структуры: именованные аргументы это
+            // единственное место в языке, где они есть, и подсказать их важнее всего
+            var mNewArgs = System.Text.RegularExpressions.Regex.Match(
+                before, @"\bnew\s+(\w+)\s*\(([^()]*)$");
+            if (mNewArgs.Success && _api?.Structs != null)
+            {
+                string typeName = mNewArgs.Groups[1].Value;
+                string already = mNewArgs.Groups[2].Value;
+                foreach (var st in _api.Structs)
+                {
+                    if (st.Name != typeName) continue;
+                    foreach (var f in st.Fields)
+                    {
+                        // уже заданные поля не предлагаем повторно
+                        if (System.Text.RegularExpressions.Regex.IsMatch(
+                                already, @"\b" + System.Text.RegularExpressions.Regex.Escape(f.Name) + @"\s*:"))
+                            continue;
+                        Add(f.Name, 5, $"{f.Name}: {f.Type}" + (f.Default == null ? "" : $" = {f.Default}"),
+                            f.Doc, insert: f.Name + ": $0", snippet: true);
+                    }
+                    return items;
+                }
+            }
+
+            // 1.6) после "new " — типы, которые можно сконструировать
+            if (System.Text.RegularExpressions.Regex.IsMatch(before, @"\bnew\s+\w*$"))
+            {
+                if (_api?.Structs != null)
+                    foreach (var st in _api.Structs)
+                        Add(st.Name, 22, "структура", st.Summary,
+                            insert: st.Name + "($0)", snippet: true);
+                Add("List", 22, "new List<T>()", null, "List<${1:float}>()", true);
+                Add("Map", 22, "new Map<K, V>()", null, "Map<${1:string}, ${2:float}>()", true);
+                return items;
+            }
+
             // 2) event <...> — набор событий зависит от того, в чём мы стоим
             if (System.Text.RegularExpressions.Regex.IsMatch(before, @"\bevent\s+\w*$"))
             {
@@ -675,6 +711,7 @@ namespace Dsl.Tools.Lsp
             foreach (var tp in EngineDocs.Types) Add(tp, 7, null);
             Add("Engine", 9, "встроенный класс движка");
             if (_api?.Apis != null) foreach (var api in _api.Apis) Add(api.Name, 9, api.Summary ?? "API игры");
+            if (_api?.Structs != null) foreach (var st in _api.Structs) Add(st.Name, 22, st.Summary ?? "структура");
             if (_api?.Enums != null) foreach (var en in _api.Enums) Add(en.Name, 13, en.Summary ?? "enum хоста");
             if (_api?.Classes != null) foreach (var c in _api.Classes) Add(c.Name, 7, c.Summary ?? "сущность игры");
             foreach (var fi in _index.Values)
@@ -892,6 +929,7 @@ namespace Dsl.Tools.Lsp
             var typeNames = new HashSet<string>(EngineDocs.Types, StringComparer.Ordinal);
             if (_api?.Classes != null) foreach (var c in _api.Classes) typeNames.Add(c.Name);
             if (_api?.Enums != null) foreach (var e in _api.Enums) typeNames.Add(e.Name);
+            if (_api?.Structs != null) foreach (var st in _api.Structs) typeNames.Add(st.Name);
 
             // общая классификация токена (главный текст и дырки интерполяции)
             int Classify(TokenKind kind, string txt, TokenKind prev, TokenKind next, string dottedPath)

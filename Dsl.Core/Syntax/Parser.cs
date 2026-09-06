@@ -783,6 +783,28 @@ namespace Dsl.Syntax
                 return new NewMapExpr { KeyType = k, ValType = v, Pos = pos };
             }
 
+            // структура: new Damage(slash: 21, fire: 5)
+            // отличается от массива следующим токеном: '(' против '['
+            if (Is(TokenKind.LParen))
+            {
+                Advance();
+                var ns = new NewStructExpr { TypeName = name, Pos = pos };
+                if (!Is(TokenKind.RParen))
+                {
+                    do
+                    {
+                        var argPos = Cur.Pos;
+                        string field = Expect(TokenKind.Ident, "E0229", "имя поля").Text;
+                        Expect(TokenKind.Colon, "E0230",
+                            "':' (поля структуры задаются по имени: new Damage(slash: 21))");
+                        ns.Args.Add(new NamedArg { Name = field, Value = ParseExpr(), Pos = argPos });
+                    }
+                    while (Match(TokenKind.Comma));
+                }
+                Expect(TokenKind.RParen, "E0231", "')'");
+                return ns;
+            }
+
             // массив: new T[size]
             TypeSyntax elemTy = new NameType { Name = name, Pos = pos };
             Expect(TokenKind.LBracket, "E0064", "'[' (ожидался массив new T[size])");
