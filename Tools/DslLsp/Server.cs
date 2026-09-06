@@ -591,6 +591,9 @@ namespace Dsl.Tools.Lsp
                             foreach (var me in api.Methods)
                                 Add(me.Name, 2, MethodSig(api.Name, me), MethodDocMd(me),
                                     insert: CallSnippet(me.Name, ParamLabels(me)), snippet: true);
+                            // константы: без скобок, поэтому и вставляются как есть
+                            foreach (var c in api.Consts ?? Array.Empty<ApiManifest.ApiConstDef>())
+                                Add(c.Name, 21, ConstSig(api.Name, c), c.Doc);   // 21 = Constant
                         }
 
                     string prefix = target + ".";
@@ -1109,6 +1112,18 @@ namespace Dsl.Tools.Lsp
             return sb.Length == 0 ? null : sb.ToString();
         }
 
+        private static string ConstSig(string owner, ApiManifest.ApiConstDef c)
+            => $"{owner}.{c.Name}: {c.Type} = {Literal(c.Value)}";
+
+        /// <summary>Значение из манифеста так, как его написали бы в скрипте.</summary>
+        private static string Literal(object v)
+        {
+            if (v == null) return "null";
+            if (v is string s) return "\"" + s + "\"";
+            if (v is bool b) return b ? "true" : "false";
+            return Convert.ToString(v, System.Globalization.CultureInfo.InvariantCulture);
+        }
+
         private static string EventSig(ApiManifest.EventDef ev)
         {
             var ps = new List<string>();
@@ -1150,10 +1165,70 @@ namespace Dsl.Tools.Lsp
                         foreach (var me in api.Methods)
                             if (me.Name == word)
                             { md = $"```\n{MethodSig(api.Name, me)}\n```\n{MethodDocMd(me) ?? ""}"; break; }
+            // константа API — читается без скобок, поэтому и ищется по префиксу пути
+            if (md == null && _api?.Apis != null)
+                foreach (var api in _api.Apis)
+                {
+                    if (api.Consts == null || !HasPrefix(lineText, wordCol, api.Name + ".")) continue;
+                    foreach (var c in api.Consts)
+                        if (c.Name == word)
+                        { md = $"```\n{ConstSig(api.Name, c)}\n```\n{c.Doc ?? ""}"; break; }
+                    if (md != null) break;
+                }
+
+            // внутри блока вида: его события и объявленные игрой константы —
+            // ровно то, что автор рецепта видит перед собой
+            if (md == null && _api?.Archetypes != null)
+            {
+                var encl = EnclosingDecl(path, line1);
+                if (encl != null)
+                    foreach (var k in _api.Archetypes)
+                    {
+                        if (k.Name != encl.Kind) continue;
+                        foreach (var ev in k.Events ?? Array.Empty<ApiManifest.EventDef>())
+                            if (ev.Name == word)
+                            { md = $"```\n{EventSig(ev)}\n```\n{ev.Summary ?? $"Событие вида {k.Name}."}"; break; }
+                        if (md == null)
+                            foreach (var c in k.Consts ?? Array.Empty<ApiManifest.ConstDef>())
+                                if (c.Name == word)
+                                {
+                                    // дефолт показываем СЛОВАМИ: "= 3" в сигнатуре читалось бы
+                                    // как текущее значение, а блок его переопределяет
+                                    string note = $"Константа вида `{k.Name}`"
+                                        + (c.Required ? ", обязательная."
+                                           : c.HasDefault ? $", по умолчанию `{Literal(c.Default)}`." : ".");
+                                    md = $"```\nreadonly {c.Type} {c.Name}\n```\n{note}\n\n{c.Doc ?? ""}";
+                                    break;
+                                }
+                        break;
+                    }
+            }
+
             if (md == null && _api?.Events != null)
                 foreach (var ev in _api.Events)
                     if (ev.Name == word)
                     { md = $"```\n{EventSig(ev)}\n```\n{ev.Summary ?? "Событие игры."}"; break; }
+
+            // поле структуры: в new Damage(...) тип известен точно, иначе — если
+            // имя поля уникально среди всех структур
+            if (md == null && _api?.Structs != null)
+            {
+                string ctorType = null;
+                var mCtor = System.Text.RegularExpressions.Regex.Match(
+                    lineText.Substring(0, Math.Min(wordCol - 1, lineText.Length)), @"\bnew\s+(\w+)\s*\([^()]*$");
+                if (mCtor.Success) ctorType = mCtor.Groups[1].Value;
+
+                ApiManifest.StructDef ownerSt = null; ApiManifest.StructFieldDef fld = null; int hits = 0;
+                foreach (var st in _api.Structs)
+                {
+                    if (ctorType != null && st.Name != ctorType) continue;
+                    foreach (var f in st.Fields ?? Array.Empty<ApiManifest.StructFieldDef>())
+                        if (f.Name == word) { hits++; ownerSt = st; fld = f; }
+                }
+                if (hits == 1)
+                    md = $"```\n{ownerSt.Name}.{fld.Name}: {fld.Type}\n```\n" +
+                         $"Поле структуры, по умолчанию `{Literal(fld.Default)}`.\n\n{fld.Doc ?? ""}";
+            }
             if (md == null && _api?.Classes != null)
             {
                 // свойство сущности (u.name): показываем, если имя уникально среди классов

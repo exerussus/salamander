@@ -76,29 +76,15 @@ namespace Dsl.Hosting
             return this;
         }
 
-        // Значение по умолчанию хранится так же, как у констант вида: строка
-        // отдельным полем, потому что её id раздаёт StringTable уже при загрузке,
-        // а на регистрации никакого движка ещё нет.
+        // Значение по умолчанию хранится так же, как у констант вида и у констант
+        // API, — общим кодировщиком (HostLiteral).
         private static void EncodeDefault<TF>(TypeRef type, TF value, out Variant variant, out string str)
         {
-            variant = Variant.Nil;
-            str = null;
-            switch (type.Kind)
-            {
-                case TypeKind.Bool: variant = Variant.Bool((bool)(object)value); return;
-                case TypeKind.Int: variant = Variant.Int((int)(object)value); return;
-                case TypeKind.Float: variant = Variant.Float((float)(object)value); return;
-                case TypeKind.Double: variant = Variant.Double((double)(object)value); return;
-                case TypeKind.Str: str = (string)(object)value; return;
-                case TypeKind.Enum: variant = Variant.Enum(type.EnumId, Convert.ToInt32(value)); return;
-                default:
-                    throw new ArgumentException(
-                        $"Поле структуры '{name(type)}' не может быть такого типа: полем может быть " +
-                        "литеральное значение (bool/int/float/double/string) или элемент енума. " +
-                        "Сущности, коллекции и другие структуры полями быть не могут.");
-            }
-
-            string name(TypeRef t) => t?.ToString() ?? "?";
+            if (HostLiteral.TryEncode(type, value, out variant, out str)) return;
+            throw new ArgumentException(
+                $"Поле структуры типа '{type?.ToString() ?? "?"}' не поддержано: " +
+                HostLiteral.Supported +
+                " Сущности, коллекции и другие структуры полями быть не могут.");
         }
     }
 }

@@ -769,14 +769,16 @@ namespace Dsl.Codegen
                 Emit(OpCode.PushNil);
         }
 
-        private void EmitConst(FieldSymbol fs)
+        private void EmitConst(FieldSymbol fs) => EmitLiteral(fs.ConstValue, fs.ConstStr);
+
+        /// <summary>Литерал из реестра/символа: строки хранятся отдельным полем.</summary>
+        private void EmitLiteral(Variant v, string str)
         {
-            if (fs.ConstStr != null)
+            if (str != null)
             {
-                Emit(OpCode.PushStr, LitId(fs.ConstStr));
+                Emit(OpCode.PushStr, LitId(str));
                 return;
             }
-            var v = fs.ConstValue;
             switch (v.Type)
             {
                 case VariantType.Bool: Emit(v.AsBool ? OpCode.PushTrue : OpCode.PushFalse); break;
@@ -806,6 +808,14 @@ namespace Dsl.Codegen
                 case MemberKind.EnumValue:
                     Emit(OpCode.PushEnum, me.Type.EnumId, me.Id);
                     break;
+                case MemberKind.ApiConst:
+                {
+                    // вычислять нечего: цель (путь к API) не эмитим вовсе,
+                    // хостового вызова в байткоде не остаётся
+                    var ac = (HostApiConstInfo)me.Sym;
+                    EmitLiteral(ac.Value, ac.ValueStr);
+                    break;
+                }
                 case MemberKind.StaticField:
                 {
                     var fs = (FieldSymbol)me.Sym;

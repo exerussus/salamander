@@ -61,6 +61,16 @@ namespace Dsl.Compilation
             [JsonProperty("name")] public string Name;
             [JsonProperty("summary", NullValueHandling = NullValueHandling.Ignore)] public string Summary;
             [JsonProperty("methods")] public MethodDef[] Methods = Array.Empty<MethodDef>();
+            [JsonProperty("consts", NullValueHandling = NullValueHandling.Ignore)] public ApiConstDef[] Consts;
+        }
+
+        /// <summary>Именованное значение у API-класса: читается без скобок.</summary>
+        public sealed class ApiConstDef
+        {
+            [JsonProperty("name")] public string Name;
+            [JsonProperty("type")] public string Type;
+            [JsonProperty("value")] public object Value;
+            [JsonProperty("doc", NullValueHandling = NullValueHandling.Ignore)] public string Doc;
         }
 
         /// <summary>Поле структуры хоста.</summary>
@@ -175,7 +185,27 @@ namespace Dsl.Compilation
                         Params = BuildParams(r, f.Params, f.ParamNames, f.ParamDocs),
                         Returns = TypeToString(r, f.Ret),
                     });
-                apis.Add(new ApiDef { Name = a.Name, Summary = a.Summary, Methods = methods.ToArray() });
+                ApiConstDef[] consts = null;
+                if (a.Consts.Count > 0)
+                {
+                    consts = new ApiConstDef[a.Consts.Count];
+                    for (int i = 0; i < consts.Length; i++)
+                    {
+                        var ci = a.Consts[i];
+                        consts[i] = new ApiConstDef
+                        {
+                            Name = ci.Name,
+                            Type = TypeToString(r, ci.Type),
+                            Value = EncodeLiteral(r, ci.Type, ci.Value, ci.ValueStr),
+                            Doc = ci.Doc,
+                        };
+                    }
+                }
+                apis.Add(new ApiDef
+                {
+                    Name = a.Name, Summary = a.Summary,
+                    Methods = methods.ToArray(), Consts = consts,
+                });
             }
             m.Apis = apis.ToArray();
 
@@ -315,6 +345,12 @@ namespace Dsl.Compilation
                     SplitParams(r, f.Params, out var types, out var names, out var docs);
                     r.DefineMethod(a.Name, f.Name, types, ParseType(r, f.Returns), StubFunction, f.Summary, names, docs);
                 }
+                foreach (var c in a.Consts ?? Array.Empty<ApiConstDef>())
+                {
+                    var ct = ParseType(r, c.Type);
+                    DecodeLiteral(r, c.Value, ct, $"константа '{a.Name}.{c.Name}'", out var cv, out var cs);
+                    r.DefineApiConst(a.Name, c.Name, ct, cv, cs, c.Doc);
+                }
             }
 
             foreach (var ev in m.Events ?? Array.Empty<EventDef>())
@@ -363,24 +399,69 @@ namespace Dsl.Compilation
         // Дефолты констант ⇄ json
         // ===================================================================
 
-        private static object EncodeDefault(HostRegistry r, ArchetypeConstInfo c)
+        // Литерал в манифесте — один и тот же для дефолта константы вида, дефолта
+        // поля структуры и значения константы API. Кодировщик поэтому тоже один:
+        // три копии этой лестницы уже начинали расходиться.
+
+        private static object EncodeLiteral(HostRegistry r, TypeRef type, Variant value, string str)
         {
-            switch (c.Type.Kind)
+            switch (type.Kind)
             {
-                case TypeKind.Bool: return c.DefaultValue.AsBool;
-                case TypeKind.Int: return c.DefaultValue.AsInt;
-                case TypeKind.Float: return c.DefaultValue.ToF();
-                case TypeKind.Double: return c.DefaultValue.ToD();
-                case TypeKind.Str: return c.DefaultStr;
+                case TypeKind.Bool: return value.AsBool;
+                case TypeKind.Int: return value.AsInt;
+                case TypeKind.Float: return value.ToF();
+                case TypeKind.Double: return value.ToD();
+                case TypeKind.Str: return str;
                 case TypeKind.Enum:
-                    // именем, а не индексом: перенумеровали енум — дефолт не съехал
-                    if (r.TryGetEnumById(c.Type.EnumId, out var en)
-                        && (uint)c.DefaultValue.EnumValue < (uint)en.Names.Length)
-                        return en.Names[c.DefaultValue.EnumValue];
-                    return c.DefaultValue.EnumValue;
+                    // именем, а не индексом: перенумеровали енум — значение не съехало
+                    if (r.TryGetEnumById(type.EnumId, out var en)
+                        && (uint)value.EnumValue < (uint)en.Names.Length)
+                        return en.Names[value.EnumValue];
+                    return value.EnumValue;
                 default: return null;
             }
         }
+
+        /// <summary>
+        /// Обратно. <paramref name="what"/> попадает в текст ошибки — «дефолт
+        /// константы 'windup'», «поле структуры 'slash'»: без этого сообщение о
+        /// битом манифесте не говорит, ГДЕ именно битое.
+        /// </summary>
+        private static void DecodeLiteral(HostRegistry r, object raw, TypeRef type, string what,
+                                          out Variant value, out string str)
+        {
+            value = Variant.Nil;
+            str = null;
+            // Newtonsoft отдаёт числа как long/double — приводим по ОБЪЯВЛЕННОМУ
+            // типу, а не по тому, что угадал json (3 и 3.0 неразличимы в тексте)
+            switch (type.Kind)
+            {
+                case TypeKind.Bool: value = Variant.Bool(Convert.ToBoolean(raw ?? false)); return;
+                case TypeKind.Int: value = Variant.Int(Convert.ToInt32(raw ?? 0)); return;
+                case TypeKind.Float: value = Variant.Float(Convert.ToSingle(raw ?? 0f)); return;
+                case TypeKind.Double: value = Variant.Double(Convert.ToDouble(raw ?? 0d)); return;
+                case TypeKind.Str: str = raw as string; return;
+                case TypeKind.Enum:
+                {
+                    if (!r.TryGetEnumById(type.EnumId, out var en))
+                        throw new FormatException(
+                            $"salamander-api.json: {what} ссылается на неизвестный енум.");
+                    string member = raw as string;
+                    if (member == null) { value = Variant.Enum(en.Id, 0); return; }
+                    if (!en.Members.TryGetValue(member, out int v))
+                        throw new FormatException(
+                            $"salamander-api.json: '{member}' не является элементом енума '{en.Name}' ({what}).");
+                    value = Variant.Enum(en.Id, v);
+                    return;
+                }
+                default:
+                    throw new FormatException(
+                        $"salamander-api.json: {what} не может быть типа '{type}'.");
+            }
+        }
+
+        private static object EncodeDefault(HostRegistry r, ArchetypeConstInfo c)
+            => EncodeLiteral(r, c.Type, c.DefaultValue, c.DefaultStr);
 
         private static void DecodeDefault(HostRegistry r, ConstDef c, TypeRef type,
                                           out Variant value, out string str)
@@ -388,85 +469,15 @@ namespace Dsl.Compilation
             value = Variant.Nil;
             str = null;
             if (!c.HasDefault) return;
-
-            // Newtonsoft отдаёт числа как long/double — приводим по ОБЪЯВЛЕННОМУ
-            // типу, а не по тому, что угадал json (3 и 3.0 неразличимы в тексте)
-            switch (type.Kind)
-            {
-                case TypeKind.Bool: value = Variant.Bool(Convert.ToBoolean(c.Default)); return;
-                case TypeKind.Int: value = Variant.Int(Convert.ToInt32(c.Default)); return;
-                case TypeKind.Float: value = Variant.Float(Convert.ToSingle(c.Default)); return;
-                case TypeKind.Double: value = Variant.Double(Convert.ToDouble(c.Default)); return;
-                case TypeKind.Str: str = c.Default as string; return;
-                case TypeKind.Enum:
-                {
-                    if (!r.TryGetEnumById(type.EnumId, out var en))
-                        throw new FormatException(
-                            $"salamander-api.json: дефолт константы '{c.Name}' ссылается на неизвестный енум.");
-                    string member = c.Default as string;
-                    if (member == null || !en.Members.TryGetValue(member, out int v))
-                        throw new FormatException(
-                            $"salamander-api.json: '{c.Default}' не является элементом енума '{en.Name}' " +
-                            $"(дефолт константы '{c.Name}').");
-                    value = Variant.Enum(en.Id, v);
-                    return;
-                }
-                default:
-                    throw new FormatException(
-                        $"salamander-api.json: у константы '{c.Name}' типа '{c.Type}' не может быть дефолта.");
-            }
+            DecodeLiteral(r, c.Default, type, $"дефолт константы '{c.Name}'", out value, out str);
         }
 
         private static object EncodeStructDefault(HostRegistry r, HostStructFieldInfo f)
-        {
-            switch (f.Type.Kind)
-            {
-                case TypeKind.Bool: return f.Default.AsBool;
-                case TypeKind.Int: return f.Default.AsInt;
-                case TypeKind.Float: return f.Default.ToF();
-                case TypeKind.Double: return f.Default.ToD();
-                case TypeKind.Str: return f.DefaultStr;
-                case TypeKind.Enum:
-                    // именем, а не индексом: перенумеровали енум — дефолт не съехал
-                    if (r.TryGetEnumById(f.Type.EnumId, out var en)
-                        && (uint)f.Default.EnumValue < (uint)en.Names.Length)
-                        return en.Names[f.Default.EnumValue];
-                    return f.Default.EnumValue;
-                default: return null;
-            }
-        }
+            => EncodeLiteral(r, f.Type, f.Default, f.DefaultStr);
 
         private static void DecodeStructDefault(HostRegistry r, StructFieldDef f, TypeRef type,
                                                 out Variant value, out string str)
-        {
-            value = Variant.Nil;
-            str = null;
-            // приводим по ОБЪЯВЛЕННОМУ типу: 3 и 3.0 в json неразличимы
-            switch (type.Kind)
-            {
-                case TypeKind.Bool: value = Variant.Bool(Convert.ToBoolean(f.Default ?? false)); return;
-                case TypeKind.Int: value = Variant.Int(Convert.ToInt32(f.Default ?? 0)); return;
-                case TypeKind.Float: value = Variant.Float(Convert.ToSingle(f.Default ?? 0f)); return;
-                case TypeKind.Double: value = Variant.Double(Convert.ToDouble(f.Default ?? 0d)); return;
-                case TypeKind.Str: str = f.Default as string; return;
-                case TypeKind.Enum:
-                {
-                    if (!r.TryGetEnumById(type.EnumId, out var en))
-                        throw new FormatException(
-                            $"salamander-api.json: поле '{f.Name}' ссылается на неизвестный енум.");
-                    string member = f.Default as string;
-                    if (member == null) { value = Variant.Enum(en.Id, 0); return; }
-                    if (!en.Members.TryGetValue(member, out int v))
-                        throw new FormatException(
-                            $"salamander-api.json: '{member}' не элемент енума '{en.Name}' (поле '{f.Name}').");
-                    value = Variant.Enum(en.Id, v);
-                    return;
-                }
-                default:
-                    throw new FormatException(
-                        $"salamander-api.json: поле структуры '{f.Name}' не может быть типа '{f.Type}'.");
-            }
-        }
+            => DecodeLiteral(r, f.Default, type, $"поле структуры '{f.Name}'", out value, out str);
 
         private static Variant StubGetter(IHostContext ctx, object o) => Variant.Nil;
         private static void StubSetter(IHostContext ctx, object o, Variant v) { }

@@ -2,7 +2,8 @@
 
 Обновление под новые фичи движка: **`readonly`-поля**, **константы вида
 (`Const<T>` / `ConstOr<T>` с дефолтами)**, **составные имена API-классов
-(`Api.Weapon.Cut(...)`)** и **структуры хоста (`new Damage(slash: 21)`)**.
+(`Api.Weapon.Cut(...)`)**, **константы API-классов
+(`Api.Parts.Grip.sword_01`)** и **структуры хоста (`new Damage(slash: 21)`)**.
 `SKILL.md` обновляется отдельно — через карточку предложения скилла; эти два
 файла заменяются вручную.
 
@@ -193,6 +194,8 @@ readonly field or kind constant, W0101 field outside the declared constant set.
 | E0235 | the same struct field is given twice |
 | E0236 | assignment to a struct field — struct values are immutable |
 | E0237 | `==` / `!=` on structs — compare the fields you care about |
+| E0238 | no such constant on this API class |
+| E0239 | an API constant used as a call — read it without parentheses |
 | W0101 | (warning) field is outside the kind's declared constant set — likely a typo |
 ````
 
@@ -273,6 +276,35 @@ Api.Armor.Absorb(target);
 `Api.Weapon` is one name, not a namespace object: the prefix has no members of its
 own and cannot be stored in a variable — only called through. Plain names
 (`UnitApi.Heal(...)`) work exactly as before.
+````
+
+### 1.8 Вставить новый подраздел сразу ПОСЛЕ «Dotted API names» (см. 1.7)
+
+````markdown
+### API constants
+
+An API class may also expose named VALUES — content ids, keys, tags. They are read
+WITHOUT parentheses:
+
+```
+readonly string grip = Api.PartsCatalog.Weapon.Grip.sword_1h_just_01;
+```
+
+A constant is folded into a literal at compile time: there is no call at runtime,
+which is the point — an id catalogue is dozens of names, and a zero-argument method
+returning a literal would mean a delegate and a host call per read, plus it reads as
+"something is computed here".
+
+The value is a literal (`bool/int/float/double/string`) or an enum member, and its
+declared type is the type of the expression. A name is either a method or a
+constant, never both.
+
+Nearby errors are deliberately distinct: a constant called with parentheses is
+**E0239** ("read it without parentheses"), a method read without them is **E0162**
+("it can only be called"), and an actual typo is **E0238**.
+
+Which constants exist is in `salamander-api.json` (`consts` next to `methods`), so
+the editor completes them after the dot and shows the host's `doc` on hover.
 ````
 
 ---
@@ -521,4 +553,55 @@ Flat and dotted names coexist, including under a shared head.
 `DefineMethod` **throws** on a duplicate method name within one API class instead
 of silently overwriting the earlier registration; the same name in different API
 classes is fine.
+````
+
+### 2.6 Вставить новый раздел ПОСЛЕ «Dotted API names» (см. 2.5)
+
+````markdown
+## API constants (named values, no call)
+
+Games need to hand scripts named VALUES as well as calls — content ids, keys, tags:
+
+```csharp
+host.Api("Api.PartsCatalog.Weapon.Grip")
+    .Const("sword_1h_just_01", "weapon.grip.sword_1h.just.01", doc: "one-handed grip")
+    .Const("axe_2h_heavy_01",  "weapon.grip.axe_2h.heavy.01");
+```
+
+```
+readonly string grip = Api.PartsCatalog.Weapon.Grip.sword_1h_just_01;
+```
+
+The value is a literal (`bool/int/float/double/string`) or an enum member — the
+same encoder as struct field defaults and kind constant defaults. Anything else is
+rejected at registration; hand those out through a method.
+
+Why not a zero-argument method returning a literal, which is what this used to be:
+
+- it reads as "something is computed here", which is a lie in a recipe;
+- every read costs a host call through a delegate, and there is nothing to compute;
+- the registry grows a `HostMethodInfo` plus a delegate per name — a parts catalogue
+  is dozens of them.
+
+A constant occupies no delegate slot and the compiler folds it into a literal, so no
+`CallHost` survives in the bytecode.
+
+Within one API class a name is either a method or a constant — registering the same
+name as both throws, in either order.
+
+In the manifest constants sit next to methods:
+
+```json
+"apis": [
+  { "name": "Api.PartsCatalog.Weapon.Grip",
+    "methods": [],
+    "consts": [
+      { "name": "sword_1h_just_01", "type": "string",
+        "value": "weapon.grip.sword_1h.just.01", "doc": "one-handed grip" }
+    ] }
+]
+```
+
+The `doc` of a constant — like `summary` on events and methods, `doc` on kind
+constants, struct fields and class properties — is what the editor shows on hover.
 ````

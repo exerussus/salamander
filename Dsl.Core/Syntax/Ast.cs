@@ -290,6 +290,7 @@ namespace Dsl.Syntax
     {
         Unresolved, HostProperty, StaticField, EnumValue, CollLen,
         StructField,   // поле структуры хоста: индекс в значении-массиве
+        ApiConst,      // именованное значение у API-класса: сворачивается в литерал
     }
 
     public sealed class MemberExpr : Expr

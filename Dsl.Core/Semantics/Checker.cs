@@ -1721,6 +1721,13 @@ namespace Dsl.Semantics
 
         private TypeRef CheckMember(MemberExpr me)
         {
+            // Константа API: "UnitApi.MAX_RANGE", "Api.Parts.Grip.sword_01".
+            // Цепочку сворачиваем ЦЕЛИКОМ и до всего остального: точки внутри
+            // имени API — часть имени, спускаться в промежуточные узлы нельзя
+            // (у API-классов нет свойств, и проход по ним дал бы ложную ошибку).
+            if (TryFoldApiPath(me.Target, out string apiPath) && _host.TryGetApi(apiPath, out var pathApi))
+                return ResolveApiMember(me, apiPath, pathApi);
+
             // особые цели: EnumType.Member / Class.field / Api.метод (в вызове) / Engine.метод
             IdentKind targetKind = IdentKind.Unresolved;
             object targetSym = null;
@@ -1791,7 +1798,8 @@ namespace Dsl.Semantics
                     _diag.Error("E0179", "Члены listener приватны и снаружи недоступны (состояние живёт в подписке).", me.Pos);
                     return me.Type = TypeRef.Error;
 
-                case IdentKind.ApiClassRef:
+                // ApiClassRef сюда не доходит: member-access с API в голове
+                // целиком разбирает ResolveApiMember в начале метода
                 case IdentKind.EngineRef:
                     _diag.Error("E0162", $"'{me.Name}' — метод; его можно только вызвать.", me.Pos);
                     return me.Type = TypeRef.Error;
@@ -2293,6 +2301,52 @@ namespace Dsl.Semantics
             return true;
         }
 
+        /// <summary>
+        /// Член API-класса ВНЕ вызова — это может быть только константа. Метод
+        /// здесь не «нет такого члена», а «его надо вызвать»: сообщения обязаны
+        /// различать опечатку и забытые скобки, иначе они читаются одинаково.
+        /// </summary>
+        private TypeRef ResolveApiMember(MemberExpr me, string apiName, HostApiInfo api)
+        {
+            if (api.TryGetConst(me.Name, out var c))
+            {
+                me.MKind = MemberKind.ApiConst;
+                me.Sym = c;                     // значение подставит компилятор
+                return me.Type = c.Type;
+            }
+
+            if (api.TryGetMethod(me.Name, out _))
+            {
+                _diag.Error("E0162",
+                    $"'{apiName}.{me.Name}' — метод; его можно только вызвать.", me.Pos);
+                return me.Type = TypeRef.Error;
+            }
+
+            // плоское и составное имя могут сосуществовать: "Api" бывает и API,
+            // и головой пути "Api.Weapon" — тогда это не опечатка в константе
+            string deeper = apiName + "." + me.Name;
+            if (_host.TryGetApi(deeper, out _))
+            {
+                _diag.Error("E0227",
+                    $"'{deeper}' — API-класс: у него можно вызвать метод или прочитать константу.", me.Pos);
+                return me.Type = TypeRef.Error;
+            }
+            if (_host.IsApiNamespace(deeper))
+            {
+                _diag.Error("E0227",
+                    $"'{deeper}' — пространство имён API, а не значение. Допишите имя API и член.", me.Pos);
+                return me.Type = TypeRef.Error;
+            }
+
+            _diag.Error("E0238",
+                api.Consts.Count == 0
+                    ? $"У API '{apiName}' нет константы '{me.Name}' — у него их не объявлено вовсе. " +
+                      "Если это метод, его надо вызвать со скобками."
+                    : $"У API '{apiName}' нет константы '{me.Name}'.",
+                me.Pos);
+            return me.Type = TypeRef.Error;
+        }
+
         private TypeRef DispatchDottedCall(CallExpr call, MemberExpr me, IdentKind kind, object sym, string targetName)
         {
             switch (kind)
@@ -2324,6 +2378,16 @@ namespace Dsl.Semantics
                     }
                     if (!api.TryGetMethod(me.Name, out var m))
                     {
+                        // константа со скобками — самая вероятная опечатка рядом:
+                        // «нет метода» тут увело бы искать метод, которого нет
+                        if (api.TryGetConst(me.Name, out _))
+                        {
+                            _diag.Error("E0239",
+                                $"'{targetName}.{me.Name}' — константа, а не метод: читайте её без скобок.",
+                                me.Pos);
+                            CheckArgsLoose(call);
+                            return call.Type = TypeRef.Error;
+                        }
                         _diag.Error("E0183", $"У '{targetName}' нет метода '{me.Name}'.", me.Pos);
                         CheckArgsLoose(call);
                         return call.Type = TypeRef.Error;

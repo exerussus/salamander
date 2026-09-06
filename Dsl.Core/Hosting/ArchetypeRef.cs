@@ -76,27 +76,12 @@ namespace Dsl.Hosting
         /// </summary>
         private static void EncodeDefault<T>(Semantics.TypeRef type, T value, out Variant variant, out string str)
         {
-            variant = Variant.Nil;
-            str = null;
-            switch (type.Kind)
-            {
-                case Semantics.TypeKind.Bool: variant = Variant.Bool((bool)(object)value); return;
-                case Semantics.TypeKind.Int: variant = Variant.Int((int)(object)value); return;
-                case Semantics.TypeKind.Float: variant = Variant.Float((float)(object)value); return;
-                case Semantics.TypeKind.Double: variant = Variant.Double((double)(object)value); return;
-                case Semantics.TypeKind.Str: str = (string)(object)value; return;
-                case Semantics.TypeKind.Enum:
-                    // значения енума в реестре обязаны быть 0..N-1, поэтому
-                    // числовое значение и есть индекс имени
-                    variant = Variant.Enum(type.EnumId, System.Convert.ToInt32(value));
-                    return;
-                default:
-                    throw new ArgumentException(
-                        $"Дефолт для константы '{typeof(T).Name}' не поддержан: значением по умолчанию " +
-                        "может быть только литерал (bool/int/float/double/string) или элемент енума. " +
-                        "Сущности и коллекции константами быть не могут; у структуры литерала нет — " +
-                        "объявляйте её как Const<T>(name, required: ...), без дефолта.");
-            }
+            if (HostLiteral.TryEncode(type, value, out variant, out str)) return;
+            throw new ArgumentException(
+                $"Дефолт для константы типа '{typeof(T).Name}' не поддержан: " +
+                HostLiteral.Supported +
+                " Сущности и коллекции константами быть не могут; у структуры литерала нет — " +
+                "объявляйте её как Const<T>(name, required: ...), без дефолта.");
         }
 
         private int Define(string name, MethodDoc doc, params Semantics.TypeRef[] ps)

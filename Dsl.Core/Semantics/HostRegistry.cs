@@ -41,12 +41,32 @@ namespace Dsl.Semantics
         public string[] ParamDocs;   // может быть null
     }
 
+    /// <summary>
+    /// Именованное значение у API-класса: идентификатор контента, ключ, тег.
+    /// Читается без скобок и сворачивается компилятором в литерал — ни делегата
+    /// в реестре, ни хостового вызова в байткоде.
+    /// </summary>
+    public sealed class HostApiConstInfo
+    {
+        public int Index;        // порядок объявления хостом — для манифеста и подсказок
+        public string Name;
+        public TypeRef Type;
+        public Variant Value;
+        public string ValueStr;  // строки отдельно: их id раздаёт StringTable при загрузке
+        public string Doc;
+    }
+
     public sealed class HostApiInfo
     {
         public string Name;
         public string Summary;
         public readonly Dictionary<string, HostMethodInfo> Methods = new Dictionary<string, HostMethodInfo>();
         public bool TryGetMethod(string n, out HostMethodInfo m) => Methods.TryGetValue(n, out m);
+
+        // список — для манифеста и подсказок (порядок объявления), словарь — для поиска
+        public readonly List<HostApiConstInfo> Consts = new List<HostApiConstInfo>();
+        public readonly Dictionary<string, HostApiConstInfo> ConstByName = new Dictionary<string, HostApiConstInfo>();
+        public bool TryGetConst(string n, out HostApiConstInfo c) => ConstByName.TryGetValue(n, out c);
     }
 
     /// <summary>Событие вида архетипа (своё пространство имён внутри вида).</summary>
@@ -294,6 +314,10 @@ namespace Dsl.Semantics
                 throw new System.InvalidOperationException(
                     $"Метод '{method}' уже зарегистрирован у API '{apiClass}'. " +
                     "Перегрузок в языке нет — дайте методам разные имена.");
+            if (api.ConstByName.ContainsKey(method))
+                throw new System.InvalidOperationException(
+                    $"У API '{apiClass}' уже есть константа '{method}': имя одно на всех, " +
+                    "методом и константой одновременно оно быть не может.");
             int id = _functions.Count;
             _functions.Add(fn);
             api.Methods[method] = new HostMethodInfo
@@ -307,6 +331,39 @@ namespace Dsl.Semantics
                 ParamDocs = paramDocs,
             };
             return id;
+        }
+
+        /// <summary>
+        /// Именованное значение у API-класса: <c>Api.Parts.Grip.sword_01</c>.
+        /// Раньше это выражалось методом без аргументов, возвращающим литерал —
+        /// то есть делегатом в реестре и хостовым вызовом на каждое обращение,
+        /// хотя вычислять нечего. Константа не занимает слот в _functions и
+        /// сворачивается компилятором в литерал.
+        /// </summary>
+        public HostApiConstInfo DefineApiConst(string apiClass, string name, TypeRef type,
+                                               Variant value, string valueStr, string doc = null)
+        {
+            var api = DefineApiClass(apiClass);
+            if (api.ConstByName.ContainsKey(name))
+                throw new System.InvalidOperationException(
+                    $"Константа '{name}' уже зарегистрирована у API '{apiClass}'.");
+            if (api.Methods.ContainsKey(name))
+                throw new System.InvalidOperationException(
+                    $"У API '{apiClass}' уже есть метод '{name}': имя одно на всех, " +
+                    "методом и константой одновременно оно быть не может.");
+
+            var info = new HostApiConstInfo
+            {
+                Index = api.Consts.Count,
+                Name = name,
+                Type = type ?? TypeRef.Error,
+                Value = value,
+                ValueStr = valueStr,
+                Doc = doc,
+            };
+            api.Consts.Add(info);
+            api.ConstByName[name] = info;
+            return info;
         }
 
         public int DefineEvent(string name, params TypeRef[] paramTypes)
@@ -522,5 +579,8 @@ namespace Dsl.Semantics
         public HostGetter Getter(int propId) => _getters[propId];
         public HostSetter Setter(int propId) => _setters[propId];
         public HostFunction Function(int hostFnId) => _functions[hostFnId];
+
+        /// <summary>Сколько хостовых делегатов зарегистрировано (константы их не занимают).</summary>
+        public int FunctionCount => _functions.Count;
     }
 }

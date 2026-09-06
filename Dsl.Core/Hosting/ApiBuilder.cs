@@ -46,6 +46,36 @@ namespace Dsl.Hosting
                 doc?.Summary, doc?.NameArray(), doc?.DocArray());
         }
 
+        // ===== константы ===================================================
+
+        /// <summary>
+        /// Именованное значение: идентификатор контента, ключ, тег. Читается
+        /// без скобок — <c>Api.Parts.Grip.sword_01</c> — и сворачивается в
+        /// литерал на компиляции.
+        ///
+        /// <code>
+        /// host.Api("Api.PartsCatalog.Weapon.Grip")
+        ///     .Const("sword_1h_just_01", "weapon.grip.sword_1h.just.01");
+        /// </code>
+        ///
+        /// Метод без аргументов, возвращающий литерал, — не то же самое: он
+        /// врёт читателю («здесь что-то вычисляется»), стоит вызова через
+        /// делегат на каждое обращение и занимает слот в реестре.
+        /// Обобщённый параметр назван TV, а не T: T у ApiBuilder уже занято
+        /// сокращением для TypeMap.
+        /// </summary>
+        public ApiBuilder Const<TV>(string name, TV value, string doc = null)
+        {
+            var type = T.RefOf<TV>();
+            if (!HostLiteral.TryEncode(type, value, out var v, out var str))
+                throw new ArgumentException(
+                    $"Константа '{_apiName}.{name}' типа {typeof(TV).Name} не поддержана: " +
+                    HostLiteral.Supported + " Сущности, коллекции и структуры константами " +
+                    "быть не могут — их отдают методом.");
+            _b.Registry.DefineApiConst(_apiName, name, type, v, str, doc);
+            return this;
+        }
+
         // ===== void-методы =================================================
 
         public ApiBuilder Act(string name, Action fn, MethodDoc doc = null)
