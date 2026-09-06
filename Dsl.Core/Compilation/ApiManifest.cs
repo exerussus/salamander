@@ -31,6 +31,15 @@ namespace Dsl.Compilation
             [JsonProperty("name")] public string Name;
             [JsonProperty("summary", NullValueHandling = NullValueHandling.Ignore)] public string Summary;
             [JsonProperty("members")] public string[] Members = Array.Empty<string>();
+
+            /// <summary>
+            /// Пояснения к элементам ПАРАЛЛЕЛЬНЫМ массивом (той же длины, null
+            /// там, где пояснения нет). Параллельный массив, а не объекты
+            /// {name, doc}: старые манифесты, где ключа нет вовсе, читаются
+            /// как раньше, и `members` остаётся простым списком имён.
+            /// </summary>
+            [JsonProperty("memberDocs", NullValueHandling = NullValueHandling.Ignore)]
+            public string[] MemberDocs;
         }
 
         public sealed class PropDef
@@ -142,7 +151,13 @@ namespace Dsl.Compilation
 
             var enums = new List<EnumDef>();
             foreach (var e in r.AllEnums)
-                enums.Add(new EnumDef { Name = e.Name, Summary = e.Summary, Members = e.Names });
+                enums.Add(new EnumDef
+                {
+                    Name = e.Name, Summary = e.Summary, Members = e.Names,
+                    // массива нет вовсе, если не описан ни один элемент —
+                    // манифесты без пояснений выглядят как раньше
+                    MemberDocs = HasAnyDoc(e.Docs) ? e.Docs : null,
+                });
             m.Enums = enums.ToArray();
 
             // структуры идут перед классами: свойство класса может быть структурой,
@@ -306,7 +321,15 @@ namespace Dsl.Compilation
 
             // порядок важен: сперва имена типов (енумы/классы), потом сигнатуры
             foreach (var e in m.Enums ?? Array.Empty<EnumDef>())
-                r.DefineEnum(e.Name, e.Summary, e.Members ?? Array.Empty<string>());
+            {
+                var members = e.Members ?? Array.Empty<string>();
+                var docs = e.MemberDocs;
+                if (docs != null && docs.Length != members.Length)
+                    throw new FormatException(
+                        $"salamander-api.json: у енума '{e.Name}' {docs.Length} пояснений " +
+                        $"на {members.Length} элементов — массивы идут параллельно.");
+                r.DefineEnum(e.Name, e.Summary, members, docs);
+            }
 
             // структуры — сразу после енумов: поле структуры бывает только
             // литеральным или элементом енума, а вот свойство класса и параметр
@@ -402,6 +425,13 @@ namespace Dsl.Compilation
         // Литерал в манифесте — один и тот же для дефолта константы вида, дефолта
         // поля структуры и значения константы API. Кодировщик поэтому тоже один:
         // три копии этой лестницы уже начинали расходиться.
+
+        private static bool HasAnyDoc(string[] docs)
+        {
+            if (docs == null) return false;
+            foreach (var d in docs) if (!string.IsNullOrEmpty(d)) return true;
+            return false;
+        }
 
         private static object EncodeLiteral(HostRegistry r, TypeRef type, Variant value, string str)
         {

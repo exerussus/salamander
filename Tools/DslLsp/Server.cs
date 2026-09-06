@@ -617,7 +617,8 @@ namespace Dsl.Tools.Lsp
                     foreach (var en in _api.Enums)
                         if (en.Name == target)
                         {
-                            foreach (var mem in en.Members) Add(mem, 20, en.Name);
+                            for (int i = 0; i < en.Members.Length; i++)
+                                Add(en.Members[i], 20, $"{en.Name}.{en.Members[i]}", MemberDoc(en, i));
                             return items;
                         }
                 foreach (var fi in _index.Values)
@@ -1120,6 +1121,12 @@ namespace Dsl.Tools.Lsp
             return sb.Length == 0 ? null : sb.ToString();
         }
 
+        /// <summary>Пояснение к элементу енума: параллельный массив, может отсутствовать.</summary>
+        private static string MemberDoc(ApiManifest.EnumDef en, int index)
+            => en.MemberDocs != null && (uint)index < (uint)en.MemberDocs.Length
+                ? en.MemberDocs[index]
+                : null;
+
         private static string ConstSig(string owner, ApiManifest.ApiConstDef c)
             => $"{owner}.{c.Name}: {c.Type} = {Literal(c.Value)}";
 
@@ -1173,6 +1180,31 @@ namespace Dsl.Tools.Lsp
                         foreach (var me in api.Methods)
                             if (me.Name == word)
                             { md = $"```\n{MethodSig(api.Name, me)}\n```\n{MethodDocMd(me) ?? ""}"; break; }
+            // элемент енума — там, где спрашивают про ЕДИНИЦЫ ("Slot.MoveSpeed —
+            // это м/с или клетки за тик?"); имя енума перед точкой снимает
+            // неоднозначность одинаковых имён элементов в разных енумах
+            if (md == null && _api?.Enums != null)
+                foreach (var en in _api.Enums)
+                {
+                    if (!HasPrefix(lineText, wordCol, en.Name + ".")) continue;
+                    for (int i = 0; i < en.Members.Length; i++)
+                    {
+                        if (en.Members[i] != word) continue;
+                        md = $"```\n{en.Name}.{word}\n```\n{MemberDoc(en, i) ?? en.Summary ?? ""}";
+                        break;
+                    }
+                    if (md != null) break;
+                }
+
+            // сам енум: summary типа плюс сколько в нём элементов
+            if (md == null && _api?.Enums != null)
+                foreach (var en in _api.Enums)
+                    if (en.Name == word)
+                    {
+                        md = $"```\nenum {en.Name}\n```\n{en.Summary ?? $"Енум игры, элементов: {en.Members.Length}."}";
+                        break;
+                    }
+
             // константа API — читается без скобок, поэтому и ищется по префиксу пути
             if (md == null && _api?.Apis != null)
                 foreach (var api in _api.Apis)

@@ -49,17 +49,19 @@ namespace Dsl.Hosting
         // ===================================================================
 
         /// <summary>
-        /// Регистрирует C#-енум как скриптовый. Имя по умолчанию — имя типа.
-        /// Значения обязаны быть 0..N-1 без пропусков (требование движка:
-        /// значение енума = индекс имени).
-        /// </summary>
-        /// <summary>
         /// Регистрирует C#-енум как скриптовый. Имя по умолчанию — имя типа;
         /// summary передавайте именованным аргументом: Enum&lt;Team&gt;(summary: "...").
         /// Значения обязаны быть 0..N-1 без пропусков (требование движка:
         /// значение енума = индекс имени).
+        ///
+        /// Возвращает построитель элементов — там описываются ЕДИНИЦЫ:
+        /// <code>
+        /// host.Enum&lt;Slot&gt;(summary: "Слоты характеристик.")
+        ///     .Member(Slot.MoveSpeed,   "Скорость передвижения, м/с.")
+        ///     .Member(Slot.AttackSpeed, "Множитель времён оружия. Меньше — быстрее.");
+        /// </code>
         /// </summary>
-        public HostBuilder Enum<TEnum>(string name = null, string summary = null) where TEnum : struct, Enum
+        public EnumBuilder<TEnum> Enum<TEnum>(string name = null, string summary = null) where TEnum : struct, Enum
         {
             name ??= typeof(TEnum).Name;
 
@@ -76,7 +78,7 @@ namespace Dsl.Hosting
 
             int id = Registry.DefineEnum(name, summary, names);
             Types.AddEnum(TypeRefFor(id), id, values);
-            return this;
+            return new EnumBuilder<TEnum>(this, id);
         }
 
         private static Semantics.TypeRef TypeRefFor(int enumId) => Semantics.TypeRef.EnumOf(enumId);

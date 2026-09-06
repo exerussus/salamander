@@ -10,6 +10,18 @@ namespace Dsl.Semantics
         public readonly Dictionary<string, int> Members = new Dictionary<string, int>();
         public string[] Names;
         public string Summary;
+
+        /// <summary>
+        /// Пояснения к элементам, параллельно Names (значение элемента = индекс).
+        /// null-массив — пояснений нет вовсе, null внутри — нет у этого элемента.
+        /// Именно здесь живут ЕДИНИЦЫ («м/с», «множитель», «в тиках»): summary
+        /// всего енума одну строку на три десятка элементов не вмещает, и при
+        /// наведении на элемент его никто не видит.
+        /// </summary>
+        public string[] Docs;
+
+        public string DocOf(int value)
+            => Docs != null && (uint)value < (uint)Docs.Length ? Docs[value] : null;
     }
 
     public sealed class HostPropInfo
@@ -199,6 +211,14 @@ namespace Dsl.Semantics
         // Плюс id скриптовых енумов считаются как EnumCount + n, так что сдвиг
         // ломал и их. Поэтому дубль теперь — явная ошибка регистрации.
         public int DefineEnum(string name, string summary, string[] members)
+            => DefineEnum(name, summary, members, null);
+
+        /// <summary>
+        /// <paramref name="docs"/> — пояснения к элементам ПАРАЛЛЕЛЬНЫМ массивом
+        /// (значение элемента = индекс), null внутри разрешён. Отдельный массив,
+        /// а не пары: Names уже так устроен, и порядок задаёт сам енум.
+        /// </summary>
+        public int DefineEnum(string name, string summary, string[] members, string[] docs)
         {
             if (_enums.ContainsKey(name))
                 throw new System.InvalidOperationException(
@@ -206,10 +226,41 @@ namespace Dsl.Semantics
             if (_classes.ContainsKey(name) || _structByName.ContainsKey(name))
                 throw new System.InvalidOperationException(
                     $"Имя '{name}' уже занято классом или структурой хоста.");
-            var info = new HostEnumInfo { Id = _enums.Count, Name = name, Names = members, Summary = summary };
+            if (docs != null && docs.Length != members.Length)
+                throw new System.ArgumentException(
+                    $"Енум '{name}': пояснений {docs.Length}, а элементов {members.Length}. " +
+                    "Массив пояснений идёт параллельно элементам — оставляйте null там, где пояснения нет.");
+
+            var info = new HostEnumInfo
+            {
+                Id = _enums.Count, Name = name, Names = members, Summary = summary, Docs = docs,
+            };
             for (int i = 0; i < members.Length; i++) info.Members[members[i]] = i;
             _enums[name] = info;
             return info.Id;
+        }
+
+        /// <summary>
+        /// Пояснение к одному элементу — путь для fluent-обёртки, где элементы
+        /// описываются по одному уже после регистрации типа. Повторное описание
+        /// того же элемента — ошибка: молча затирать пояснение неоткуда узнать.
+        /// </summary>
+        public void SetEnumMemberDoc(int enumId, int value, string doc)
+        {
+            HostEnumInfo info = null;
+            foreach (var e in _enums.Values) if (e.Id == enumId) { info = e; break; }
+            if (info == null)
+                throw new System.InvalidOperationException($"Енум #{enumId} не зарегистрирован.");
+            if ((uint)value >= (uint)info.Names.Length)
+                throw new System.ArgumentException(
+                    $"У енума '{info.Name}' нет элемента со значением {value} " +
+                    $"(элементов: {info.Names.Length}).");
+
+            info.Docs ??= new string[info.Names.Length];
+            if (info.Docs[value] != null)
+                throw new System.InvalidOperationException(
+                    $"Элемент '{info.Name}.{info.Names[value]}' уже описан.");
+            info.Docs[value] = doc;
         }
 
         public int DefineClass(string name) => DefineClass(name, null);

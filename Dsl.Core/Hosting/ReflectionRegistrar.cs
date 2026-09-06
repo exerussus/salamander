@@ -143,6 +143,16 @@ namespace Dsl.Hosting
             var m = typeof(HostBuilder).GetMethods()
                 .First(x => x.Name == nameof(HostBuilder.Enum) && x.IsGenericMethodDefinition);
             m.MakeGenericMethod(type).Invoke(host, new object[] { null, summary });
+
+            // [SalamanderMember] на самих полях енума: описания живут там же, где
+            // элементы. Значения проверены выше (0..N-1), поэтому значение = индекс
+            if (!host.Registry.TryGetEnum(type.Name, out var info)) return;
+            foreach (var f in type.GetFields(BindingFlags.Public | BindingFlags.Static))
+            {
+                var doc = f.GetCustomAttribute<SalamanderMemberAttribute>();
+                if (doc == null || string.IsNullOrWhiteSpace(doc.Doc)) continue;
+                host.Registry.SetEnumMemberDoc(info.Id, Convert.ToInt32(f.GetRawConstantValue()), doc.Doc);
+            }
         }
 
         private static void RegisterEntity(HostBuilder host, Type type, string summary, PropertyInfo[] props)

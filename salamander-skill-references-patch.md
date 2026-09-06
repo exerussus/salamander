@@ -3,7 +3,8 @@
 Обновление под новые фичи движка: **`readonly`-поля**, **константы вида
 (`Const<T>` / `ConstOr<T>` с дефолтами)**, **составные имена API-классов
 (`Api.Weapon.Cut(...)`)**, **константы API-классов
-(`Api.Parts.Grip.sword_01`)** и **структуры хоста (`new Damage(slash: 21)`)**.
+(`Api.Parts.Grip.sword_01`)**, **структуры хоста (`new Damage(slash: 21)`)** и
+**описания элементов енумов**.
 `SKILL.md` обновляется отдельно — через карточку предложения скилла; эти два
 файла заменяются вручную.
 
@@ -604,4 +605,43 @@ In the manifest constants sit next to methods:
 
 The `doc` of a constant — like `summary` on events and methods, `doc` on kind
 constants, struct fields and class properties — is what the editor shows on hover.
+````
+
+### 2.7 Вставить новый раздел ПОСЛЕ `## API constants` (см. 2.6)
+
+````markdown
+## Documenting enum members
+
+An enum member is where the recipe author asks about UNITS — "is `Slot.MoveSpeed`
+metres per second or cells per tick?". The enum's own `summary` cannot answer that:
+it is one line for thirty-odd members, and it is not what shows when you hover a
+member. So members carry their own docs:
+
+```csharp
+host.Enum<Slot>(summary: "Stat slots.")
+    .Member(Slot.MoveSpeed,   "Movement speed, m/s.")
+    .Member(Slot.AttackSpeed, "Weapon timing multiplier. Lower is faster.");
+```
+
+`Enum<T>(...)` returns that member builder; `.Host` goes back to the `HostBuilder`,
+and `.Enum<TNext>()` continues an `Enum<A>().Enum<B>()` chain. Describing the same
+member twice throws, and an empty doc is rejected rather than stored.
+
+On the attribute path the docs live on the fields themselves:
+
+```csharp
+[SalamanderClass("Weapon parameters.")]
+public enum WeaponParameter
+{
+    [SalamanderMember("Ticks to a full charge.")] ChargeToFullTicks,
+    [SalamanderMember("Damage multiplier at full charge.")] ChargeDamageMul,
+}
+```
+
+The raw path takes a parallel array: `DefineEnum(name, summary, members, docs)`,
+`null` inside where a member has no doc; a length mismatch throws.
+
+In the manifest the docs are a parallel `memberDocs` array next to `members` (same
+length, `null` where absent). A manifest with no documented members has no
+`memberDocs` key at all, so files written by older versions load unchanged.
 ````
