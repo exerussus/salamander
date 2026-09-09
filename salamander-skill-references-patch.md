@@ -4,7 +4,8 @@
 (`Const<T>` / `ConstOr<T>` с дефолтами)**, **составные имена API-классов
 (`Api.Weapon.Cut(...)`)**, **константы API-классов
 (`Api.Parts.Grip.sword_01`)**, **структуры хоста (`new Damage(slash: 21)`)**,
-**описания элементов енумов** и **описания узлов составных имён API**.
+**описания элементов енумов**, **описания узлов составных имён API** и
+**виды-конфиги (блок-архетип без событий)**.
 `SKILL.md` обновляется отдельно — через карточку предложения скилла; эти два
 файла заменяются вручную.
 
@@ -127,6 +128,13 @@ Semantics:
   one block; changing a field's type on override is E0207.
 - Blocks are not symbols: you cannot reference `spell fireball` from script
   code; only the host addresses them.
+- An entity must implement at least one of the kind's events (**E0199**) — checked
+  on the MERGED entity, so a pure data patch is fine when another block declares
+  one. The requirement is lifted for a kind with NO declared events (otherwise
+  E0199 would demand an event while E0217 forbids every name — a dead end), and
+  for a kind whose host called `.EventsOptional()`. That is how CONFIGS are
+  written in this language: `attribute strength { readonly string title = "Str"; }`
+  — data with no mechanics, but with the same merge, saves and editor support.
 
 ### Reading the data back (host side)
 
@@ -197,6 +205,7 @@ readonly field or kind constant, W0101 field outside the declared constant set.
 | E0237 | `==` / `!=` on structs — compare the fields you care about |
 | E0238 | no such constant on this API class |
 | E0239 | an API constant used as a call — read it without parentheses |
+| E0199 | merged entity implements no event of its kind (only for kinds that have events and did not opt out) |
 | W0101 | (warning) field is outside the kind's declared constant set — likely a typo |
 ````
 

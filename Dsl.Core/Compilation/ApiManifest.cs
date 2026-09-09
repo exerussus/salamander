@@ -134,6 +134,14 @@ namespace Dsl.Compilation
             [JsonProperty("knownIds", NullValueHandling = NullValueHandling.Ignore)] public string[] KnownIds;
             [JsonProperty("consts", NullValueHandling = NullValueHandling.Ignore)] public ConstDef[] Consts;
             [JsonProperty("events")] public EventDef[] Events = Array.Empty<EventDef>();
+
+            /// <summary>
+            /// Сущность вида вправе не реализовать ни одного события. Ключ
+            /// пишется только когда true: у видов, где ничего не разрешали,
+            /// манифест выглядит как раньше.
+            /// </summary>
+            [JsonProperty("eventsOptional", DefaultValueHandling = DefaultValueHandling.Ignore)]
+            public bool EventsOptional;
         }
 
         public sealed class EventDef
@@ -305,6 +313,7 @@ namespace Dsl.Compilation
                         KnownIds = known,
                         Consts = consts,
                         Events = kevents.ToArray(),
+                        EventsOptional = info.EventsOptional,
                     });
                 }
                 m.Archetypes = kinds.ToArray();
@@ -413,6 +422,7 @@ namespace Dsl.Compilation
             foreach (var k in m.Archetypes ?? Array.Empty<ArchetypeKindDef>())
             {
                 int kid = r.DefineArchetypeKind(k.Name, k.Summary);
+                if (k.EventsOptional) r.SetArchetypeEventsOptional(kid);
                 foreach (var ev in k.Events ?? Array.Empty<EventDef>())
                 {
                     SplitParams(r, ev.Params, out var types, out var names, out var docs);

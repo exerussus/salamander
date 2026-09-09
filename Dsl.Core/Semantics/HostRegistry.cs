@@ -134,6 +134,16 @@ namespace Dsl.Semantics
         /// <summary>Ожидаемые константы (опционально): непусто — чекер сверяет поля блоков.</summary>
         public readonly List<ArchetypeConstInfo> Consts = new List<ArchetypeConstInfo>();
         public readonly Dictionary<string, ArchetypeConstInfo> ConstByName = new Dictionary<string, ArchetypeConstInfo>();
+
+        /// <summary>
+        /// Сущность вида может не реализовать ни одного события (E0199 снимается).
+        /// Нужно, когда поведение по умолчанию живёт в хосте, а блок — только данные.
+        /// У вида БЕЗ объявленных событий это верно само собой, флаг для него не нужен.
+        /// </summary>
+        public bool EventsOptional;
+
+        /// <summary>Требовать ли от сущности хотя бы одно событие.</summary>
+        public bool RequiresEvent => !EventsOptional && Events.Count > 0;
     }
 
     /// <summary>Поле структуры: имя, тип, значение по умолчанию (если в new его не задали).</summary>
@@ -575,6 +585,14 @@ namespace Dsl.Semantics
             _archKindByName[name] = k;
             return k.Id;
         }
+
+        /// <summary>
+        /// Разрешить сущностям этого вида не реализовывать ни одного события:
+        /// вид-конфиг (данные без механики) или вид, поведение которого по
+        /// умолчанию живёт в хосте.
+        /// </summary>
+        public void SetArchetypeEventsOptional(int kindId, bool optional = true)
+            => _archKinds[kindId].EventsOptional = optional;
 
         public int DefineArchetypeEvent(int kindId, string name, TypeRef[] paramTypes,
                                         string summary = null, string[] paramNames = null, string[] paramDocs = null)
