@@ -851,6 +851,17 @@ namespace Dsl.Codegen
                     Emit(OpCode.CallHost, call.TargetIndex, call.Args.Count);
                     break;
 
+                case CallKind.HostInstance:
+                {
+                    // приёмник — нулевой аргумент: basket.AddPerk(x) и
+                    // Api.Npc.Perk(basket, x) дают один и тот же CallHost
+                    var me = (MemberExpr)call.Callee;
+                    EmitExpr(me.Target);
+                    foreach (var a in call.Args) EmitExpr(a);
+                    Emit(OpCode.CallHost, call.TargetIndex, call.Args.Count + 1);
+                    break;
+                }
+
                 case CallKind.Engine:
                     foreach (var a in call.Args) EmitExpr(a);
                     Emit(OpCode.CallEngine, call.TargetIndex, call.Args.Count);

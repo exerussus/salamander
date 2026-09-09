@@ -310,7 +310,9 @@ namespace Dsl.Syntax
         public Expr Index;
     }
 
-    public enum CallKind : byte { Unresolved, ScriptFunc, HostMethod, Engine, Builtin }
+    // HostInstance — метод самого объекта (basket.AddPerk(x)): от HostMethod
+    // отличается только тем, что приёмник эмитится нулевым аргументом.
+    public enum CallKind : byte { Unresolved, ScriptFunc, HostMethod, Engine, Builtin, HostInstance }
 
     public sealed class CallExpr : Expr
     {

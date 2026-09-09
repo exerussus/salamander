@@ -647,11 +647,19 @@ namespace Dsl.Tools.Lsp
                     {
                         foreach (var pr in cls.Props)
                             Add(pr.Name, 10, $"{cls.Name}.{pr.Name}: {pr.Type}", pr.Doc);
+                        foreach (var me in cls.Methods ?? Array.Empty<ApiManifest.MethodDef>())
+                            Add(me.Name, 2, MethodSig(cls.Name, me), MethodDocMd(me),
+                                insert: CallSnippet(me.Name, ParamLabels(me)), snippet: true);
                         return items;
                     }
                     foreach (var c in _api.Classes)
+                    {
                         foreach (var pr in c.Props)
                             Add(pr.Name, 10, $"{c.Name}: {pr.Type}", pr.Doc);
+                        foreach (var me in c.Methods ?? Array.Empty<ApiManifest.MethodDef>())
+                            Add(me.Name, 2, MethodSig(c.Name, me), MethodDocMd(me),
+                                insert: CallSnippet(me.Name, ParamLabels(me)), snippet: true);
+                    }
                 }
                 return items;
             }
@@ -840,6 +848,20 @@ namespace Dsl.Tools.Lsp
                         foreach (var me in api.Methods)
                             if (me.Name == method)
                             { label = MethodSig(api.Name, me); doc = MethodDocMd(me); plabels = ParamLabels(me); break; }
+            }
+            if (label == null && owner.Length > 0 && _api?.Classes != null)
+            {
+                // владелец — не API, а значение: basket.AddPerk(<тут>). Тип берём
+                // по объявлению выше по файлу, иначе — по уникальности имени метода
+                var vcls = GuessValueClass(GetText(path), line1, col1, owner);
+                foreach (var c in _api.Classes)
+                {
+                    if (vcls != null && c.Name != vcls.Name) continue;
+                    foreach (var me in c.Methods ?? Array.Empty<ApiManifest.MethodDef>())
+                        if (me.Name == method)
+                        { label = MethodSig(c.Name, me); doc = MethodDocMd(me); plabels = ParamLabels(me); break; }
+                    if (label != null) break;
+                }
             }
             if (label == null) return null;
 
@@ -1326,6 +1348,16 @@ namespace Dsl.Tools.Lsp
                 if (hits == 1)
                     md = $"```\n{ownerSt.Name}.{fld.Name}: {fld.Type}\n```\n" +
                          $"Поле структуры, по умолчанию `{Literal(fld.Default)}`.\n\n{fld.Doc ?? ""}";
+            }
+            if (md == null && _api?.Classes != null)
+            {
+                // метод объекта (basket.AddPerk) — по тому же правилу, что и свойство
+                ApiManifest.ClassDef mOwner = null; ApiManifest.MethodDef meth = null; int mHits = 0;
+                foreach (var c in _api.Classes)
+                    foreach (var me in c.Methods ?? Array.Empty<ApiManifest.MethodDef>())
+                        if (me.Name == word) { mHits++; mOwner = c; meth = me; }
+                if (mHits == 1)
+                    md = $"```\n{MethodSig(mOwner.Name, meth)}\n```\n{MethodDocMd(meth) ?? ""}";
             }
             if (md == null && _api?.Classes != null)
             {

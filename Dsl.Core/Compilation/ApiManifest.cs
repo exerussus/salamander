@@ -55,6 +55,13 @@ namespace Dsl.Compilation
             [JsonProperty("name")] public string Name;
             [JsonProperty("summary", NullValueHandling = NullValueHandling.Ignore)] public string Summary;
             [JsonProperty("props")] public PropDef[] Props = Array.Empty<PropDef>();
+
+            /// <summary>
+            /// Методы самого объекта (basket.AddPerk("x")). Params — как их видит
+            /// скрипт, без приёмника. Ключ пишется только когда методы есть:
+            /// у классов-данных манифест выглядит как раньше.
+            /// </summary>
+            [JsonProperty("methods", NullValueHandling = NullValueHandling.Ignore)] public MethodDef[] Methods;
         }
 
         public sealed class MethodDef
@@ -204,7 +211,26 @@ namespace Dsl.Compilation
                 var props = new List<PropDef>();
                 foreach (var p in c.Props.Values)
                     props.Add(new PropDef { Name = p.Name, Type = TypeToString(r, p.Type), ReadOnly = p.ReadOnly, Doc = p.Doc });
-                classes.Add(new ClassDef { Name = c.Name, Summary = c.Summary, Props = props.ToArray() });
+
+                MethodDef[] cmethods = null;
+                if (c.Methods.Count > 0)
+                {
+                    var list = new List<MethodDef>();
+                    foreach (var f in c.Methods.Values)
+                        list.Add(new MethodDef
+                        {
+                            Name = f.Name,
+                            Summary = f.Summary,
+                            Params = BuildParams(r, f.Params, f.ParamNames, f.ParamDocs),
+                            Returns = TypeToString(r, f.Ret),
+                        });
+                    cmethods = list.ToArray();
+                }
+                classes.Add(new ClassDef
+                {
+                    Name = c.Name, Summary = c.Summary,
+                    Props = props.ToArray(), Methods = cmethods,
+                });
             }
             m.Classes = classes.ToArray();
 
@@ -389,6 +415,12 @@ namespace Dsl.Compilation
                         getter: StubGetter,
                         setter: p.ReadOnly ? null : StubSetter,
                         doc: p.Doc);
+                }
+                foreach (var f in c.Methods ?? Array.Empty<MethodDef>())
+                {
+                    SplitParams(r, f.Params, out var types, out var names, out var docs);
+                    r.DefineClassMethod(c.Name, f.Name, types, ParseType(r, f.Returns),
+                                        StubFunction, f.Summary, names, docs);
                 }
             }
 

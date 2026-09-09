@@ -40,6 +40,15 @@ namespace Dsl.Semantics
         public string Summary;
         public readonly Dictionary<string, HostPropInfo> Props = new Dictionary<string, HostPropInfo>();
         public bool TryGetProp(string n, out HostPropInfo p) => Props.TryGetValue(n, out p);
+
+        /// <summary>
+        /// Методы самого объекта: <c>basket.AddPerk("x")</c>. Params здесь —
+        /// то, что видит скрипт, БЕЗ приёмника: приёмник уходит нулевым
+        /// аргументом хостовой функции, поэтому байткод у basket.AddPerk(x)
+        /// и у Api.Npc.Perk(basket, x) совпадает побайтово.
+        /// </summary>
+        public readonly Dictionary<string, HostMethodInfo> Methods = new Dictionary<string, HostMethodInfo>();
+        public bool TryGetMethod(string n, out HostMethodInfo m) => Methods.TryGetValue(n, out m);
     }
 
     public sealed class HostMethodInfo
@@ -295,10 +304,54 @@ namespace Dsl.Semantics
         {
             if (!_classes.TryGetValue(className, out var cls))
                 throw new System.InvalidOperationException($"Класс хоста '{className}' не зарегистрирован.");
+            if (cls.Methods.ContainsKey(propName))
+                throw new System.InvalidOperationException(
+                    $"У класса '{className}' уже есть метод '{propName}': имя одно на всех, " +
+                    "свойством и методом одновременно оно быть не может.");
             int id = _getters.Count;
             _getters.Add(getter);
             _setters.Add(setter); // может быть null для read-only
             cls.Props[propName] = new HostPropInfo { Id = id, Name = propName, Type = type, ReadOnly = readOnly, Doc = doc };
+            return id;
+        }
+
+        /// <summary>
+        /// Метод самого объекта: <c>basket.AddPerk("x")</c>. <paramref name="paramTypes"/> —
+        /// то, что видит скрипт, БЕЗ приёмника; приёмник компилятор кладёт на стек
+        /// нулевым аргументом, поэтому хостовая функция принимает его первым.
+        ///
+        /// Объявляйте метод у класса там, где объект и ЕСТЬ интерфейс (корзина,
+        /// билдер, который передают в событие). Для сущности-данных лучше
+        /// API-класс: иначе половина API ищется через переменную нужного типа,
+        /// а половина — в списке API.
+        /// </summary>
+        public int DefineClassMethod(string className, string method, TypeRef[] paramTypes, TypeRef ret,
+                                     HostFunction fn, string summary = null,
+                                     string[] paramNames = null, string[] paramDocs = null)
+        {
+            if (!_classes.TryGetValue(className, out var cls))
+                throw new System.InvalidOperationException($"Класс хоста '{className}' не зарегистрирован.");
+            if (cls.Methods.ContainsKey(method))
+                throw new System.InvalidOperationException(
+                    $"Метод '{method}' уже зарегистрирован у класса '{className}'. " +
+                    "Перегрузок в языке нет — дайте методам разные имена.");
+            if (cls.Props.ContainsKey(method))
+                throw new System.InvalidOperationException(
+                    $"У класса '{className}' уже есть свойство '{method}': имя одно на всех, " +
+                    "свойством и методом одновременно оно быть не может.");
+
+            int id = _functions.Count;
+            _functions.Add(fn);
+            cls.Methods[method] = new HostMethodInfo
+            {
+                HostFnId = id,
+                Name = method,
+                Params = paramTypes ?? System.Array.Empty<TypeRef>(),
+                Ret = ret ?? TypeRef.Void,
+                Summary = summary,
+                ParamNames = paramNames,
+                ParamDocs = paramDocs,
+            };
             return id;
         }
 

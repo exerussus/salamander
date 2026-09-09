@@ -2462,6 +2462,9 @@ namespace Dsl.Semantics
         }
 
         private TypeRef BindHostCall(CallExpr call, HostMethodInfo m)
+            => BindHostCall(call, m, CallKind.HostMethod);
+
+        private TypeRef BindHostCall(CallExpr call, HostMethodInfo m, CallKind kind)
         {
             if (call.Args.Count != m.Params.Length)
                 _diag.Error("E0188", $"'{m.Name}' принимает {m.Params.Length} аргументов, передано {call.Args.Count}.", call.Pos);
@@ -2476,7 +2479,7 @@ namespace Dsl.Semantics
             }
             for (int i = n; i < call.Args.Count; i++) { var a = call.Args[i]; CheckExpr(ref a); call.Args[i] = a; }
 
-            call.CKind = CallKind.HostMethod;
+            call.CKind = kind;
             call.TargetIndex = m.HostFnId;
             call.ReturnsValue = m.Ret.Kind != TypeKind.Void;
             return call.Type = m.Ret;
@@ -2556,6 +2559,25 @@ namespace Dsl.Semantics
             BuiltinOp op;
             TypeRef ret = TypeRef.Void;
             TypeRef argT = null;
+
+            // Метод самого объекта: basket.AddPerk("x"). Приёмник уходит нулевым
+            // аргументом хостовой функции, поэтому байткод получается тот же, что
+            // у Api.Npc.Perk(basket, "x") — разница только в разрешении имени.
+            if (targetT.Kind == TypeKind.Entity && _host.TryGetClassById(targetT.HostTypeId, out var hostCls))
+            {
+                if (hostCls.TryGetMethod(me.Name, out var hm))
+                    return BindHostCall(call, hm, CallKind.HostInstance);
+                if (hostCls.TryGetProp(me.Name, out _))
+                {
+                    // соседняя ошибка: «нет такого метода» увело бы искать метод,
+                    // которого не существует, вместо лишних скобок
+                    _diag.Error("E0240",
+                        $"'{hostCls.Name}.{me.Name}' — свойство, а не метод: читайте его без скобок.",
+                        me.Pos);
+                    CheckArgsLoose(call);
+                    return call.Type = TypeRef.Error;
+                }
+            }
 
             if (targetT.Kind == TypeKind.List && me.Name == "Add") { op = BuiltinOp.ListAdd; argT = targetT.Elem; }
             else if (targetT.Kind == TypeKind.List && me.Name == "Clear") { op = BuiltinOp.ListClear; }

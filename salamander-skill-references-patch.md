@@ -4,8 +4,9 @@
 (`Const<T>` / `ConstOr<T>` с дефолтами)**, **составные имена API-классов
 (`Api.Weapon.Cut(...)`)**, **константы API-классов
 (`Api.Parts.Grip.sword_01`)**, **структуры хоста (`new Damage(slash: 21)`)**,
-**описания элементов енумов**, **описания узлов составных имён API** и
-**виды-конфиги (блок-архетип без событий)**.
+**описания элементов енумов**, **описания узлов составных имён API**,
+**виды-конфиги (блок-архетип без событий)** и **методы объекта
+(`basket.AddPerk("x")`)**.
 `SKILL.md` обновляется отдельно — через карточку предложения скилла; эти два
 файла заменяются вручную.
 
@@ -206,6 +207,7 @@ readonly field or kind constant, W0101 field outside the declared constant set.
 | E0238 | no such constant on this API class |
 | E0239 | an API constant used as a call — read it without parentheses |
 | E0199 | merged entity implements no event of its kind (only for kinds that have events and did not opt out) |
+| E0240 | a class property called with parentheses — read it without them |
 | W0101 | (warning) field is outside the kind's declared constant set — likely a typo |
 ````
 
@@ -680,4 +682,43 @@ saying "you can only call a method on it" instead of "add the API name and membe
 In the manifest described nodes are an `apiNamespaces` array of `{name, summary}`,
 placed before `apis`. Undescribed nodes are not written: they are derivable from
 the API names, and the importer rebuilds them.
+````
+
+### 2.9 Вставить новый раздел ПОСЛЕ раздела про классы-сущности
+
+````markdown
+## Methods on an entity class
+
+A host class may expose methods, not only properties. The call is then written on
+the value itself:
+
+```csharp
+host.Class<PerkBasket>()
+    .Act("AddPerk", (PerkBasket b, string id) => b.Add(id),
+         Sig.Doc("Add a perk.").P("id", "perk id"))
+    .Fn("Has", (PerkBasket b, string id) => b.Contains(id));
+```
+
+```
+event BuildPerks(Unit u, PerkBasket b) { b.AddPerk("dummy_trainer"); }
+```
+
+The receiver is passed as argument ZERO of the host function, so `b.AddPerk(x)`
+and `Api.Npc.Perk(b, x)` compile to the very same `CallHost` — the difference is
+name resolution, not cost. So the choice is about where a reader looks for the
+call:
+
+- a method ON THE CLASS when the object exists in order to be called — a basket,
+  a builder, an accumulator the game hands to an event. `Api.Npc.Perk(b, ...)`
+  reads inside out for such an object;
+- an API CLASS when the object is data (`Unit`, `Item`) — otherwise half of the
+  API is found in the API list and half only through a variable of the right type.
+
+Rules: a name is either a property or a method, never both (registration throws
+either way); the doc describes the SCRIPT parameters, receiver excluded; calling a
+method on an empty reference is a script error naming the class and method (a
+stale handle already throws); a property called with parentheses is **E0240**.
+
+In the manifest these live in `classes[].methods`, same shape as `apis[].methods`,
+and the key is written only when the class has any.
 ````
