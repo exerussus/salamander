@@ -1547,7 +1547,14 @@ namespace Dsl.Tools.Lsp
 
         private static string UriToPath(string uri)
         {
-            try { return Path.GetFullPath(new Uri(uri).LocalPath); }
+            try
+            {
+                // Uri.LocalPath на "file:///c%3A/..." от VS Code отдаёт "/c:/...",
+                // и корень воркспейса вместе с ключами открытых буферов уезжал в
+                // несуществующий "c:\c:\..." — см. ModuleLoader.PathFromFileUri
+                string path = ModuleLoader.PathFromFileUri(uri);
+                return Path.GetFullPath(path ?? new Uri(uri).LocalPath);
+            }
             catch { return uri; }
         }
 

@@ -243,6 +243,44 @@ namespace Dsl.Tests
             StringAssert.EndsWith("mods", r);
         }
 
+        // --- PathFromFileUri: URI от редакторов ------------------------------
+        // VS Code присылает "file:///c%3A/...", и Uri.LocalPath на таком URI
+        // отдаёт "/c:/..." — корень воркспейса и ключи открытых буферов уезжали
+        // в несуществующий "c:\c:\...". Сервер при этом не видел ни модулей,
+        // ни того, что человек печатает.
+
+        [Test]
+        public void PathFromFileUri_DecodesEncodedDriveColon()
+        {
+            Assert.AreEqual("c:/Exerussus/Assets",
+                ModuleLoader.PathFromFileUri("file:///c%3A/Exerussus/Assets"));
+            Assert.AreEqual("c:/Exerussus/Assets",
+                ModuleLoader.PathFromFileUri("file:///c:/Exerussus/Assets"));
+        }
+
+        [Test]
+        public void PathFromFileUri_UnescapesTheRestOfThePath()
+        {
+            Assert.AreEqual("c:/my mods/a.sal",
+                ModuleLoader.PathFromFileUri("file:///c%3A/my%20mods/a.sal"));
+        }
+
+        [Test]
+        public void PathFromFileUri_KeepsPosixAndUnc()
+        {
+            Assert.AreEqual("/home/ilya/mods", ModuleLoader.PathFromFileUri("file:///home/ilya/mods"));
+            Assert.AreEqual("//nas/share/mods", ModuleLoader.PathFromFileUri("file://nas/share/mods"));
+        }
+
+        [Test]
+        public void PathFromFileUri_RejectsWhatIsNotAFileUri()
+        {
+            Assert.IsNull(ModuleLoader.PathFromFileUri("untitled:Untitled-1"));
+            Assert.IsNull(ModuleLoader.PathFromFileUri("это не ссылка"));
+            Assert.IsNull(ModuleLoader.PathFromFileUri(null));
+            Assert.IsNull(ModuleLoader.PathFromFileUri("   "));
+        }
+
         [Test]
         public void NormalizeUserPath_PassesNullAndBlankThrough()
         {

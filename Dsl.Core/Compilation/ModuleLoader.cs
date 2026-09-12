@@ -152,6 +152,32 @@ namespace Dsl.Compilation
             return v;
         }
 
+        /// <summary>
+        /// Путь из file-URI, который присылают редакторы. null — это не file-URI.
+        ///
+        /// Uri.LocalPath здесь не годится: VS Code кодирует двоеточие диска
+        /// ("file:///c%3A/Assets/..."), а .NET распознаёт DOS-путь ДО
+        /// раскодирования и такой URI считает POSIX-путём — LocalPath отдаёт
+        /// "/c:/Assets/...". Дальше Path.GetFullPath приклеивает текущий диск, и
+        /// получается "c:\c:\Assets\..." — папки с таким именем не существует.
+        /// Rider/LSP4IJ двоеточие не кодирует, поэтому ломалось только в VS Code.
+        /// </summary>
+        public static string PathFromFileUri(string uri)
+        {
+            if (string.IsNullOrWhiteSpace(uri)) return null;
+
+            Uri u;
+            try { u = new Uri(uri); }
+            catch { return null; }          // untitled:, мусор, относительный путь
+            if (!u.IsFile) return null;
+
+            string path = Uri.UnescapeDataString(u.AbsolutePath);
+            if (!string.IsNullOrEmpty(u.Host))
+                path = "//" + u.Host + path;   // UNC: file://server/share/x
+
+            return NormalizeUserPath(path);
+        }
+
         /// <summary>Глубина обхода по умолчанию для LoadFromTree/EnumerateFiles/FindNearestFile.</summary>
         public const int DefaultScanDepth = 8;
 
