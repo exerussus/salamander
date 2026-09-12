@@ -2,7 +2,7 @@
   "name": "salamander",
   "displayName": "Salamander (игровой скриптовый язык)",
   "description": "Подсветка синтаксиса, ошибки компиляции и автодополнение для .sal — триггеры, события, файберы.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "local",
   "license": "MIT",
   "engines": {
@@ -60,7 +60,7 @@
         "salamander.server.path": {
           "type": "string",
           "default": "",
-          "description": "Путь к DslLsp.dll (LSP-сервер). Пусто — искать в воркспейсе (Tools/DslLsp/bin/...)."
+          "description": "Полный путь к DslLsp.dll (LSP-сервер). Пусто — искать в воркспейсе (Tools/DslLsp/publish, затем bin/...). Абсолютный или относительно корня воркспейса; поддерживается ${workspaceFolder}. Нужен .dll, а не .exe: сервер запускается как «dotnet <путь>». После правки нужна перезагрузка окна."
         },
         "salamander.apiManifest": {
           "type": "string",

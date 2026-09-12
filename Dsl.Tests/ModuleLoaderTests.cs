@@ -203,5 +203,52 @@ namespace Dsl.Tests
             Assert.AreEqual(1, _errors.Count, string.Join("\n", _errors));
             StringAssert.Contains("broken", _errors[0]);
         }
+
+        // --- NormalizeUserPath: пути, которые вводит человек ----------------
+        // Ведущий слэш перед буквой диска ("\C:\mods") Проводник Windows
+        // открывает, а File.Exists молча отвечает false: "C:" становится
+        // именем папки с двоеточием, чего на диске быть не может. Инструмент
+        // при этом сообщает «не найдено» про путь, который человек только что
+        // открыл в Проводнике, — отлаживать это со стороны пользователя нечем.
+
+        [Test]
+        public void NormalizeUserPath_StripsLeadingSlashBeforeDriveLetter()
+        {
+            Assert.AreEqual(@"C:\mods", ModuleLoader.NormalizeUserPath(@"\C:\mods"));
+            Assert.AreEqual("c:/mods", ModuleLoader.NormalizeUserPath("/c:/mods"));
+        }
+
+        [Test]
+        public void NormalizeUserPath_KeepsEverythingElseIntact()
+        {
+            Assert.AreEqual(@"C:\mods", ModuleLoader.NormalizeUserPath(@"C:\mods"));
+            Assert.AreEqual("Assets/StreamingAssets/Core",
+                ModuleLoader.NormalizeUserPath("Assets/StreamingAssets/Core"));
+            // POSIX-корень и UNC не трогаем: двоеточия после слэша там нет
+            Assert.AreEqual("/home/ilya/mods", ModuleLoader.NormalizeUserPath("/home/ilya/mods"));
+            Assert.AreEqual(@"\\server\share\mods", ModuleLoader.NormalizeUserPath(@"\\server\share\mods"));
+        }
+
+        [Test]
+        public void NormalizeUserPath_TrimsQuotesAndSpaces()
+        {
+            Assert.AreEqual(@"C:\mods", ModuleLoader.NormalizeUserPath("  \"C:\\mods\"  "));
+        }
+
+        [Test]
+        public void NormalizeUserPath_UnwrapsFileUri()
+        {
+            var r = ModuleLoader.NormalizeUserPath("file:///c:/mods");
+            StringAssert.DoesNotContain("file:", r);
+            StringAssert.EndsWith("mods", r);
+        }
+
+        [Test]
+        public void NormalizeUserPath_PassesNullAndBlankThrough()
+        {
+            Assert.IsNull(ModuleLoader.NormalizeUserPath(null));
+            Assert.AreEqual("", ModuleLoader.NormalizeUserPath(""));
+            Assert.AreEqual("   ", ModuleLoader.NormalizeUserPath("   "));
+        }
     }
 }

@@ -170,14 +170,21 @@ namespace Dsl.Tools.Lsp
             if (_cfgBuildFile != null) Console.Error.WriteLine($"salamander-lsp: buildFile = {_cfgBuildFile}");
         }
 
-        /// <summary>Путь из настройки: абсолютный как есть, относительный — от корня воркспейса.</summary>
+        /// <summary>
+        /// Путь из настройки: абсолютный как есть, относительный — от корня
+        /// воркспейса. Нормализация обязательна: настройки заполняет человек, и
+        /// "\C:\mods" или "file:///c:/mods" иначе молча превращаются в
+        /// несуществующий путь (см. ModuleLoader.NormalizeUserPath).
+        /// </summary>
         private string ResolveConfigured(string value)
         {
             if (value == null || _root == null) return null;
             try
             {
-                return Path.IsPathRooted(value) ? Path.GetFullPath(value)
-                                                : Path.GetFullPath(Path.Combine(_root, value));
+                string v = ModuleLoader.NormalizeUserPath(value);
+                if (string.IsNullOrWhiteSpace(v)) return null;
+                return Path.IsPathRooted(v) ? Path.GetFullPath(v)
+                                            : Path.GetFullPath(Path.Combine(_root, v));
             }
             catch { return null; }
         }
@@ -278,12 +285,18 @@ namespace Dsl.Tools.Lsp
         {
             if (!_initialized || _root == null) return;
 
+            // Корень модулей может быть задан неверно, и раньше это проявлялось
+            // только жалобой «манифест не найден»: обход несуществующей папки
+            // молча возвращает пусто. Сообщение указывало не на причину.
+            string modulesRoot = ModulesRoot();
+            bool rootMissing = !Directory.Exists(modulesRoot);
+
             // --- синтакс-индекс всех *.sal (диск + оверлеи), с кэшем по хэшу ---
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             // обход с ограничением глубины и пропуском Library/Temp/obj/.git:
             // корнем может оказаться весь Unity-проект, и голый AllDirectories
             // прочёсывал бы десятки тысяч файлов на КАЖДЫЙ рефреш
-            foreach (var f in ModuleLoader.EnumerateFiles(ModulesRoot(), "*.sal"))
+            foreach (var f in ModuleLoader.EnumerateFiles(modulesRoot, "*.sal"))
             {
                 var abs = Path.GetFullPath(f);
                 seen.Add(abs);
@@ -326,11 +339,24 @@ namespace Dsl.Tools.Lsp
             else
             {
                 registry = new Semantics.HostRegistry();
-                Bucket(apiPath).Add(LspDiag(1, 1, 1, 2, "W0401",
-                    "salamander-api.json не найден — события и API хоста неизвестны " +
-                    "(запустите игру в редакторе один раз, манифест экспортируется автоматически; " +
-                    "если он лежит в другом месте — укажите настройку salamander.apiManifest)."));
-                Console.Error.WriteLine($"salamander-lsp: манифест не найден, искали от {ModulesRoot()}");
+                // если корня нет, манифест не мог быть найден по определению —
+                // жаловаться на манифест значит увести человека не туда
+                if (!rootMissing)
+                    Bucket(apiPath).Add(LspDiag(1, 1, 1, 2, "W0401",
+                        "salamander-api.json не найден — события и API хоста неизвестны " +
+                        "(запустите игру в редакторе один раз, манифест экспортируется автоматически; " +
+                        "если он лежит в другом месте — укажите настройку salamander.apiManifest)."));
+                Console.Error.WriteLine($"salamander-lsp: манифест не найден, искали от {modulesRoot}");
+            }
+
+            if (rootMissing)
+            {
+                Bucket(apiPath).Add(LspDiag(1, 1, 1, 2, "W0402",
+                    $"Папка модулей не найдена: {modulesRoot}. Ни один .sal не проиндексирован. " +
+                    "Проверьте salamander.modulesRoot — путь абсолютный либо относительно корня " +
+                    "воркспейса; ведущий слэш перед буквой диска (\\C:\\...) Проводник прощает, " +
+                    "а файловая система нет."));
+                Console.Error.WriteLine($"salamander-lsp: папка модулей не найдена: {modulesRoot}");
             }
 
             var logicalToAbs = new Dictionary<string, string>();
@@ -339,7 +365,6 @@ namespace Dsl.Tools.Lsp
             // «ешь то, что дал сборщик»: если он экспортировал salamander-build.json
             // (упорядоченный список папок модулей) — берём РОВНО его; обход папки
             // остаётся дев-режимом без сборщика
-            string modulesRoot = ModulesRoot();
             string buildPath = ResolveConfigured(_cfgBuildFile)
                                ?? Path.Combine(modulesRoot, "salamander-build.json");
             List<ModuleSourceSet> modules;
