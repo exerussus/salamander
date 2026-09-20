@@ -10,7 +10,7 @@
 | Зона | Что | Куда | В билде? |
 |------|-----|------|----------|
 | **A. Рантайм** | `Dsl.Core`, `Dsl.Unity`, ваш хост-скрипт | `Assets/` | да |
-| **A. Рантайм, по желанию** | `Dsl.Tooling` + `Dsl.Ide` (IDE скриптов в игре) | `Assets/` | да, если скопированы |
+| **A. Рантайм, по желанию** | `Dsl.Tooling` + `Dsl.Ide` (+ `Dsl.Ide.Unity` для окна в игре) | `Assets/` | да, если скопированы |
 | **B. Только редактор** | `Dsl.Tests`, `Dsl.Unity/Editor` (импортёр .sal) | `Assets/` | нет (editor-only asmdef) |
 | **C. Инструменты** | `Tools/DslCheck`, `Tools/vscode-salamander`, `Examples/DemoHost`, `modkit/` | ВНЕ `Assets/` | нет |
 
@@ -77,15 +77,21 @@
 
 `Dsl.Tooling` — языковой сервис без движка (тот же, что в LSP для VS Code и
 Rider): подсказки, hover, переход к определению, раскраска, загрузка
-воркспейса модулей. `Dsl.Ide` — IDE на UI Toolkit поверх него. Обе сборки —
-зона A: без `UnityEditor`, работают в плеер-билде, включая IL2CPP.
+воркспейса модулей. `Dsl.Ide` — IDE на UI Toolkit поверх него. `Dsl.Ide.Unity` —
+мост к `ScriptHostBootstrap`: окно в игре, живой API, «Применить в игре». Все
+три — зона A: без `UnityEditor`, работают в плеер-билде, включая IL2CPP.
 
-Установка: скопируйте `Dsl.Tooling/` и `Dsl.Ide/` рядом с `Dsl.Core/` и
-`Dsl.Unity/`. `Dsl.Ide.asmdef` ссылается на `Unity.InputSystem` — горячая
-клавиша окна. Если пакета `com.unity.inputsystem` в проекте нет, уберите эту
-строку из `references` в `Dsl.Ide.asmdef`: ссылка на несуществующую сборку
-не даёт Unity собрать ассембли. Без неё клавиша идёт через старый Input
-Manager, всё остальное работает так же.
+Сборки разнесены нарочно: `Dsl.Ide` ссылается только на `Dsl.Core` и
+`Dsl.Tooling`, поэтому IDE встраивается в свой хост (своя загрузка модулей,
+свой движок) без `Dsl.Unity`. Бутстрап тянет в билд только `Dsl.Ide.Unity`.
+
+Установка: скопируйте `Dsl.Tooling/` и `Dsl.Ide/` рядом с `Dsl.Core/`; для
+окна в игре — ещё и `Dsl.Ide.Unity/` рядом с `Dsl.Unity/`.
+`Dsl.Ide.Unity.asmdef` ссылается на `Unity.InputSystem` — горячая клавиша
+окна. Если пакета `com.unity.inputsystem` в проекте нет, уберите эту строку из
+его `references`: ссылка на несуществующую сборку не даёт Unity собрать
+ассембли. Без неё клавиша идёт через старый Input Manager, всё остальное
+работает так же. Самого `Dsl.Ide` это не касается — там ссылки нет.
 
 **В игре.** Объект сцены + `SalamanderIdeWindow`:
 
@@ -137,6 +143,15 @@ Error`) и итоги перезагрузок — во вкладке «Кон�
 Так устроена страница Nexus: редакторский хост (диалоги Unity, импорт
 сохранённых ассетов, бэкап буферов перед перезагрузкой домена) + цвета
 оболочки из темы (`ApplyChrome`).
+
+**Свой формат пака.** Модули читает подключаемый `IModuleReader` (`Dsl.Tooling`):
+`IsModuleDir` / `IsManifestFile` / `ReadModule` / `ListUnlisted` / `AddFile`. По
+умолчанию — `ModuleJsonReader` (папка с `module.json` и явным списком
+исходников), то есть сегодняшнее поведение. Свой читатель отдаётся точкой
+входа — `WorkspaceLoader.Load(root, buildFile, reader)` и
+`new FileSystemWorkspace(root, buildFile, reader)` — или один раз на процесс
+через `WorkspaceLoader.DefaultReader`. Тогда IDE, LSP и любой инструмент на
+`Dsl.Tooling` видят пак одинаково, и форк тулинга не нужен.
 
 IL2CPP: `Dsl.Ide/link.xml` сохраняет типы, которые читает Newtonsoft (сессия
 IDE, DTO манифестов) — без него стриппинг молча ломает подсказки и сессию.

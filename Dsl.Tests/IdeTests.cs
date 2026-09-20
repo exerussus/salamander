@@ -218,18 +218,107 @@ namespace Dsl.Tests
 
                 // глобы ModuleLoader не раскрывает, поэтому маска в списке файл не
                 // подхватит — дописываем путь явно, в тот же ключ ("scripts")
-                string mani = Path.Combine(root, "m2.json");
+                string m2 = Path.Combine(root, "m2");
+                Directory.CreateDirectory(m2);
+                string mani = Path.Combine(m2, "module.json");
                 File.WriteAllText(mani, "{ \"name\": \"x\", \"scripts\": [\"**\"] }");
-                Assert.IsTrue(FileSystemWorkspace.RegisterInManifest(mani, "src/c.sal", out _));
+                Assert.IsTrue(ModuleJsonReader.Instance.AddFile(m2, "src/c.sal", out _));
                 string after = File.ReadAllText(mani);
                 StringAssert.Contains("src/c.sal", after);
                 StringAssert.Contains("**", after);
-                Assert.IsTrue(FileSystemWorkspace.RegisterInManifest(mani, "src/c.sal", out _));
+                Assert.IsTrue(ModuleJsonReader.Instance.AddFile(m2, "src/c.sal", out _));
                 Assert.AreEqual(after, File.ReadAllText(mani)); // повторно — не дублируем
             }
             finally
             {
                 try { Directory.Delete(root, true); } catch { }
+            }
+        }
+
+        [Test]
+        public void ModuleReader_ListsUnlisted_AndSaysNothingOnMasks()
+        {
+            string root = Path.Combine(Path.GetTempPath(), "sal-rd-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                string mod = Path.Combine(root, "core");
+                Directory.CreateDirectory(Path.Combine(mod, "src"));
+                File.WriteAllText(Path.Combine(mod, "src", "a.sal"), "");
+                File.WriteAllText(Path.Combine(mod, "src", "b.sal"), "");
+                string mani = Path.Combine(mod, "module.json");
+
+                File.WriteAllText(mani, "{ \"name\": \"core\", \"apiVersion\": 1, \"sources\": [\"src/a.sal\"] }");
+                var unlisted = new List<string>(ModuleJsonReader.Instance.ListUnlisted(mod));
+                Assert.AreEqual(1, unlisted.Count);
+                StringAssert.Contains("b.sal", unlisted[0]);
+
+                // маска: «вне списка» ничего не значит — молчим, а не объявляем всё лишним
+                File.WriteAllText(mani, "{ \"name\": \"core\", \"apiVersion\": 1, \"scripts\": [\"src/*.sal\"] }");
+                Assert.AreEqual(0, new List<string>(ModuleJsonReader.Instance.ListUnlisted(mod)).Count);
+            }
+            finally { try { Directory.Delete(root, true); } catch { } }
+        }
+
+        [Test]
+        public void CustomReader_MakesWorkspaceSeeAnotherPackFormat()
+        {
+            string root = Path.Combine(Path.GetTempPath(), "sal-pack-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                string pack = Path.Combine(root, "pack");
+                Directory.CreateDirectory(pack);
+                File.WriteAllText(Path.Combine(pack, "pack.json"), "{}");
+                File.WriteAllText(Path.Combine(pack, "main.sal"), "class A { }\n");
+
+                // читателем по умолчанию модуля тут нет: манифест называется иначе
+                Assert.AreEqual(0, WorkspaceLoader.Load(root).Modules.Count);
+
+                var reader = new PackReader();
+                var ws = WorkspaceLoader.Load(root, null, reader);
+                Assert.AreEqual(1, ws.Modules.Count);
+                Assert.AreEqual("pack", ws.Modules[0].Manifest.Name);
+                Assert.AreEqual(1, ws.Modules[0].Files.Count);
+                Assert.IsTrue(ws.ModuleDirs.ContainsKey("pack"));
+                Assert.IsTrue(ws.LogicalToPath.ContainsKey("pack/main.sal"));
+
+                // тот же читатель — и файловый воркспейс IDE видит ровно то же
+                using (var fs = new FileSystemWorkspace(root, null, reader))
+                    Assert.AreEqual(1, fs.Load().Modules.Count);
+            }
+            finally { try { Directory.Delete(root, true); } catch { } }
+        }
+
+        /// <summary>Пак своего формата: манифест pack.json, исходники — все .sal рядом.</summary>
+        private sealed class PackReader : IModuleReader
+        {
+            private const string Manifest = "pack.json";
+
+            public bool IsModuleDir(string dir) => File.Exists(Path.Combine(dir, Manifest));
+
+            public bool IsManifestFile(string path) =>
+                string.Equals(Path.GetFileName(path), Manifest, StringComparison.OrdinalIgnoreCase);
+
+            public ModuleSourceSet ReadModule(string dir, Action<string, string> onError,
+                                              Dictionary<string, string> logicalToAbsolute)
+            {
+                if (!IsModuleDir(dir)) return null;
+                string name = Path.GetFileName(dir);
+                var set = new ModuleSourceSet { Manifest = new ModuleManifest { Name = name, ApiVersion = 1 } };
+                foreach (var f in ModuleLoader.EnumerateFiles(dir, "*.sal", 4))
+                {
+                    string logical = name + "/" + Path.GetFileName(f);
+                    set.Files.Add((logical, File.ReadAllText(f)));
+                    if (logicalToAbsolute != null) logicalToAbsolute[logical] = Path.GetFullPath(f);
+                }
+                return set;
+            }
+
+            public IEnumerable<string> ListUnlisted(string dir) => Array.Empty<string>(); // всё .sal уже в паке
+
+            public bool AddFile(string dir, string relativePath, out string warning)
+            {
+                warning = null;
+                return true; // список не ведётся — файл подхватится сам
             }
         }
 
@@ -303,7 +392,7 @@ namespace Dsl.Tests
             var game = new List<ModuleSourceSet> { Mod("core", "old"), Mod("quests", "old") };
             var ide = new List<ModuleSourceSet> { Mod("quests", "new"), Mod("extra", "new") };
 
-            var merged = BootstrapApplyTarget.MergeModules(game, ide);
+            var merged = ApplySupport.Merge(game, ide);
 
             Assert.AreEqual(3, merged.Count);
             Assert.AreEqual("core", merged[0].Manifest.Name);
@@ -322,7 +411,7 @@ namespace Dsl.Tests
             var ide = new List<ModuleSourceSet> { Mod("core", "new"), Mod("sample", "x"), Mod("mymod", "y") };
 
             // добавить в игру можно только «mymod»: он лежит в папке модулей игры
-            var merged = BootstrapApplyTarget.MergeModules(game, ide, new HashSet<string>(new[] { "mymod" }));
+            var merged = ApplySupport.Merge(game, ide, new HashSet<string>(new[] { "mymod" }));
 
             Assert.AreEqual(3, merged.Count);
             Assert.AreEqual("new", merged[0].Files[0].text);
@@ -334,8 +423,8 @@ namespace Dsl.Tests
         public void MergeModules_WithoutOverrides_ReturnsGameSet()
         {
             var game = new List<ModuleSourceSet> { Mod("core", "old") };
-            Assert.IsTrue(ReferenceEquals(game, BootstrapApplyTarget.MergeModules(game, null)));
-            Assert.AreEqual(1, BootstrapApplyTarget.MergeModules(null, new List<ModuleSourceSet> { Mod("a", "x") }).Count);
+            Assert.IsTrue(ReferenceEquals(game, ApplySupport.Merge(game, null)));
+            Assert.AreEqual(1, ApplySupport.Merge(null, new List<ModuleSourceSet> { Mod("a", "x") }).Count);
         }
 
         private static ModuleSourceSet Mod(string name, string text)

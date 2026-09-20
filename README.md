@@ -25,8 +25,10 @@ Dsl.Unity/           [A] адаптер: ScriptHostBootstrap (тик-насос)
 Dsl.Unity/Editor/    [B] импортёр .sal → TextAsset (editor-only, в билд не входит)
 Dsl.Tooling/         [A] языковой сервис (без движка): подсказки, hover, go-to,
                      раскраска, воркспейс модулей — общий для LSP и IDE
-Dsl.Ide/             [A, по желанию] IDE скриптов на UI Toolkit — в игре
-                     (SalamanderIdeWindow) и в редакторе (страница Nexus)
+Dsl.Ide/             [A, по желанию] IDE скриптов на UI Toolkit: сам редактор,
+                     без движка и без хоста (Dsl.Core + Dsl.Tooling)
+Dsl.Ide.Unity/       [A, по желанию] мост IDE к ScriptHostBootstrap: окно в игре
+                     (SalamanderIdeWindow), живой API, «Применить в игре»
 Dsl.Tests/           [B] NUnit-тесты (editor-only, в билд не входят)
 Tools/DslCheck/      [C] CLI-чекер (тот же компилятор вне игры; для CI и редактора)
 Tools/vscode-salamander/ [C] расширение VS Code (подсветка, ошибки, автодополнение)
@@ -202,6 +204,11 @@ Unity (страница Nexus — та же IDE, другой хост). Вну�
 проблемы всего воркспейса, консоль логов скриптов и кнопка «Применить в игре»
 (перекомпиляция и перезагрузка программы работающего `ScriptHostBootstrap`).
 Несохранённые правки и вкладки переживают перезапуск.
+
+Разнесено на две сборки: `Dsl.Ide` — сам редактор (знает только `Dsl.Core` и
+`Dsl.Tooling`, в чужом хосте живёт без `Dsl.Unity`), `Dsl.Ide.Unity` — мост к
+`ScriptHostBootstrap`: окно в игре, живой API, «Применить в игре». Нужна IDE в
+своём хосте — берите одну `Dsl.Ide`.
 
 В игре: объект сцены с `SalamanderIdeWindow` (+ PanelSettings с темой), поле
 `Bootstrap` — ваш хост; окно открывается по F9. API берётся из живого реестра

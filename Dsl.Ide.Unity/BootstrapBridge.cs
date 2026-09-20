@@ -72,13 +72,14 @@ namespace Dsl.Ide
         private readonly ScriptHostBootstrap _bootstrap;
         private readonly Func<IScriptWorkspace> _workspace;
         private readonly Action<IdeLogKind, string> _log;
-        private Dsl.Runtime.ScriptEngine _subscribed;
+        private readonly ScriptLogBridge _logs;
 
         public BootstrapApplyTarget(ScriptHostBootstrap bootstrap, Func<IScriptWorkspace> workspace, Action<IdeLogKind, string> log)
         {
             _bootstrap = bootstrap;
             _workspace = workspace;
             _log = log;
+            _logs = new ScriptLogBridge(log);
             if (_bootstrap != null)
             {
                 _bootstrap.Compiled += OnCompiled;
@@ -125,7 +126,7 @@ namespace Dsl.Ide
                 return;
             }
 
-            var merged = MergeModules(baseSet, overrides, addable);
+            var merged = ApplySupport.Merge(baseSet, overrides, addable);
             ReportSkipped(baseSet, overrides, addable);
             var result = _bootstrap.CompileAndLoadFrom(merged);
 
@@ -133,7 +134,7 @@ namespace Dsl.Ide
             // теперь не они (правки из памяти, лишние модули), первое же событие
             // файловой системы откатило бы применённое — ставим паузу. Компиляция
             // не удалась — в движке осталась прежняя программа, пауза не нужна.
-            _bootstrap.HotReloadSuspended = result != null && result.Success && !SameModules(baseSet, merged);
+            _bootstrap.HotReloadSuspended = result != null && result.Success && !ApplySupport.SameModules(baseSet, merged);
         }
 
         /// <summary>Сказать вслух про модули воркспейса, которые в игру не поехали.</summary>
@@ -153,37 +154,6 @@ namespace Dsl.Ide
             }
             if (skipped != null)
                 _log(IdeLogKind.Warning, "Не применены (их нет в игре и они вне папки модулей игры): " + string.Join(", ", skipped));
-        }
-
-        /// <summary>
-        /// Наборы дают одну и ту же программу? Сравниваются ровно те поля, по
-        /// которым бутстрап считает отпечаток исходников для хот-релоада.
-        /// </summary>
-        private static bool SameModules(List<ModuleSourceSet> a, List<ModuleSourceSet> b)
-        {
-            if (a == null || b == null) return false;
-            if (a.Count != b.Count) return false;
-            for (int i = 0; i < a.Count; i++)
-            {
-                ModuleSourceSet x = a[i], y = b[i];
-                if (ReferenceEquals(x, y)) continue;
-                if (x?.Manifest == null || y?.Manifest == null) return false;
-                if (!string.Equals(x.Manifest.Name, y.Manifest.Name, StringComparison.Ordinal)) return false;
-                if (!string.Equals(x.Manifest.Execution, y.Manifest.Execution, StringComparison.Ordinal)) return false;
-                if (x.Manifest.ApiVersion != y.Manifest.ApiVersion) return false;
-                var da = x.Manifest.Dependencies ?? Array.Empty<string>();
-                var db = y.Manifest.Dependencies ?? Array.Empty<string>();
-                if (da.Length != db.Length) return false;
-                for (int d = 0; d < da.Length; d++)
-                    if (!string.Equals(da[d], db[d], StringComparison.Ordinal)) return false;
-                if (x.Files.Count != y.Files.Count) return false;
-                for (int f = 0; f < x.Files.Count; f++)
-                {
-                    if (!string.Equals(x.Files[f].name, y.Files[f].name, StringComparison.Ordinal)) return false;
-                    if (!string.Equals(x.Files[f].text, y.Files[f].text, StringComparison.Ordinal)) return false;
-                }
-            }
-            return true;
         }
 
         /// <summary>IDE правит ровно ту папку, из которой грузится бутстрап?</summary>
@@ -253,92 +223,15 @@ namespace Dsl.Ide
             catch { return false; }
         }
 
-        /// <summary>
-        /// Набор бутстрапа с заменой одноимённых модулей на модули IDE. Порядок и
-        /// состав базового набора сохраняются один в один (включая безымянные и
-        /// дубликаты — их компилятор разберёт сам); модуль, которого в игре нет,
-        /// дописывается в конец, только если его имя есть в <paramref name="addable"/>
-        /// (null — разрешено всё). Публичный: тем же способом собирает набор свой
-        /// IIdeApplyTarget у хоста.
-        /// </summary>
-        public static List<ModuleSourceSet> MergeModules(List<ModuleSourceSet> baseSet, List<ModuleSourceSet> overrides,
-                                                         HashSet<string> addable = null)
-        {
-            if (overrides == null) return baseSet ?? new List<ModuleSourceSet>();
-            var byName = new Dictionary<string, ModuleSourceSet>(StringComparer.Ordinal);
-            var order = new List<string>();
-            foreach (var m in overrides)
-            {
-                string name = m?.Manifest?.Name;
-                if (string.IsNullOrEmpty(name) || byName.ContainsKey(name)) continue;
-                byName[name] = m;
-                order.Add(name);
-            }
+        private void SubscribeEngine() => _logs.Attach(_bootstrap != null ? _bootstrap.Engine : null);
 
-            var result = new List<ModuleSourceSet>();
-            var taken = new HashSet<string>(StringComparer.Ordinal);
-            foreach (var m in baseSet ?? new List<ModuleSourceSet>())
-            {
-                if (m == null) continue;
-                string name = m.Manifest?.Name;
-                if (!string.IsNullOrEmpty(name) && taken.Add(name) && byName.TryGetValue(name, out var o)) result.Add(o);
-                else result.Add(m);
-            }
-            foreach (var name in order)
-                if (!taken.Contains(name) && (addable == null || addable.Contains(name))) result.Add(byName[name]);
-            return result;
-        }
-
-        private void SubscribeEngine()
-        {
-            var engine = _bootstrap != null ? _bootstrap.Engine : null;
-            if (engine == null || ReferenceEquals(engine, _subscribed)) return;
-            Unsubscribe();
-            _subscribed = engine;
-            engine.OnLog += OnScriptLog;
-            engine.OnWarn += OnScriptWarn;
-            engine.OnError += OnScriptError;
-        }
-
-        private void Unsubscribe()
-        {
-            if (_subscribed == null) return;
-            _subscribed.OnLog -= OnScriptLog;
-            _subscribed.OnWarn -= OnScriptWarn;
-            _subscribed.OnError -= OnScriptError;
-            _subscribed = null;
-        }
-
-        private void OnScriptLog(string m) => _log?.Invoke(IdeLogKind.Info, m);
-        private void OnScriptWarn(string m) => _log?.Invoke(IdeLogKind.Warning, m);
-        private void OnScriptError(string m) => _log?.Invoke(IdeLogKind.Error, m);
-
-        private void OnCompiled(CompilationResult r)
-        {
-            if (r == null || _log == null) return;
-            int errors = 0, warnings = 0;
-            foreach (var d in r.Diagnostics)
-            {
-                if (d.Severity == Severity.Error) errors++;
-                else if (d.Severity == Severity.Warning) warnings++;
-            }
-            if (r.Success)
-                _log(IdeLogKind.Compile, $"Скрипты перезагружены: модулей {r.Program.Modules.Length}, " +
-                                         $"триггеров {r.Program.Triggers.Length}" + (warnings > 0 ? $", предупреждений {warnings}." : "."));
-            else
-                _log(IdeLogKind.Error, $"Перезагрузка не удалась: ошибок {errors} — работает предыдущая версия.");
-            foreach (var ex in r.Excluded)
-                _log(IdeLogKind.Error, $"Модуль «{ex.Name}» исключён: {ex.Reason}");
-            foreach (var d in r.Diagnostics)
-                if (d.Severity == Severity.Error)
-                    _log(IdeLogKind.Error, d.ToString());
-        }
+        private void OnCompiled(CompilationResult r) => ApplySupport.ReportCompilation(r, _log);
 
         public void Dispose()
         {
             // HotReloadSuspended намеренно не снимаем: применённая программа должна
             // пережить закрытие IDE, а включённый хот-релоад откатил бы её к диску
-            Unsubscribe();
+            _logs.Dispose();
             if (_bootstrap != null)
             {
                 _bootstrap.Compiled -= OnCompiled;
