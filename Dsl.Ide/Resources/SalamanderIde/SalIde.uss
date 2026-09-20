@@ -1,0 +1,821 @@
+/* ============================================================================
+   SalIde.uss — внешний вид IDE Salamander (игра и редактор).
+   Кодовая область — автономный островок: палитра подсветки задаётся здесь
+   кастомными свойствами --sal-* и читается C# (CustomStyleResolvedEvent).
+   Оболочку хост может перекрасить поверх (IdeChrome) — например, страница
+   Nexus своими токенами; без этого действуют цвета ниже.
+   Текст наследуется от контейнеров: у подписей своего цвета нет, поэтому
+   цвет панели = цвет её текста.
+   ============================================================================ */
+
+/* ───────────────────────────── оболочка ───────────────────────────── */
+
+.sal-ide {
+    flex-grow: 1;
+    background-color: #181818;
+    color: #CCCCCC;
+    font-size: 12px;
+}
+
+.sal-ide-toolbar {
+    flex-direction: row;
+    align-items: center;
+    flex-shrink: 0;
+    padding: 3px 6px;
+    background-color: #1F1F1F;
+    border-bottom-width: 1px;
+    border-color: #2B2B2B;
+}
+
+.sal-ide-toolbar-extras {
+    flex-direction: row;
+    align-items: center;
+}
+
+.sal-toolbar-separator {
+    width: 1px;
+    height: 16px;
+    margin: 0 6px;
+    background-color: #3C3C3C;
+}
+
+.sal-btn {
+    height: 22px;
+    margin: 0 2px;
+    padding: 0 8px;
+    border-width: 1px;
+    border-radius: 3px;
+    border-color: #3C3C3C;
+    background-color: #2A2A2A;
+    color: #CCCCCC;
+    font-size: 12px;
+    -unity-text-align: middle-center;
+}
+
+.sal-btn:hover {
+    background-color: #333333;
+}
+
+.sal-btn:active {
+    background-color: #3C3C3C;
+}
+
+.sal-btn--primary {
+    background-color: #0E639C;
+    border-color: #0E639C;
+    color: #FFFFFF;
+}
+
+.sal-btn--primary:hover {
+    background-color: #1177BB;
+}
+
+.sal-btn--small {
+    height: 18px;
+    padding: 0 6px;
+    font-size: 11px;
+}
+
+.sal-split {
+    flex-grow: 1;
+}
+
+.sal-ide .unity-two-pane-split-view__dragline-anchor {
+    background-color: #2B2B2B;
+}
+
+.sal-ide .unity-two-pane-split-view__dragline-anchor--horizontal {
+    width: 2px;
+}
+
+.sal-ide .unity-two-pane-split-view__dragline-anchor--vertical {
+    height: 2px;
+}
+
+.sal-panel-header {
+    flex-direction: row;
+    align-items: center;
+    flex-shrink: 0;
+    height: 24px;
+    padding: 0 4px;
+    border-bottom-width: 1px;
+    border-color: #2B2B2B;
+}
+
+.sal-header-tab {
+    margin: 0 2px;
+    padding: 0 6px;
+    height: 22px;
+    border-width: 0 0 1px 0;
+    border-radius: 0;
+    border-color: rgba(0, 0, 0, 0);
+    background-color: rgba(0, 0, 0, 0);
+    color: #8A8A8A;
+    font-size: 11px;
+    -unity-font-style: bold;
+}
+
+.sal-header-tab:hover {
+    color: #CCCCCC;
+}
+
+.sal-header-tab--active {
+    color: #E0E0E0;
+    border-color: #0E639C;
+}
+
+.sal-panel-scroll {
+    flex-grow: 1;
+}
+
+.sal-empty {
+    padding: 8px;
+    color: #6A6A6A;
+    white-space: normal;
+}
+
+/* ───────────────────────────── боковая панель ───────────────────────────── */
+
+.sal-sidebar {
+    min-width: 120px;
+    background-color: #1F1F1F;
+}
+
+.sal-explorer,
+.sal-outline {
+    flex-grow: 1;
+}
+
+.sal-tree-module {
+    flex-direction: row;
+    align-items: center;
+    height: 22px;
+    padding: 0 6px;
+}
+
+.sal-tree-module:hover {
+    background-color: #2A2D2E;
+}
+
+.sal-tree-arrow {
+    width: 14px;
+    color: #8A8A8A;
+}
+
+.sal-tree-module-name {
+    flex-grow: 1;
+    -unity-font-style: bold;
+}
+
+.sal-tree-add {
+    width: 18px;
+    height: 16px;
+    margin: 0;
+    padding: 0;
+    border-width: 0;
+    border-radius: 2px;
+    background-color: rgba(0, 0, 0, 0);
+    color: #8A8A8A;
+    font-size: 13px;
+}
+
+.sal-tree-add:hover {
+    background-color: #3C3C3C;
+    color: #FFFFFF;
+}
+
+.sal-badge {
+    margin-right: 4px;
+    padding: 0 3px;
+    border-width: 1px;
+    border-radius: 3px;
+    border-color: #444444;
+    color: #8A8A8A;
+    font-size: 9px;
+}
+
+.sal-tree-file {
+    height: 20px;
+    padding-left: 24px;
+    -unity-text-align: middle-left;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.sal-tree-file:hover {
+    background-color: #2A2D2E;
+}
+
+.sal-tree-file--active {
+    background-color: #04395E;
+    color: #FFFFFF;
+}
+
+.sal-tree-file--dim {
+    color: #6A6A6A;
+    -unity-font-style: italic;
+}
+
+.sal-tree-error {
+    padding: 2px 6px;
+    color: #F14C4C;
+    white-space: normal;
+}
+
+.sal-outline-row {
+    flex-direction: row;
+    align-items: center;
+    height: 20px;
+}
+
+.sal-outline-row:hover {
+    background-color: #2A2D2E;
+}
+
+.sal-outline-kind {
+    width: 58px;
+    color: #8A8A8A;
+    font-size: 10px;
+}
+
+.sal-outline-kind--decl {
+    color: #C586C0;
+}
+
+.sal-outline-kind--event {
+    color: #DCDCAA;
+}
+
+.sal-outline-kind--func,
+.sal-outline-kind--action {
+    color: #DCDCAA;
+}
+
+.sal-outline-kind--field,
+.sal-outline-kind--const,
+.sal-outline-kind--member {
+    color: #9CDCFE;
+}
+
+/* ───────────────────────────── центр: вкладки, баннер ───────────────────────────── */
+
+.sal-center {
+    flex-grow: 1;
+}
+
+.sal-tabs {
+    flex-shrink: 0;
+    height: 28px;
+    background-color: #1F1F1F;
+    border-bottom-width: 1px;
+    border-color: #2B2B2B;
+}
+
+.sal-tabs-scroll {
+    flex-grow: 1;
+}
+
+.sal-tabs .unity-scroll-view__content-container {
+    flex-direction: row;
+}
+
+.sal-tab {
+    flex-direction: row;
+    align-items: center;
+    height: 27px;
+    padding: 0 4px 0 10px;
+    border-right-width: 1px;
+    border-top-width: 1px;
+    border-color: #2B2B2B;
+    border-top-color: rgba(0, 0, 0, 0);
+    background-color: #1F1F1F;
+    color: #8A8A8A;
+}
+
+.sal-tab:hover {
+    background-color: #252526;
+}
+
+.sal-tab--active {
+    background-color: #1E1E1E;
+    border-top-color: #0E639C;
+    color: #FFFFFF;
+}
+
+.sal-tab--loose .sal-tab-name {
+    -unity-font-style: italic;
+}
+
+.sal-tab-dirty {
+    width: 10px;
+    font-size: 10px;
+    -unity-text-align: middle-center;
+}
+
+.sal-tab-close {
+    width: 18px;
+    height: 18px;
+    margin: 0 0 0 2px;
+    padding: 0;
+    border-width: 0;
+    border-radius: 3px;
+    background-color: rgba(0, 0, 0, 0);
+    color: #8A8A8A;
+    font-size: 13px;
+}
+
+.sal-tab-close:hover {
+    background-color: #3C3C3C;
+    color: #FFFFFF;
+}
+
+.sal-banner {
+    flex-direction: row;
+    align-items: center;
+    flex-shrink: 0;
+    padding: 4px 8px;
+    background-color: #2D3339;
+}
+
+.sal-banner--warning {
+    background-color: #4B3B12;
+}
+
+.sal-banner-text {
+    flex-grow: 1;
+    white-space: normal;
+}
+
+.sal-banner-buttons {
+    flex-direction: row;
+}
+
+.sal-editor-host {
+    flex-grow: 1;
+}
+
+.sal-empty-state {
+    flex-grow: 1;
+    align-items: center;
+    justify-content: center;
+    color: #6A6A6A;
+    -unity-text-align: middle-center;
+    background-color: #1E1E1E;
+}
+
+/* ───────────────────────────── низ: проблемы, консоль ───────────────────────────── */
+
+.sal-bottom {
+    min-height: 60px;
+    background-color: #1F1F1F;
+}
+
+.sal-problems,
+.sal-console {
+    flex-grow: 1;
+}
+
+.sal-problems-list,
+.sal-console-list {
+    flex-grow: 1;
+}
+
+.sal-filters {
+    flex-direction: row;
+    align-items: center;
+}
+
+.sal-filter {
+    margin: 0 1px;
+    padding: 0 6px;
+    height: 18px;
+    border-width: 0;
+    background-color: rgba(0, 0, 0, 0);
+    color: #CCCCCC;
+    font-size: 11px;
+}
+
+.sal-filter:hover {
+    background-color: #2A2D2E;
+}
+
+.sal-filter--off {
+    opacity: 0.4;
+}
+
+.sal-sev-error {
+    color: #F14C4C;
+}
+
+.sal-sev-warning {
+    color: #CCA700;
+}
+
+.sal-sev-info {
+    color: #3794FF;
+}
+
+.sal-problem {
+    flex-direction: row;
+    align-items: center;
+    height: 20px;
+    padding: 0 6px;
+}
+
+.sal-problem-glyph {
+    width: 14px;
+    font-size: 10px;
+}
+
+.sal-problem-text {
+    flex-grow: 1;
+    flex-shrink: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.sal-problem-where {
+    margin-left: 8px;
+    color: #8A8A8A;
+    flex-shrink: 0;
+}
+
+.sal-console-line {
+    height: 18px;
+    padding: 0 6px;
+    color: #BBBBBB;
+    font-size: 11px;
+    white-space: nowrap;
+}
+
+.sal-console-compile {
+    color: #4EC9B0;
+}
+
+.sal-ide .unity-collection-view__item--selected {
+    background-color: #04395E;
+}
+
+/* ───────────────────────────── статус ───────────────────────────── */
+
+.sal-status {
+    flex-direction: row;
+    align-items: center;
+    flex-shrink: 0;
+    height: 20px;
+    padding: 0 8px;
+    background-color: #1F1F1F;
+    border-top-width: 1px;
+    border-color: #2B2B2B;
+    color: #9D9D9D;
+}
+
+.sal-status-item {
+    margin-right: 12px;
+    font-size: 11px;
+    white-space: nowrap;
+}
+
+.sal-status-message {
+    flex-grow: 1;
+    flex-shrink: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.sal-status-right {
+    margin-right: 0;
+}
+
+.sal-status--ok {
+    color: #89D185;
+}
+
+.sal-status--warning {
+    color: #CCA700;
+}
+
+.sal-status--error {
+    color: #F14C4C;
+}
+
+/* ───────────────────────────── диалог ───────────────────────────── */
+
+.sal-dialog-layer {
+    align-items: center;
+    justify-content: center;
+    background-color: rgba(0, 0, 0, 0.45);
+}
+
+.sal-dialog {
+    min-width: 360px;
+    max-width: 560px;
+    padding: 12px;
+    border-width: 1px;
+    border-radius: 4px;
+    border-color: #454545;
+    background-color: #252526;
+    color: #CCCCCC;
+}
+
+.sal-dialog-title {
+    margin-bottom: 6px;
+    font-size: 13px;
+    -unity-font-style: bold;
+}
+
+.sal-dialog-message {
+    margin-bottom: 8px;
+    white-space: normal;
+}
+
+.sal-dialog-input {
+    margin: 0 0 8px 0;
+}
+
+.sal-dialog-buttons {
+    flex-direction: row;
+    justify-content: flex-end;
+}
+
+/* поля ввода IDE (диалог, поиск): свой вид, чтобы не зависеть от темы панели */
+.sal-dialog-input > .unity-base-text-field__input,
+.sal-find-input > .unity-base-text-field__input {
+    padding: 2px 4px;
+    border-width: 1px;
+    border-radius: 2px;
+    border-color: #3C3C3C;
+    background-color: #313131;
+    color: #CCCCCC;
+    --unity-cursor-color: #CCCCCC;
+    --unity-selection-color: rgba(38, 79, 120, 0.8);
+}
+
+/* ───────────────────────────── кодовая область ───────────────────────────── */
+
+.sal-code-editor {
+    flex-grow: 1;
+    flex-direction: row;
+    background-color: #1E1E1E;
+    font-size: 13px;
+
+    /* палитра подсветки: читается в C# через CustomStyleProperty */
+    --sal-keyword: #C586C0;
+    --sal-type: #4EC9B0;
+    --sal-class: #4EC9B0;
+    --sal-function: #DCDCAA;
+    --sal-property: #9CDCFE;
+    --sal-string: #CE9178;
+    --sal-number: #B5CEA8;
+    --sal-comment: #6A9955;
+    --sal-namespace: #4FC1FF;
+    --sal-enum-member: #4FC1FF;
+    --sal-decorator: #DCDCAA;
+    --sal-gutter-error: #F14C4C;
+    --sal-gutter-warning: #CCA700;
+}
+
+.sal-gutter {
+    flex-shrink: 0;
+    min-width: 40px;
+    overflow: hidden;
+    background-color: #1E1E1E;
+    border-right-width: 1px;
+    border-color: #2B2B2B;
+}
+
+.sal-gutter-text {
+    position: relative;
+    padding: 8px 8px 8px 10px;
+    margin: 0;
+    color: #6E7681;
+    font-size: 13px;
+    white-space: pre;
+    -unity-text-align: upper-right;
+}
+
+.sal-code-scroll {
+    flex-grow: 1;
+}
+
+/* размер контейнера задаёт слой подсветки; поле ввода и слои украшений — поверх */
+.sal-code-stack {
+    position: relative;
+}
+
+.sal-code-back,
+.sal-code-front {
+    position: absolute;
+    left: 0;
+    top: 0;
+    right: 0;
+    bottom: 0;
+}
+
+.sal-code-highlight {
+    color: #D4D4D4;              /* базовый цвет текста кода */
+    font-size: 13px;
+    white-space: pre;            /* без переносов: горизонталь скроллит ScrollView */
+    padding: 8px 12px;
+    margin: 0;
+}
+
+.sal-code-input {
+    position: absolute;
+    left: 0;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    margin: 0;
+    padding: 0;
+}
+
+/* ВАЖНО: метрики (font-size, padding, white-space) обязаны совпадать с
+   .sal-code-highlight — иначе текст поля разъедется с подсветкой. */
+.sal-code-input > .unity-base-text-field__input {
+    background-color: rgba(0, 0, 0, 0);
+    border-width: 0;
+    border-radius: 0;
+    margin: 0;
+    padding: 8px 12px;
+    font-size: 13px;
+    white-space: pre;
+    color: rgba(0, 0, 0, 0);     /* текст поля невидим — виден только слой подсветки */
+    --unity-cursor-color: #AEAFAD;
+    --unity-selection-color: rgba(38, 79, 120, 0.85);
+}
+
+.sal-current-line {
+    background-color: rgba(255, 255, 255, 0.04);
+}
+
+.sal-bracket {
+    border-width: 1px;
+    border-color: #888888;
+    background-color: rgba(255, 255, 255, 0.06);
+}
+
+.sal-squiggle--error {
+    background-color: #F14C4C;
+}
+
+.sal-squiggle--warning {
+    background-color: #CCA700;
+}
+
+.sal-squiggle--info {
+    background-color: #3794FF;
+}
+
+.sal-find-match {
+    background-color: rgba(234, 92, 0, 0.33);
+}
+
+.sal-find-match--current {
+    background-color: rgba(81, 92, 106, 0.9);
+    border-width: 1px;
+    border-color: #F9A825;
+}
+
+/* ───────────────────────────── попапы ───────────────────────────── */
+
+.sal-popup {
+    min-width: 320px;
+    max-width: 640px;
+    border-width: 1px;
+    border-color: #454545;
+    background-color: #252526;
+    font-size: 12px;
+}
+
+.sal-popup-item {
+    flex-direction: row;
+    align-items: center;
+    height: 20px;
+    padding: 0 6px;
+}
+
+.sal-popup-item-icon {
+    width: 14px;
+    font-size: 11px;
+    -unity-font-style: bold;
+    -unity-text-align: middle-center;
+}
+
+.sal-popup-item-label {
+    margin-right: 12px;
+    color: #D4D4D4;
+    font-size: 12px;
+    flex-shrink: 0;
+}
+
+.sal-popup-item-detail {
+    flex-shrink: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: #808080;
+    font-size: 11px;
+}
+
+.sal-popup-doc {
+    padding: 6px 8px;
+    border-top-width: 1px;
+    border-color: #454545;
+    color: #CCCCCC;
+    font-size: 12px;
+    white-space: normal;
+    max-width: 640px;
+}
+
+.sal-popup .unity-collection-view__item--selected {
+    background-color: #04395E;
+}
+
+.sal-popup .unity-collection-view__item:hover {
+    background-color: #2A2D2E;
+}
+
+/* цвет подсказки по виду (CompletionPopup.KindClasses) */
+.sal-kind-method { color: #DCDCAA; }
+.sal-kind-field { color: #9CDCFE; }
+.sal-kind-property { color: #9CDCFE; }
+.sal-kind-class { color: #4EC9B0; }
+.sal-kind-struct { color: #4EC9B0; }
+.sal-kind-module { color: #4FC1FF; }
+.sal-kind-enum { color: #4FC1FF; }
+.sal-kind-member { color: #4FC1FF; }
+.sal-kind-constant { color: #4FC1FF; }
+.sal-kind-keyword { color: #C586C0; }
+.sal-kind-event { color: #DCDCAA; }
+
+.sal-info {
+    max-width: 600px;
+    padding: 4px 8px;
+    border-width: 1px;
+    border-color: #454545;
+    background-color: #252526;
+}
+
+.sal-info-text {
+    color: #CCCCCC;
+    font-size: 12px;
+    white-space: normal;
+}
+
+/* ───────────────────────────── поиск ───────────────────────────── */
+
+.sal-find {
+    top: 4px;
+    right: 18px;
+    padding: 4px;
+    border-width: 1px;
+    border-color: #454545;
+    background-color: #252526;
+    color: #CCCCCC;
+    font-size: 12px;
+}
+
+.sal-find-row {
+    flex-direction: row;
+    align-items: center;
+    margin: 1px 0;
+}
+
+.sal-find-input {
+    width: 220px;
+    margin: 0 4px 0 0;
+}
+
+.sal-find-button {
+    height: 20px;
+    min-width: 20px;
+    margin: 0 1px;
+    padding: 0 4px;
+    border-width: 0;
+    border-radius: 2px;
+    background-color: rgba(0, 0, 0, 0);
+    color: #CCCCCC;
+}
+
+.sal-find-button:hover {
+    background-color: #3C3C3C;
+}
+
+.sal-find-toggle--on {
+    background-color: #0E639C;
+    color: #FFFFFF;
+}
+
+.sal-find-count {
+    min-width: 44px;
+    margin: 0 4px;
+    color: #9D9D9D;
+    -unity-text-align: middle-center;
+}
+
+.sal-find-count--none {
+    color: #F14C4C;
+}

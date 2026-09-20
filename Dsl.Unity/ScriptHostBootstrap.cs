@@ -94,6 +94,38 @@ namespace Dsl.Unity
         public ScriptEngine Engine => _engine;
         public HostRegistry Registry => _registry;
 
+        /// <summary>Версия скриптового API игры (та, с которой компилируются модули).</summary>
+        public int ApiVersion => _apiVersion;
+
+        /// <summary>Папка модулей игры на диске (StreamingAssets/&lt;modsFolder&gt;).</summary>
+        public string ModsDirectory => ModsPath;
+
+        /// <summary>Грузит ли бутстрап коровые модули из папки (а значит, правка файлов там доходит до игры).</summary>
+        public bool LoadsFromModsFolder => _loadFromModsFolder;
+
+        /// <summary>
+        /// Итог каждой компиляции (старт, хот-релоад, явная перезагрузка): IDE в игре
+        /// показывает по нему ошибки и исключённые карантином модули.
+        /// </summary>
+        public event System.Action<CompilationResult> Compiled;
+
+        /// <summary>Движок поднят (RunDsl): Engine и Registry доступны.</summary>
+        public event System.Action Started;
+
+        /// <summary>
+        /// Пауза хот-релоада. Пока true, изменения в папке модулей не перезагружают
+        /// программу: её ставит IDE, когда в движке крутится НЕ то, что лежит на
+        /// диске (набор из памяти на WebGL/мобильных или из чужой папки). Без этого
+        /// первое же событие файловой системы молча откатывало бы применённые правки.
+        /// Снимается, когда IDE снова применяет набор бутстрапа.
+        /// </summary>
+        public bool HotReloadSuspended { get; set; }
+
+        // отпечаток исходников последней компиляции — хот-релоад по вотчеру его
+        // сравнивает и не перезапускает программу, если текст не менялся (ложные
+        // события ФС, повторное событие после явной перезагрузки из IDE)
+        private string _lastSourcesFingerprint;
+
         /// <summary>Модуль, вшитый в сцену: манифест + исходники как TextAsset-ы.</summary>
         [System.Serializable]
         public sealed class EmbeddedModule
@@ -172,6 +204,7 @@ namespace Dsl.Unity
             _engine.OnError += m => Debug.LogError($"[script] {m}");
 
             CompileAndLoad();
+            Started?.Invoke();
 
             // хот-релоад: следим за коровой папкой (если грузим из неё) и/или за
             // путём, назначенным сборщиком. Первый источник, у которого есть путь.
@@ -250,12 +283,14 @@ namespace Dsl.Unity
                 _dirty = true;
                 _dirtyAt = UnityEngine.Time.unscaledTime;
             }
+            // IDE применила свой набор — диск больше не источник истины, перезагрузка откатила бы правки
+            if (_dirty && HotReloadSuspended) _dirty = false;
             if (_dirty && UnityEngine.Time.unscaledTime - _dirtyAt >= _reloadDebounce)
             {
                 _dirty = false;
                 try
                 {
-                    CompileAndLoad(); // при ошибке старая программа продолжает работать
+                    ReloadIfSourcesChanged(); // при ошибке старая программа продолжает работать
                 }
                 catch (IOException ex)
                 {
@@ -332,9 +367,25 @@ namespace Dsl.Unity
         }
 
         /// <summary>Компиляция всех модулей; при успехе — атомарная замена программы.</summary>
-        public void CompileAndLoad()
+        public void CompileAndLoad() => CompileAndLoadFrom(LoadModules());
+
+        /// <summary>
+        /// Модули из всех источников бутстрапа (папка, SourceProvider, вшитые) — то,
+        /// что скомпилировал бы CompileAndLoad. Нужен IDE в игре: она показывает и
+        /// правит ровно этот набор.
+        /// </summary>
+        public List<ModuleSourceSet> CollectModules() => LoadModules();
+
+        /// <summary>
+        /// Компиляция ЗАДАННОГО набора модулей и, при успехе, замена программы.
+        /// Так IDE применяет правки, которые живут только в памяти (WebGL, мобильные,
+        /// вшитые в сцену модули). Возвращает результат (null — движок не поднят).
+        /// </summary>
+        public CompilationResult CompileAndLoadFrom(List<ModuleSourceSet> modules)
         {
-            var modules = LoadModules();
+            if (_engine == null || _registry == null) return null;
+            modules ??= new List<ModuleSourceSet>();
+            _lastSourcesFingerprint = Fingerprint(modules);
             // в игре — карантин: сбойный мод исключается вместе с зависимыми, а не
             // выключает все моды и базовые скрипты разом
             var result = ScriptCompiler.Compile(_registry, _apiVersion, modules, quarantineBrokenModules: true);
@@ -358,6 +409,47 @@ namespace Dsl.Unity
             else
             {
                 Debug.LogError("[script] Компиляция не удалась — работает предыдущая версия (если была).");
+            }
+
+            try { Compiled?.Invoke(result); }
+            catch (System.Exception ex) { Debug.LogException(ex); }
+            return result;
+        }
+
+        /// <summary>
+        /// Хот-релоад по вотчеру: перекомпилировать, только если текст модулей
+        /// действительно изменился. Перезагрузка программы убивает файберы и
+        /// сбрасывает состояние, поэтому ложное событие ФС (или повтор после явной
+        /// перезагрузки из IDE) не должно её вызывать.
+        /// </summary>
+        private void ReloadIfSourcesChanged()
+        {
+            var modules = LoadModules();
+            if (_lastSourcesFingerprint != null && Fingerprint(modules) == _lastSourcesFingerprint) return;
+            CompileAndLoadFrom(modules);
+        }
+
+        // стабильный отпечаток набора модулей: имена, манифесты и тексты
+        private static string Fingerprint(List<ModuleSourceSet> modules)
+        {
+            unchecked
+            {
+                ulong h = 14695981039346656037UL;
+                void Mix(string s)
+                {
+                    foreach (char c in s ?? "") { h ^= c; h *= 1099511628211UL; }
+                    h ^= 0xFF; h *= 1099511628211UL;
+                }
+                foreach (var m in modules)
+                {
+                    if (m?.Manifest == null) continue;
+                    Mix(m.Manifest.Name);
+                    Mix(m.Manifest.Execution);
+                    Mix(m.Manifest.ApiVersion.ToString());
+                    foreach (var dep in m.Manifest.Dependencies ?? System.Array.Empty<string>()) Mix(dep);
+                    foreach (var (name, text) in m.Files) { Mix(name); Mix(text); }
+                }
+                return h.ToString("x16");
             }
         }
 

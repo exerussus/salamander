@@ -3,6 +3,9 @@
     "rootNamespace": "Dsl.Tests",
     "references": [
         "Dsl.Core",
+        "Dsl.Tooling",
+        "Dsl.Unity",
+        "Dsl.Ide",
         "UnityEngine.TestRunner",
         "UnityEditor.TestRunner"
     ],

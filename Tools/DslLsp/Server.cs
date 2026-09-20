@@ -5,6 +5,7 @@ using System.Text;
 using Dsl.Compilation;
 using Dsl.Syntax;
 using Dsl.Text;
+using Dsl.Tooling;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 
@@ -28,29 +29,16 @@ namespace Dsl.Tools.Lsp
         // кому мы публиковали диагностику (чтобы уметь очищать)
         private readonly HashSet<string> _published = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        // манифест API — прямое чтение json (комплишены/hover), реестр — через Import (компиляция)
-        private ApiManifest _api;
+        // Мозги подсказок — общий языковой сервис Dsl.Tooling (тот же, что во
+        // встроенной IDE игры): манифест, синтакс-индекс, комплишены, hover,
+        // go-to, раскраска. Сервер держит только воркспейс и протокол.
+        private readonly LanguageService _ls = new LanguageService();
 
-        // ===== синтакс-индекс: настоящий парсер вместо регэксов =============
-
-        private sealed class Sym
+        public Server(Rpc rpc)
         {
-            public string Name;
-            public string Kind;    // class/trigger/listener/enum/<вид архетипа>/field/const/func/event/action/member
-            public int Line;       // 1-based
-            public int Col;        // 1-based
-            public readonly List<Sym> Children = new List<Sym>();
+            _rpc = rpc;
+            _ls.TextProvider = GetText;
         }
-
-        private sealed class FileIndex
-        {
-            public int Hash;
-            public readonly List<Sym> Decls = new List<Sym>();
-        }
-
-        private readonly Dictionary<string, FileIndex> _index = new Dictionary<string, FileIndex>(StringComparer.OrdinalIgnoreCase);
-
-        public Server(Rpc rpc) => _rpc = rpc;
 
         // ===================================================================
         // Главный цикл
@@ -238,7 +226,7 @@ namespace Dsl.Tools.Lsp
                     {
                         ["legend"] = new JObject
                         {
-                            ["tokenTypes"] = new JArray(TokenTypes),
+                            ["tokenTypes"] = new JArray(SemanticClassifier.TokenTypes),
                             ["tokenModifiers"] = new JArray(),
                         },
                         ["full"] = true,
@@ -311,15 +299,12 @@ namespace Dsl.Tools.Lsp
             {
                 var abs = Path.GetFullPath(f);
                 seen.Add(abs);
-                IndexFile(abs, GetText(abs));
+                _ls.Index.Update(abs, GetText(abs));
             }
             foreach (var kv in _open)
                 if (kv.Key.EndsWith(".sal", StringComparison.OrdinalIgnoreCase) && seen.Add(kv.Key))
-                    IndexFile(kv.Key, kv.Value);
-            var stale = new List<string>();
-            foreach (var key in _index.Keys)
-                if (!seen.Contains(key)) stale.Add(key);
-            foreach (var key in stale) _index.Remove(key);
+                    _ls.Index.Update(kv.Key, kv.Value);
+            _ls.Index.RetainOnly(seen);
 
             // --- компиляция воркспейса тем же путём, что DslCheck ---
             var diagsByFile = new Dictionary<string, JArray>(StringComparer.OrdinalIgnoreCase);
@@ -332,14 +317,14 @@ namespace Dsl.Tools.Lsp
             string apiPath = ResolveApiManifestPath();
             Semantics.HostRegistry registry;
             int apiVersion = 1;
-            _api = null;
+            _ls.Api = null;
             if (File.Exists(apiPath))
             {
                 try
                 {
                     var apiText = File.ReadAllText(apiPath);
                     registry = ApiManifest.Import(apiText, out apiVersion);
-                    _api = JsonConvert.DeserializeObject<ApiManifest>(apiText);
+                    _ls.Api = JsonConvert.DeserializeObject<ApiManifest>(apiText);
                 }
                 catch (Exception ex)
                 {
@@ -370,69 +355,33 @@ namespace Dsl.Tools.Lsp
                 Console.Error.WriteLine($"salamander-lsp: папка модулей не найдена: {modulesRoot}");
             }
 
-            var logicalToAbs = new Dictionary<string, string>();
-            Action<string, string> onLoadError =
-                (file, message) => Bucket(Path.GetFullPath(file)).Add(LspDiag(1, 1, 1, 1, "E0401", message));
             // «ешь то, что дал сборщик»: если он экспортировал salamander-build.json
             // (упорядоченный список папок модулей) — берём РОВНО его; обход папки
-            // остаётся дев-режимом без сборщика
-            string buildPath = ResolveConfigured(_cfgBuildFile)
-                               ?? Path.Combine(modulesRoot, "salamander-build.json");
-            List<ModuleSourceSet> modules;
-            if (File.Exists(buildPath))
-            {
-                try
-                {
-                    var build = Newtonsoft.Json.Linq.JObject.Parse(File.ReadAllText(buildPath));
-                    var dirs = new List<string>();
-                    // пути в build-файле — относительно ЕГО папки: так его можно
-                    // положить и в корень проекта, и рядом с модулями
-                    string baseDir = Path.GetDirectoryName(Path.GetFullPath(buildPath)) ?? modulesRoot;
-                    foreach (var t in build["modules"] ?? new Newtonsoft.Json.Linq.JArray())
-                        dirs.Add(Path.GetFullPath(Path.Combine(baseDir, (string)t)));
-                    modules = ModuleLoader.LoadFromList(dirs, onLoadError, logicalToAbs);
-                }
-                catch (Exception ex)
-                {
-                    onLoadError(buildPath, "salamander-build.json не читается — " + ex.Message);
-                    modules = new List<ModuleSourceSet>();
-                }
-            }
-            else
-            {
-                // обход ВГЛУБЬ: корень задаёт IDE, и в Unity-проекте модули лежат
-                // в StreamingAssets/..., а не прямыми детьми корня
-                modules = ModuleLoader.LoadFromTree(modulesRoot, onLoadError, logicalToAbs);
-            }
+            // остаётся дев-режимом без сборщика (общая логика — Dsl.Tooling)
+            var ws = WorkspaceLoader.Load(modulesRoot, ResolveConfigured(_cfgBuildFile));
+            foreach (var err in ws.LoadErrors)
+                Bucket(Path.GetFullPath(err.Key)).Add(LspDiag(1, 1, 1, 1, "E0401", err.Value));
 
-            if (modules.Count == 0)
+            if (ws.Modules.Count == 0)
                 Console.Error.WriteLine(
                     $"salamander-lsp: модулей не найдено под {modulesRoot} — " +
                     "укажите salamander.modulesRoot или положите salamander-build.json.");
 
             // оверлеи: несохранённые правки важнее диска
-            foreach (var set in modules)
-            {
-                for (int i = 0; i < set.Files.Count; i++)
-                {
-                    var (logical, _) = set.Files[i];
-                    if (logicalToAbs.TryGetValue(logical, out var abs)
-                        && _open.TryGetValue(Path.GetFullPath(abs), out var live))
-                        set.Files[i] = (logical, live);
-                }
-            }
+            var modules = WorkspaceCompiler.WithOverlays(ws,
+                abs => _open.TryGetValue(Path.GetFullPath(abs), out var live) ? live : null);
 
             if (modules.Count > 0)
             {
                 var result = ScriptCompiler.Compile(registry, apiVersion, modules);
                 foreach (var d in result.Diagnostics)
                 {
-                    string abs = logicalToAbs.TryGetValue(d.File, out var a) ? Path.GetFullPath(a) : d.File;
+                    string abs = ws.LogicalToPath.TryGetValue(d.File, out var a) ? Path.GetFullPath(a) : d.File;
                     int severity = d.Severity == Severity.Error ? 1
                                  : d.Severity == Severity.Warning ? 2 : 3;
                     int line = Math.Max(1, d.Line);
                     int col = Math.Max(1, d.Column);
-                    Bucket(abs).Add(LspDiag(line, col, WordLenAt(GetText(abs), line, col), severity, d.Code, d.Message));
+                    Bucket(abs).Add(LspDiag(line, col, TextUtil.WordLenAt(GetText(abs), line, col), severity, d.Code, d.Message));
                 }
             }
 
@@ -470,948 +419,71 @@ namespace Dsl.Tools.Lsp
             ["end"] = new JObject { ["line"] = line2 - 1, ["character"] = col2 - 1 },
         };
 
-        private static int WordLenAt(string text, int line, int col)
-        {
-            var l = GetLine(text, line);
-            if (l == null || col - 1 >= l.Length) return 1;
-            int i = col - 1, n = 0;
-            while (i + n < l.Length && (char.IsLetterOrDigit(l[i + n]) || l[i + n] == '_')) n++;
-            return Math.Max(1, n);
-        }
-
-        private static string GetLine(string text, int line1)
-        {
-            if (text == null) return null;
-            int cur = 1, start = 0;
-            for (int i = 0; i <= text.Length; i++)
-            {
-                if (i == text.Length || text[i] == '\n')
-                {
-                    if (cur == line1)
-                    {
-                        int end = i;
-                        if (end > start && text[end - 1] == '\r') end--;
-                        return text.Substring(start, end - start);
-                    }
-                    cur++;
-                    start = i + 1;
-                }
-            }
-            return null;
-        }
-
         // ===================================================================
-        // Синтакс-индекс: декларации и члены из настоящего парсера
+        // Протокол поверх языкового сервиса
         // ===================================================================
 
-        private void IndexFile(string absPath, string text)
-        {
-            if (text == null) { _index.Remove(absPath); return; }
-            int hash = text.GetHashCode();
-            if (_index.TryGetValue(absPath, out var cached) && cached.Hash == hash) return;
-
-            var fi = new FileIndex { Hash = hash };
-            try
-            {
-                var src = new SourceText(0, absPath, text);
-                var bag = new DiagnosticBag(new[] { src });
-                var lexer = new Lexer(text, 0, bag);
-                var parser = new Parser(lexer.Tokenize(), 0, bag);
-                var file = parser.ParseFile();
-
-                foreach (var d in file.Decls)
-                {
-                    if (d == null) continue;
-                    var sym = new Sym { Name = d.Name, Line = d.Pos.Line, Col = d.Pos.Column };
-                    List<Member> members = null;
-                    switch (d)
-                    {
-                        case ClassDecl c: sym.Kind = "class"; members = c.Members; break;
-                        case TriggerDecl t: sym.Kind = "trigger"; members = t.Members; break;
-                        case ListenerDecl l: sym.Kind = "listener"; members = l.Members; break;
-                        case ArchetypeDecl a: sym.Kind = a.Kind; members = a.Members; break;
-                        case EnumDecl e:
-                            sym.Kind = "enum";
-                            foreach (var m in e.Members)
-                                sym.Children.Add(new Sym { Name = m, Kind = "member", Line = d.Pos.Line, Col = d.Pos.Column });
-                            break;
-                        default: continue;
-                    }
-                    if (members != null)
-                        foreach (var m in members)
-                            switch (m)
-                            {
-                                case FieldMember f:
-                                    sym.Children.Add(new Sym
-                                    {
-                                        Name = f.Name,
-                                        Kind = f.IsConst ? "const" : "field",
-                                        Line = f.Pos.Line,
-                                        Col = f.Pos.Column,
-                                    });
-                                    break;
-                                case FuncMember fn:
-                                    sym.Children.Add(new Sym
-                                    {
-                                        Name = fn.Name,
-                                        Kind = fn.Kind == FuncKind.Event ? "event"
-                                             : fn.Kind == FuncKind.Action ? "action" : "func",
-                                        Line = fn.Pos.Line,
-                                        Col = fn.Pos.Column,
-                                    });
-                                    break;
-                            }
-                    fi.Decls.Add(sym);
-                }
-            }
-            catch { /* синтакс-мусор не должен ронять индекс */ }
-
-            _index[absPath] = fi;
-        }
-
-        private Sym EnclosingDecl(string absPath, int line1)
-        {
-            if (!_index.TryGetValue(absPath, out var fi)) return null;
-            Sym best = null;
-            foreach (var d in fi.Decls)
-                if (d.Line <= line1 && (best == null || d.Line > best.Line))
-                    best = d;
-            return best;
-        }
-
-        // ===================================================================
-        // Комплишены
-        // ===================================================================
+        private static (string path, int line1, int col1) Pos(JObject p) =>
+            (UriToPath((string)p["textDocument"]["uri"]),
+             (int)p["position"]["line"] + 1,
+             (int)p["position"]["character"] + 1);
 
         private JToken Completion(JObject p)
         {
-            var path = UriToPath((string)p["textDocument"]["uri"]);
-            int line1 = (int)p["position"]["line"] + 1;
-            int col1 = (int)p["position"]["character"] + 1;
-            var lineText = GetLine(GetText(path), line1) ?? "";
-            var before = lineText.Substring(0, Math.Min(col1 - 1, lineText.Length));
-
+            var (path, line1, col1) = Pos(p);
             var items = new JArray();
-            void Add(string label, int kind, string detail, string doc = null, string insert = null, bool snippet = false)
+            foreach (var c in _ls.Complete(path, line1, col1))
             {
-                var it = new JObject { ["label"] = label, ["kind"] = kind };
-                if (detail != null) it["detail"] = detail;
-                if (doc != null) it["documentation"] = new JObject { ["kind"] = "markdown", ["value"] = doc };
-                if (insert != null) { it["insertText"] = insert; if (snippet) it["insertTextFormat"] = 2; }
+                var it = new JObject { ["label"] = c.Label, ["kind"] = (int)c.Kind };
+                if (c.Detail != null) it["detail"] = c.Detail;
+                if (c.Documentation != null) it["documentation"] = new JObject { ["kind"] = "markdown", ["value"] = c.Documentation };
+                if (c.InsertText != null) { it["insertText"] = c.InsertText; if (c.IsSnippet) it["insertTextFormat"] = 2; }
                 items.Add(it);
             }
-
-            // 1) Engine.<...>  /  Api.Weapon.<...>
-            // владелец может быть составным именем API — забираем всю цепочку
-            var mDot = System.Text.RegularExpressions.Regex.Match(before, @"((?:\w+\.)*\w+)\.\w*$");
-            if (mDot.Success)
-            {
-                string target = mDot.Groups[1].Value;
-                if (target == "Engine")
-                {
-                    foreach (var em in EngineDocs.Methods)
-                        Add(em.Name, 2, em.Signature, em.Summary,
-                            insert: CallSnippet(em.Name, ParamLabels(em)), snippet: true);
-                    return items;
-                }
-                // API хоста: сначала методы самого API (если такое имя есть),
-                // затем следующие сегменты составных имён под этим префиксом —
-                // "Api." предлагает Weapon/Parts, "Api.Weapon." предлагает методы
-                bool anyApi = false;
-                if (_api?.Apis != null)
-                {
-                    foreach (var api in _api.Apis)
-                        if (api.Name == target)
-                        {
-                            anyApi = true;
-                            foreach (var me in api.Methods)
-                                Add(me.Name, 2, MethodSig(api.Name, me), MethodDocMd(me),
-                                    insert: CallSnippet(me.Name, ParamLabels(me)), snippet: true);
-                            // константы: без скобок, поэтому и вставляются как есть
-                            foreach (var c in api.Consts ?? Array.Empty<ApiManifest.ApiConstDef>())
-                                Add(c.Name, 21, ConstSig(api.Name, c), c.Doc);   // 21 = Constant
-                        }
-
-                    string prefix = target + ".";
-                    var seen = new HashSet<string>(StringComparer.Ordinal);
-                    foreach (var api in _api.Apis)
-                    {
-                        if (!api.Name.StartsWith(prefix, StringComparison.Ordinal)) continue;
-                        string rest = api.Name.Substring(prefix.Length);
-                        int dot = rest.IndexOf('.');
-                        string seg = dot < 0 ? rest : rest.Substring(0, dot);
-                        if (seg.Length == 0 || !seen.Add(seg)) continue;
-                        anyApi = true;
-                        string nodeName = target + "." + seg;
-                        Add(seg, dot < 0 ? 9 : 3,                       // Class / Module
-                            dot < 0 ? api.Name : nodeName,
-                            dot < 0 ? api.Summary
-                                    : NamespaceSummary(nodeName) ?? "пространство имён API");
-                    }
-                }
-                if (anyApi) return items;
-                // енумы (манифест + скриптовые)
-                if (_api?.Enums != null)
-                    foreach (var en in _api.Enums)
-                        if (en.Name == target)
-                        {
-                            for (int i = 0; i < en.Members.Length; i++)
-                                Add(en.Members[i], 20, $"{en.Name}.{en.Members[i]}", MemberDoc(en, i));
-                            return items;
-                        }
-                foreach (var fi in _index.Values)
-                    foreach (var d in fi.Decls)
-                        if (d.Name == target && (d.Kind == "enum" || d.Kind == "class"))
-                        {
-                            foreach (var ch in d.Children)
-                                Add(ch.Name,
-                                    ch.Kind == "func" ? 2 : ch.Kind == "member" ? 20 : ch.Kind == "const" ? 14 : 5,
-                                    $"{d.Kind} {d.Name}",
-                                    insert: ch.Kind == "func" ? $"{ch.Name}($1)$0" : null,
-                                    snippet: ch.Kind == "func");
-                            return items;
-                        }
-
-                // цель — ЗНАЧЕНИЕ (локаль/параметр/поле). Тип угадываем по
-                // объявлению «Тип имя» выше по файлу (event OnDeath(Unit killer...)
-                // или Unit u = ...); нашли класс хоста — его свойства, нет —
-                // объединение свойств всех сущностей (лучше, чем тишина)
-                if (_api?.Classes != null && _api.Classes.Length > 0)
-                {
-                    var cls = GuessValueClass(GetText(path), line1, col1, target);
-                    if (cls != null)
-                    {
-                        foreach (var pr in cls.Props)
-                            Add(pr.Name, 10, $"{cls.Name}.{pr.Name}: {pr.Type}", pr.Doc);
-                        foreach (var me in cls.Methods ?? Array.Empty<ApiManifest.MethodDef>())
-                            Add(me.Name, 2, MethodSig(cls.Name, me), MethodDocMd(me),
-                                insert: CallSnippet(me.Name, ParamLabels(me)), snippet: true);
-                        return items;
-                    }
-                    foreach (var c in _api.Classes)
-                    {
-                        foreach (var pr in c.Props)
-                            Add(pr.Name, 10, $"{c.Name}: {pr.Type}", pr.Doc);
-                        foreach (var me in c.Methods ?? Array.Empty<ApiManifest.MethodDef>())
-                            Add(me.Name, 2, MethodSig(c.Name, me), MethodDocMd(me),
-                                insert: CallSnippet(me.Name, ParamLabels(me)), snippet: true);
-                    }
-                }
-                return items;
-            }
-
-            // 1.5) new Damage(<...>) — поля структуры: именованные аргументы это
-            // единственное место в языке, где они есть, и подсказать их важнее всего
-            var mNewArgs = System.Text.RegularExpressions.Regex.Match(
-                before, @"\bnew\s+(\w+)\s*\(([^()]*)$");
-            if (mNewArgs.Success && _api?.Structs != null)
-            {
-                string typeName = mNewArgs.Groups[1].Value;
-                string already = mNewArgs.Groups[2].Value;
-                foreach (var st in _api.Structs)
-                {
-                    if (st.Name != typeName) continue;
-                    foreach (var f in st.Fields)
-                    {
-                        // уже заданные поля не предлагаем повторно
-                        if (System.Text.RegularExpressions.Regex.IsMatch(
-                                already, @"\b" + System.Text.RegularExpressions.Regex.Escape(f.Name) + @"\s*:"))
-                            continue;
-                        Add(f.Name, 5, $"{f.Name}: {f.Type}" + (f.Default == null ? "" : $" = {f.Default}"),
-                            f.Doc, insert: f.Name + ": $0", snippet: true);
-                    }
-                    return items;
-                }
-            }
-
-            // 1.6) после "new " — типы, которые можно сконструировать
-            if (System.Text.RegularExpressions.Regex.IsMatch(before, @"\bnew\s+\w*$"))
-            {
-                if (_api?.Structs != null)
-                    foreach (var st in _api.Structs)
-                        Add(st.Name, 22, "структура", st.Summary,
-                            insert: st.Name + "($0)", snippet: true);
-                Add("List", 22, "new List<T>()", null, "List<${1:float}>()", true);
-                Add("Map", 22, "new Map<K, V>()", null, "Map<${1:string}, ${2:float}>()", true);
-                return items;
-            }
-
-            // 2) event <...> — набор событий зависит от того, в чём мы стоим
-            if (System.Text.RegularExpressions.Regex.IsMatch(before, @"\bevent\s+\w*$"))
-            {
-                var encl = EnclosingDecl(path, line1);
-                ApiManifest.EventDef[] events = _api?.Events;
-                if (encl != null && _api?.Archetypes != null)
-                    foreach (var k in _api.Archetypes)
-                        if (k.Name == encl.Kind) { events = k.Events; break; }
-                if (events != null)
-                    foreach (var ev in events)
-                        Add(ev.Name, 23, EventSig(ev), ev.Summary,
-                            insert: EventSnippet(ev), snippet: true);
-                if (encl != null && encl.Kind == "listener")
-                {
-                    Add("OnSubscribe", 23, "при Engine.Attach", null, "OnSubscribe()\n{\n\t$0\n}", true);
-                    Add("OnUnsubscribe", 23, "при detach (без wait/spawn)", null, "OnUnsubscribe()\n{\n\t$0\n}", true);
-                }
-                return items;
-            }
-
-            // 3) голый идентификатор: ключевые слова + типы + глобалы + API
-            foreach (var kw in EngineDocs.Keywords) Add(kw, 14, null);
-            foreach (var tp in EngineDocs.Types) Add(tp, 7, null);
-            Add("Engine", 9, "встроенный класс движка");
-            if (_api?.Apis != null) foreach (var api in _api.Apis) Add(api.Name, 9, api.Summary ?? "API игры");
-            if (_api?.Structs != null) foreach (var st in _api.Structs) Add(st.Name, 22, st.Summary ?? "структура");
-            if (_api?.Enums != null) foreach (var en in _api.Enums) Add(en.Name, 13, en.Summary ?? "enum хоста");
-            if (_api?.Classes != null) foreach (var c in _api.Classes) Add(c.Name, 7, c.Summary ?? "сущность игры");
-            foreach (var fi in _index.Values)
-                foreach (var d in fi.Decls)
-                    Add(d.Name, d.Kind == "enum" ? 13 : 7, d.Kind);
             return items;
         }
 
-        /// <summary>
-        /// Тип значения по ближайшему объявлению «Тип имя» выше курсора:
-        /// параметры событий/функций и локали с явным типом. Возвращает класс
-        /// хоста из манифеста или null.
-        /// </summary>
-        private ApiManifest.ClassDef GuessValueClass(string text, int line1, int col1, string name)
-        {
-            if (text == null || _api?.Classes == null) return null;
-            int cursor = OffsetOf(text, line1, col1);
-            var rx = new System.Text.RegularExpressions.Regex($@"\b([A-Za-z_]\w*)\s+{System.Text.RegularExpressions.Regex.Escape(name)}\b");
-            string best = null;
-            foreach (System.Text.RegularExpressions.Match m in rx.Matches(text))
-            {
-                if (m.Index <= cursor) best = m.Groups[1].Value; // ближайшее ДО курсора побеждает
-                else if (best == null) { best = m.Groups[1].Value; break; } // иначе первое после
-            }
-            if (best == null) return null;
-            foreach (var c in _api.Classes)
-                if (c.Name == best) return c;
-            return null;
-        }
-
-        private static int OffsetOf(string text, int line1, int col1)
-        {
-            int line = 1, i = 0;
-            while (i < text.Length && line < line1)
-            {
-                if (text[i] == '\n') line++;
-                i++;
-            }
-            return Math.Min(text.Length, i + Math.Max(0, col1 - 1));
-        }
-
-        /// <summary>Типизированные плейсхолдеры аргументов для табуляции по вызову.</summary>
-        private static string CallSnippet(string name, List<string> paramLabels)
-        {
-            if (paramLabels.Count == 0) return name + "()$0";
-            var sb = new StringBuilder(name).Append('(');
-            for (int i = 0; i < paramLabels.Count; i++)
-            {
-                if (i > 0) sb.Append(", ");
-                sb.Append("${").Append(i + 1).Append(':').Append(paramLabels[i].Replace("}", "\\}")).Append('}');
-            }
-            return sb.Append(")$0").ToString();
-        }
-
-        private static List<string> ParamLabels(EngineMethod em)
-        {
-            var r = new List<string>();
-            foreach (var (name, type) in em.Params) r.Add($"{type} {name}");
-            return r;
-        }
-
-        private static List<string> ParamLabels(ApiManifest.MethodDef m)
-        {
-            var r = new List<string>();
-            foreach (var pd in m.Params) r.Add($"{pd.Type} {pd.Name}");
-            return r;
-        }
-
-        // ===================================================================
-        // SignatureHelp: активная сигнатура + подсветка текущего аргумента
-        // ===================================================================
-
         private JToken SignatureHelp(JObject p)
         {
-            var path = UriToPath((string)p["textDocument"]["uri"]);
-            int line1 = (int)p["position"]["line"] + 1;
-            int col1 = (int)p["position"]["character"] + 1;
-            var lineText = GetLine(GetText(path), line1) ?? "";
-            var before = lineText.Substring(0, Math.Min(col1 - 1, lineText.Length));
-
-            // до внутренней незакрытой '(' (строки грубо вычищаем)
-            var clean = System.Text.RegularExpressions.Regex.Replace(before, "\"(?:\\\\.|[^\"])*\"?", m => new string(' ', m.Length));
-            int depth = 0, open = -1, commas = 0;
-            for (int i = clean.Length - 1; i >= 0; i--)
-            {
-                char c = clean[i];
-                if (c == ')') depth++;
-                else if (c == '(')
-                {
-                    if (depth == 0) { open = i; break; }
-                    depth--;
-                }
-            }
-            if (open < 0) return null;
-            for (int i = open + 1, d2 = 0; i < clean.Length; i++)
-            {
-                char c = clean[i];
-                if (c == '(') d2++;
-                else if (c == ')') d2--;
-                else if (c == ',' && d2 == 0) commas++;
-            }
-
-            var head = clean.Substring(0, open);
-            var m2 = System.Text.RegularExpressions.Regex.Match(head, "(?:((?:\\w+\\.)*\\w+)\\.)?(\\w+)\\s*$");
-            if (!m2.Success) return null;
-            string owner = m2.Groups[1].Value;
-            string method = m2.Groups[2].Value;
-
-            string label = null, doc = null;
-            List<string> plabels = null;
-            if (owner == "Engine")
-            {
-                foreach (var em in EngineDocs.Methods)
-                    if (em.Name == method) { label = em.Signature; doc = em.Summary; plabels = ParamLabels(em); break; }
-            }
-            else if (owner.Length > 0 && _api?.Apis != null)
-            {
-                foreach (var api in _api.Apis)
-                    if (api.Name == owner)
-                        foreach (var me in api.Methods)
-                            if (me.Name == method)
-                            { label = MethodSig(api.Name, me); doc = MethodDocMd(me); plabels = ParamLabels(me); break; }
-            }
-            if (label == null && owner.Length > 0 && _api?.Classes != null)
-            {
-                // владелец — не API, а значение: basket.AddPerk(<тут>). Тип берём
-                // по объявлению выше по файлу, иначе — по уникальности имени метода
-                var vcls = GuessValueClass(GetText(path), line1, col1, owner);
-                foreach (var c in _api.Classes)
-                {
-                    if (vcls != null && c.Name != vcls.Name) continue;
-                    foreach (var me in c.Methods ?? Array.Empty<ApiManifest.MethodDef>())
-                        if (me.Name == method)
-                        { label = MethodSig(c.Name, me); doc = MethodDocMd(me); plabels = ParamLabels(me); break; }
-                    if (label != null) break;
-                }
-            }
-            if (label == null) return null;
+            var (path, line1, col1) = Pos(p);
+            var s = _ls.SignatureHelp(path, line1, col1);
+            if (s == null) return null;
 
             var ps = new JArray();
-            foreach (var pl in plabels) ps.Add(new JObject { ["label"] = pl });
-            var sig = new JObject { ["label"] = label, ["parameters"] = ps };
-            if (doc != null) sig["documentation"] = new JObject { ["kind"] = "markdown", ["value"] = doc };
+            foreach (var pl in s.Parameters) ps.Add(new JObject { ["label"] = pl });
+            var sig = new JObject { ["label"] = s.Label, ["parameters"] = ps };
+            if (s.Documentation != null) sig["documentation"] = new JObject { ["kind"] = "markdown", ["value"] = s.Documentation };
             return new JObject
             {
                 ["signatures"] = new JArray(sig),
                 ["activeSignature"] = 0,
-                ["activeParameter"] = Math.Min(commas, Math.Max(0, plabels.Count - 1)),
+                ["activeParameter"] = s.ActiveParameter,
             };
-        }
-
-        // ===================================================================
-        // Семантическая подсветка: раскраска приходит с сервера — работает в
-        // любом клиенте (Rider без TextMate тоже цветной)
-        // ===================================================================
-
-        // Порядок ЗНАЧИМ: клиент адресует типы индексами в этом массиве, поэтому
-        // новые добавляются только в конец, а неиспользуемые не выкидываются.
-        private static readonly string[] TokenTypes =
-        {
-            "keyword", "type", "class", "function", "property", "variable",
-            "string", "number", "comment", "event", "namespace", "enumMember",
-            "decorator",
-        };
-        private const int TtKeyword = 0, TtType = 1, TtClass = 2, TtFunction = 3, TtProperty = 4,
-                          TtVariable = 5, TtString = 6, TtNumber = 7, TtComment = 8, TtEvent = 9,
-                          TtNamespace = 10, TtEnumMember = 11, TtDecorator = 12;
-
-        /// <summary>
-        /// Полный путь через точку, заканчивающийся токеном i: для "Weapon" в
-        /// Api.Weapon.Cut(...) вернёт "Api.Weapon". null — токен не продолжает
-        /// цепочку идентификаторов. Нужно, чтобы отличать сегмент составного
-        /// имени API от обычного свойства: по соседним токенам они неразличимы.
-        /// </summary>
-        private static string DottedPathEndingAt(IReadOnlyList<Token> ts, int i)
-        {
-            if (i < 2 || ts[i].Kind != TokenKind.Ident || ts[i - 1].Kind != TokenKind.Dot) return null;
-
-            var parts = new List<string> { ts[i].Text ?? "" };
-            int j = i - 2;
-            while (j >= 0 && ts[j].Kind == TokenKind.Ident)
-            {
-                parts.Add(ts[j].Text ?? "");
-                if (j - 1 < 0 || ts[j - 1].Kind != TokenKind.Dot) { j = -1; break; } // дошли до головы
-                j -= 2;
-            }
-            if (j >= 0) return null; // цепочка началась не с идентификатора
-
-            parts.Reverse();
-            return string.Join(".", parts);
         }
 
         private JToken SemanticTokens(JObject p)
         {
             var path = UriToPath((string)p["textDocument"]["uri"]);
-            var text = GetText(path);
-            if (text == null) return new JObject { ["data"] = new JArray() };
+            var spans = _ls.Classify(path);
+            if (spans == null) return new JObject { ["data"] = new JArray() };
 
-            var spans = new List<(int line, int col, int len, int type)>();
-
-            // 1) строки и комментарии — сырым проходом (лексер их не отдаёт);
-            //    дырки интерполяции {expr} собираем отдельно — это КОД
-            var holes = new List<(int line, int col, string src)>();
-            ScanStringsAndComments(text, spans, holes);
-
-            // 2) остальное — токенами настоящего лексера
-            var declNames = new HashSet<string>(StringComparer.Ordinal);
-            var kindNames = new HashSet<string>(StringComparer.Ordinal);
-            foreach (var fi in _index.Values)
-                foreach (var d in fi.Decls)
-                {
-                    declNames.Add(d.Name);
-                    if (d.Kind != "class" && d.Kind != "trigger" && d.Kind != "listener" && d.Kind != "enum")
-                        kindNames.Add(d.Kind); // слова-виды архетипов (spell/item/...)
-                }
-            if (_api?.Archetypes != null)
-                foreach (var k in _api.Archetypes) kindNames.Add(k.Name);
-            // Составные имена API ("Api.Weapon") лексер видит как отдельные
-            // токены Api . Weapon — поэтому в множество кладём и полное имя, и
-            // все его префиксы: узлом пути является каждый сегмент
-            var apiNames = new HashSet<string>(StringComparer.Ordinal) { "Engine" };
-            // константы API кладём ПОЛНЫМ путём: "sword_01" само по себе может
-            // быть чем угодно, красить по короткому имени нельзя
-            var constPaths = new HashSet<string>(StringComparer.Ordinal);
-            if (_api?.Apis != null)
-                foreach (var a in _api.Apis)
-                {
-                    apiNames.Add(a.Name);
-                    for (int d = a.Name.IndexOf('.'); d > 0; d = a.Name.IndexOf('.', d + 1))
-                        apiNames.Add(a.Name.Substring(0, d));
-                    foreach (var c in a.Consts ?? Array.Empty<ApiManifest.ApiConstDef>())
-                        constPaths.Add(a.Name + "." + c.Name);
-                }
-            var typeNames = new HashSet<string>(EngineDocs.Types, StringComparer.Ordinal);
-            if (_api?.Classes != null) foreach (var c in _api.Classes) typeNames.Add(c.Name);
-            if (_api?.Enums != null) foreach (var e in _api.Enums) typeNames.Add(e.Name);
-            if (_api?.Structs != null) foreach (var st in _api.Structs) typeNames.Add(st.Name);
-
-            // общая классификация токена (главный текст и дырки интерполяции)
-            int Classify(TokenKind kind, string txt, TokenKind prev, TokenKind next, string dottedPath)
-            {
-                if (kind.ToString().StartsWith("Kw")) return TtKeyword;
-                if (kind == TokenKind.Int || kind == TokenKind.Float) return TtNumber;
-                if (kind != TokenKind.Ident) return -1; // пунктуация — цвет темы
-                // Имя обработчика намеренно НЕ "event" и не "function": тип event
-                // редакторы красят так же, как метод, и обработчик сливался с
-                // вызовами вроде Api.Cut(). А обработчик и не вызывается из
-                // скрипта — его поднимает игра, это точка подключения, поэтому
-                // decorator и по смыслу ближе, и цвет у него отдельный.
-                if (prev == TokenKind.KwEvent) return TtDecorator;
-                if (prev == TokenKind.Dot)
-                {
-                    // сегмент составного имени API: "Weapon" в Api.Weapon.Cut(...).
-                    // Отличаем от свойства по ПОЛНОМУ пути, а не по соседям, иначе
-                    // любое поле с таким именем перекрасилось бы заодно
-                    if (dottedPath != null && apiNames.Contains(dottedPath)) return TtNamespace;
-                    // константа API — не свойство сущности: у неё нет владельца-значения,
-                    // и цвет именованного значения ближе по смыслу
-                    if (dottedPath != null && constPaths.Contains(dottedPath)) return TtEnumMember;
-                    return next == TokenKind.LParen ? TtFunction : TtProperty;
-                }
-                if (next == TokenKind.LParen) return TtFunction;
-                if (apiNames.Contains(txt)) return TtNamespace;
-                if (kindNames.Contains(txt)) return TtKeyword;   // spell/item — читаются как слова языка
-                if (typeNames.Contains(txt)) return TtType;
-                if (declNames.Contains(txt)) return TtClass;
-                return TtVariable;
-            }
-
-            try
-            {
-                var bag = new DiagnosticBag(new[] { new SourceText(0, path, text) });
-                var toks = new Lexer(text, 0, bag).Tokenize();
-                for (int i = 0; i < toks.Count; i++)
-                {
-                    var t = toks[i];
-                    if (t.Kind == TokenKind.String || t.Kind == TokenKind.InterpString) continue; // покрашены сканером
-                    string txt = t.Text ?? "";
-                    if (txt.Length == 0) continue;
-                    int type = Classify(t.Kind,
-                        txt,
-                        i > 0 ? toks[i - 1].Kind : TokenKind.Eof,
-                        i + 1 < toks.Count ? toks[i + 1].Kind : TokenKind.Eof,
-                        DottedPathEndingAt(toks, i));
-                    if (type >= 0) spans.Add((t.Pos.Line, t.Pos.Column, txt.Length, type));
-                }
-            }
-            catch { /* битый синтаксис не должен гасить подсветку строк/комментариев */ }
-
-            // дырки интерполяции: лексим содержимое как обычный код
-            foreach (var (hLine, hCol, src) in holes)
-            {
-                try
-                {
-                    var hbag = new DiagnosticBag(new[] { new SourceText(0, path, src) });
-                    var htoks = new Lexer(src, 0, hbag).Tokenize();
-                    for (int i = 0; i < htoks.Count; i++)
-                    {
-                        var t = htoks[i];
-                        if (t.Kind == TokenKind.String || t.Kind == TokenKind.InterpString) continue;
-                        string txt = t.Text ?? "";
-                        if (txt.Length == 0) continue;
-                        int type = Classify(t.Kind,
-                            txt,
-                            i > 0 ? htoks[i - 1].Kind : TokenKind.Eof,
-                            i + 1 < htoks.Count ? htoks[i + 1].Kind : TokenKind.Eof,
-                            DottedPathEndingAt(htoks, i));
-                        // дырки однострочные: строка та же, колонка со смещением
-                        if (type >= 0) spans.Add((hLine, hCol + t.Pos.Column - 1, txt.Length, type));
-                    }
-                }
-                catch { }
-            }
-
-            // 3) сортировка и дельта-кодирование протокола
-            spans.Sort((a, b) => a.line != b.line ? a.line - b.line : a.col - b.col);
+            // дельта-кодирование протокола
             var data = new JArray();
             int lastLine = 1, lastCol = 1;
-            foreach (var (line, col, len, type) in spans)
+            foreach (var s in spans)
             {
-                int dLine = line - lastLine;
-                int dCol = dLine == 0 ? col - lastCol : col - 1;
-                data.Add(dLine); data.Add(dCol); data.Add(len); data.Add(type); data.Add(0);
-                lastLine = line; lastCol = col;
+                int dLine = s.Line - lastLine;
+                int dCol = dLine == 0 ? s.Col - lastCol : s.Col - 1;
+                data.Add(dLine); data.Add(dCol); data.Add(s.Length); data.Add(s.Type); data.Add(0);
+                lastLine = s.Line; lastCol = s.Col;
             }
             return new JObject { ["data"] = data };
         }
 
-        /// <summary>
-        /// Строки (обычные и $"...") и комментарии // и /* */ — по сырому тексту,
-        /// построчными кусками; дырки интерполяции {expr} отдаются отдельно.
-        /// </summary>
-        private static void ScanStringsAndComments(string text, List<(int, int, int, int)> spans,
-                                                   List<(int line, int col, string src)> holes)
-        {
-            int line = 1, col = 1;
-            int i = 0, n = text.Length;
-            void Advance(char c) { if (c == '\n') { line++; col = 1; } else col++; }
-
-            while (i < n)
-            {
-                char c = text[i];
-                if (c == '/' && i + 1 < n && text[i + 1] == '/')
-                {
-                    int startCol = col, startLine = line, len = 0;
-                    while (i < n && text[i] != '\n') { len++; Advance(text[i]); i++; }
-                    spans.Add((startLine, startCol, len, TtComment));
-                }
-                else if (c == '/' && i + 1 < n && text[i + 1] == '*')
-                {
-                    int segLine = line, segCol = col, segLen = 0;
-                    while (i < n)
-                    {
-                        bool end = text[i] == '*' && i + 1 < n && text[i + 1] == '/';
-                        if (text[i] == '\n')
-                        {
-                            if (segLen > 0) spans.Add((segLine, segCol, segLen, TtComment));
-                            Advance(text[i]); i++;
-                            segLine = line; segCol = col; segLen = 0;
-                            continue;
-                        }
-                        segLen++; Advance(text[i]); i++;
-                        if (end) { segLen++; Advance(text[i]); i++; break; }
-                    }
-                    if (segLen > 0) spans.Add((segLine, segCol, segLen, TtComment));
-                }
-                else if (c == '"' || (c == '$' && i + 1 < n && text[i + 1] == '"'))
-                {
-                    bool interp = c == '$';
-                    int segLine = line, segCol = col, segLen = 0;
-                    void Flush() { if (segLen > 0) spans.Add((segLine, segCol, segLen, TtString)); segLen = 0; }
-
-                    if (interp) { segLen++; Advance(text[i]); i++; }
-                    segLen++; Advance(text[i]); i++; // открывающая кавычка
-                    while (i < n && text[i] != '\n')
-                    {
-                        if (text[i] == '\\' && i + 1 < n) { segLen += 2; Advance(text[i]); i++; Advance(text[i]); i++; continue; }
-                        if (interp && text[i] == '{' && i + 1 < n && text[i + 1] == '{')
-                        { segLen += 2; Advance(text[i]); i++; Advance(text[i]); i++; continue; }
-                        if (interp && text[i] == '{')
-                        {
-                            // скобка — ещё строка, содержимое дырки — код
-                            segLen++; Advance(text[i]); i++;
-                            Flush();
-                            int hLine = line, hCol = col;
-                            var sb = new StringBuilder();
-                            while (i < n && text[i] != '}' && text[i] != '"' && text[i] != '\n')
-                            { sb.Append(text[i]); Advance(text[i]); i++; }
-                            if (sb.Length > 0) holes.Add((hLine, hCol, sb.ToString()));
-                            segLine = line; segCol = col; segLen = 0;
-                            if (i < n && text[i] == '}') { segLen++; Advance(text[i]); i++; }
-                            continue;
-                        }
-                        bool close = text[i] == '"';
-                        segLen++; Advance(text[i]); i++;
-                        if (close) break;
-                    }
-                    Flush();
-                }
-                else { Advance(c); i++; }
-            }
-        }
-
-        private static string MethodSig(string owner, ApiManifest.MethodDef m)
-        {
-            var ps = new List<string>();
-            foreach (var pd in m.Params) ps.Add($"{pd.Type} {pd.Name}");
-            return $"{owner}.{m.Name}({string.Join(", ", ps)}) -> {m.Returns}";
-        }
-
-        private static string MethodDocMd(ApiManifest.MethodDef m)
-        {
-            var sb = new StringBuilder();
-            if (!string.IsNullOrEmpty(m.Summary)) sb.AppendLine(m.Summary);
-            foreach (var pd in m.Params)
-                if (!string.IsNullOrEmpty(pd.Doc)) sb.AppendLine($"- `{pd.Name}` — {pd.Doc}");
-            return sb.Length == 0 ? null : sb.ToString();
-        }
-
-        /// <summary>Описание узла составного имени API, если игра его задала.</summary>
-        private string NamespaceSummary(string name)
-        {
-            if (_api?.ApiNamespaces == null) return null;
-            foreach (var ns in _api.ApiNamespaces)
-                if (ns.Name == name) return string.IsNullOrEmpty(ns.Summary) ? null : ns.Summary;
-            return null;
-        }
-
-        /// <summary>
-        /// Путь через точку, заканчивающийся словом под курсором: для "Weapon" в
-        /// "Api.Parts.Weapon.Cut(...)" вернёт "Api.Parts.Weapon". Работает по
-        /// тексту строки — hover лексер не гоняет.
-        /// </summary>
-        private static string DottedPrefixInLine(string line, int wordCol1, string word)
-        {
-            int i = wordCol1 - 1;                       // индекс первого символа слова
-            var head = new List<string>();
-            while (i >= 1 && line[i - 1] == '.')
-            {
-                int e = i - 2;                          // последний символ предыдущего сегмента
-                if (e < 0) break;
-                int s = e;
-                while (s >= 0 && (char.IsLetterOrDigit(line[s]) || line[s] == '_')) s--;
-                if (s == e) break;                      // перед точкой не идентификатор
-                head.Insert(0, line.Substring(s + 1, e - s));
-                i = s + 1;
-            }
-            if (head.Count == 0) return word;
-            head.Add(word);
-            return string.Join(".", head);
-        }
-
-        /// <summary>Пояснение к элементу енума: параллельный массив, может отсутствовать.</summary>
-        private static string MemberDoc(ApiManifest.EnumDef en, int index)
-            => en.MemberDocs != null && (uint)index < (uint)en.MemberDocs.Length
-                ? en.MemberDocs[index]
-                : null;
-
-        private static string ConstSig(string owner, ApiManifest.ApiConstDef c)
-            => $"{owner}.{c.Name}: {c.Type} = {Literal(c.Value)}";
-
-        /// <summary>Значение из манифеста так, как его написали бы в скрипте.</summary>
-        private static string Literal(object v)
-        {
-            if (v == null) return "null";
-            if (v is string s) return "\"" + s + "\"";
-            if (v is bool b) return b ? "true" : "false";
-            return Convert.ToString(v, System.Globalization.CultureInfo.InvariantCulture);
-        }
-
-        private static string EventSig(ApiManifest.EventDef ev)
-        {
-            var ps = new List<string>();
-            foreach (var pd in ev.Params) ps.Add($"{pd.Type} {pd.Name}");
-            return $"event {ev.Name}({string.Join(", ", ps)})";
-        }
-
-        private static string EventSnippet(ApiManifest.EventDef ev)
-        {
-            var ps = new List<string>();
-            foreach (var pd in ev.Params) ps.Add($"{pd.Type} {pd.Name}");
-            return $"{ev.Name}({string.Join(", ", ps)})\n{{\n\t$0\n}}";
-        }
-
-        // ===================================================================
-        // Hover
-        // ===================================================================
-
         private JToken Hover(JObject p)
         {
-            var path = UriToPath((string)p["textDocument"]["uri"]);
-            int line1 = (int)p["position"]["line"] + 1;
-            int col1 = (int)p["position"]["character"] + 1;
-            var lineText = GetLine(GetText(path), line1) ?? "";
-            var (word, wordCol) = WordAt(lineText, col1);
-            if (word == null) return null;
-
-            string md = null;
-            bool afterEngine = HasPrefix(lineText, wordCol, "Engine.");
-
-            if (afterEngine)
-            {
-                foreach (var em in EngineDocs.Methods)
-                    if (em.Name == word) { md = $"```\n{em.Signature}\n```\n{em.Summary}"; break; }
-            }
-            if (md == null && _api?.Apis != null)
-                foreach (var api in _api.Apis)
-                    if (HasPrefix(lineText, wordCol, api.Name + "."))
-                        foreach (var me in api.Methods)
-                            if (me.Name == word)
-                            { md = $"```\n{MethodSig(api.Name, me)}\n```\n{MethodDocMd(me) ?? ""}"; break; }
-            // сам путь: узел составного имени или API-класс. Узел — первое, что
-            // человек набирает, и до сих пор наведение на нём молчало
-            if (md == null && _api?.Apis != null)
-            {
-                string dotted = DottedPrefixInLine(lineText, wordCol, word);
-                foreach (var api in _api.Apis)
-                {
-                    if (api.Name != dotted) continue;
-                    md = $"```\napi {api.Name}\n```\n{api.Summary ?? "API игры."}";
-                    break;
-                }
-                if (md == null)
-                {
-                    int under = 0;
-                    foreach (var api in _api.Apis)
-                        if (api.Name.StartsWith(dotted + ".", StringComparison.Ordinal)) under++;
-                    if (under > 0)
-                        md = $"```\nAPI: {dotted}.…\n```\n"
-                           + (NamespaceSummary(dotted) ?? "Пространство имён API.")
-                           + $"\n\nAPI под этим именем: {under}.";
-                }
-            }
-
-            // элемент енума — там, где спрашивают про ЕДИНИЦЫ ("Slot.MoveSpeed —
-            // это м/с или клетки за тик?"); имя енума перед точкой снимает
-            // неоднозначность одинаковых имён элементов в разных енумах
-            if (md == null && _api?.Enums != null)
-                foreach (var en in _api.Enums)
-                {
-                    if (!HasPrefix(lineText, wordCol, en.Name + ".")) continue;
-                    for (int i = 0; i < en.Members.Length; i++)
-                    {
-                        if (en.Members[i] != word) continue;
-                        md = $"```\n{en.Name}.{word}\n```\n{MemberDoc(en, i) ?? en.Summary ?? ""}";
-                        break;
-                    }
-                    if (md != null) break;
-                }
-
-            // сам енум: summary типа плюс сколько в нём элементов
-            if (md == null && _api?.Enums != null)
-                foreach (var en in _api.Enums)
-                    if (en.Name == word)
-                    {
-                        md = $"```\nenum {en.Name}\n```\n{en.Summary ?? $"Енум игры, элементов: {en.Members.Length}."}";
-                        break;
-                    }
-
-            // константа API — читается без скобок, поэтому и ищется по префиксу пути
-            if (md == null && _api?.Apis != null)
-                foreach (var api in _api.Apis)
-                {
-                    if (api.Consts == null || !HasPrefix(lineText, wordCol, api.Name + ".")) continue;
-                    foreach (var c in api.Consts)
-                        if (c.Name == word)
-                        { md = $"```\n{ConstSig(api.Name, c)}\n```\n{c.Doc ?? ""}"; break; }
-                    if (md != null) break;
-                }
-
-            // внутри блока вида: его события и объявленные игрой константы —
-            // ровно то, что автор рецепта видит перед собой
-            if (md == null && _api?.Archetypes != null)
-            {
-                var encl = EnclosingDecl(path, line1);
-                if (encl != null)
-                    foreach (var k in _api.Archetypes)
-                    {
-                        if (k.Name != encl.Kind) continue;
-                        foreach (var ev in k.Events ?? Array.Empty<ApiManifest.EventDef>())
-                            if (ev.Name == word)
-                            { md = $"```\n{EventSig(ev)}\n```\n{ev.Summary ?? $"Событие вида {k.Name}."}"; break; }
-                        if (md == null)
-                            foreach (var c in k.Consts ?? Array.Empty<ApiManifest.ConstDef>())
-                                if (c.Name == word)
-                                {
-                                    // дефолт показываем СЛОВАМИ: "= 3" в сигнатуре читалось бы
-                                    // как текущее значение, а блок его переопределяет
-                                    string note = $"Константа вида `{k.Name}`"
-                                        + (c.Required ? ", обязательная."
-                                           : c.HasDefault ? $", по умолчанию `{Literal(c.Default)}`." : ".");
-                                    md = $"```\nreadonly {c.Type} {c.Name}\n```\n{note}\n\n{c.Doc ?? ""}";
-                                    break;
-                                }
-                        break;
-                    }
-            }
-
-            if (md == null && _api?.Events != null)
-                foreach (var ev in _api.Events)
-                    if (ev.Name == word)
-                    { md = $"```\n{EventSig(ev)}\n```\n{ev.Summary ?? "Событие игры."}"; break; }
-
-            // поле структуры: в new Damage(...) тип известен точно, иначе — если
-            // имя поля уникально среди всех структур
-            if (md == null && _api?.Structs != null)
-            {
-                string ctorType = null;
-                var mCtor = System.Text.RegularExpressions.Regex.Match(
-                    lineText.Substring(0, Math.Min(wordCol - 1, lineText.Length)), @"\bnew\s+(\w+)\s*\([^()]*$");
-                if (mCtor.Success) ctorType = mCtor.Groups[1].Value;
-
-                ApiManifest.StructDef ownerSt = null; ApiManifest.StructFieldDef fld = null; int hits = 0;
-                foreach (var st in _api.Structs)
-                {
-                    if (ctorType != null && st.Name != ctorType) continue;
-                    foreach (var f in st.Fields ?? Array.Empty<ApiManifest.StructFieldDef>())
-                        if (f.Name == word) { hits++; ownerSt = st; fld = f; }
-                }
-                if (hits == 1)
-                    md = $"```\n{ownerSt.Name}.{fld.Name}: {fld.Type}\n```\n" +
-                         $"Поле структуры, по умолчанию `{Literal(fld.Default)}`.\n\n{fld.Doc ?? ""}";
-            }
-            if (md == null && _api?.Classes != null)
-            {
-                // метод объекта (basket.AddPerk) — по тому же правилу, что и свойство
-                ApiManifest.ClassDef mOwner = null; ApiManifest.MethodDef meth = null; int mHits = 0;
-                foreach (var c in _api.Classes)
-                    foreach (var me in c.Methods ?? Array.Empty<ApiManifest.MethodDef>())
-                        if (me.Name == word) { mHits++; mOwner = c; meth = me; }
-                if (mHits == 1)
-                    md = $"```\n{MethodSig(mOwner.Name, meth)}\n```\n{MethodDocMd(meth) ?? ""}";
-            }
-            if (md == null && _api?.Classes != null)
-            {
-                // свойство сущности (u.name): показываем, если имя уникально среди классов
-                ApiManifest.ClassDef ownerCls = null; ApiManifest.PropDef prop = null; int hits = 0;
-                foreach (var c in _api.Classes)
-                    foreach (var pr in c.Props)
-                        if (pr.Name == word) { hits++; ownerCls = c; prop = pr; }
-                if (hits == 1)
-                    md = $"```\n{ownerCls.Name}.{prop.Name}: {prop.Type}{(prop.ReadOnly ? " (только чтение)" : "")}\n```\n{prop.Doc ?? ""}";
-            }
-            if (md == null)
-            {
-                foreach (var fi in _index.Values)
-                    foreach (var d in fi.Decls)
-                        if (d.Name == word) { md = $"**{d.Kind} {d.Name}**"; break; }
-            }
-
+            var (path, line1, col1) = Pos(p);
+            var md = _ls.Hover(path, line1, col1);
             if (md == null) return null;
             return new JObject
             {
@@ -1419,63 +491,11 @@ namespace Dsl.Tools.Lsp
             };
         }
 
-        private static (string word, int col1) WordAt(string line, int col1)
-        {
-            if (line.Length == 0) return (null, 0);
-            int i = Math.Min(col1 - 1, line.Length - 1);
-            bool IsW(char c) => char.IsLetterOrDigit(c) || c == '_';
-            if (!IsW(line[i]) && i > 0 && IsW(line[i - 1])) i--;
-            if (!IsW(line[i])) return (null, 0);
-            int s = i; while (s > 0 && IsW(line[s - 1])) s--;
-            int e = i; while (e + 1 < line.Length && IsW(line[e + 1])) e++;
-            return (line.Substring(s, e - s + 1), s + 1);
-        }
-
-        private static bool HasPrefix(string line, int wordCol1, string prefix)
-        {
-            int end = wordCol1 - 1;
-            int start = end - prefix.Length;
-            return start >= 0 && string.CompareOrdinal(line, start, prefix, 0, prefix.Length) == 0;
-        }
-
-        // ===================================================================
-        // Definition / символы
-        // ===================================================================
-
         private JToken Definition(JObject p)
         {
-            var path = UriToPath((string)p["textDocument"]["uri"]);
-            int line1 = (int)p["position"]["line"] + 1;
-            int col1 = (int)p["position"]["character"] + 1;
-            var lineText = GetLine(GetText(path), line1) ?? "";
-            var (word, _) = WordAt(lineText, col1);
-            if (word == null) return null;
-            int ix = word.LastIndexOf(':');
-            if (ix >= 0) word = word.Substring(ix + 1); // module::Name -> Name
-
-            // 1) член объемлющей декларации (локальные func/поля этого файла)
-            var encl = EnclosingDecl(path, line1);
-            if (encl != null)
-                foreach (var ch in encl.Children)
-                    if (ch.Name == word)
-                        return Location(path, ch.Line, ch.Col, word.Length);
-
-            // 2) глобальные декларации по всем файлам
-            foreach (var kv in _index)
-                foreach (var d in kv.Value.Decls)
-                    if (d.Name == word)
-                        return Location(kv.Key, d.Line, d.Col, word.Length);
-
-            // 3) уникальный член где угодно (func класса, событие)
-            string foundFile = null; Sym found = null; int hits = 0;
-            foreach (var kv in _index)
-                foreach (var d in kv.Value.Decls)
-                    foreach (var ch in d.Children)
-                        if (ch.Name == word) { hits++; foundFile = kv.Key; found = ch; }
-            if (hits == 1)
-                return Location(foundFile, found.Line, found.Col, word.Length);
-
-            return null;
+            var (path, line1, col1) = Pos(p);
+            var loc = _ls.Definition(path, line1, col1);
+            return loc == null ? null : Location(loc.File, loc.Line, loc.Col, loc.Length);
         }
 
         private static JObject Location(string absPath, int line1, int col1, int len) => new JObject
@@ -1487,7 +507,7 @@ namespace Dsl.Tools.Lsp
         private JToken DocumentSymbols(JObject p)
         {
             var path = UriToPath((string)p["textDocument"]["uri"]);
-            if (!_index.TryGetValue(path, out var fi)) return new JArray();
+            if (!_ls.Index.TryGet(path, out var fi)) return new JArray();
 
             var arr = new JArray();
             foreach (var d in fi.Decls)
@@ -1500,7 +520,7 @@ namespace Dsl.Tools.Lsp
             return arr;
         }
 
-        private static JObject SymbolNode(Sym s)
+        private static JObject SymbolNode(DeclSymbol s)
         {
             int kind = s.Kind switch
             {
@@ -1526,7 +546,7 @@ namespace Dsl.Tools.Lsp
         {
             string query = ((string)p?["query"] ?? "").ToLowerInvariant();
             var arr = new JArray();
-            foreach (var kv in _index)
+            foreach (var kv in _ls.Index.Files)
             {
                 foreach (var d in kv.Value.Decls)
                 {

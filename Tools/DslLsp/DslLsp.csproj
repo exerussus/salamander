@@ -19,6 +19,7 @@
   <ItemGroup>
     <Compile Include="*.cs" />
     <Compile Include="../../Dsl.Core/**/*.cs" />
+    <Compile Include="../../Dsl.Tooling/**/*.cs" />
   </ItemGroup>
 
   <ItemGroup>
