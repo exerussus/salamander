@@ -138,7 +138,7 @@
             "patterns": [
                 {
                     "name": "keyword.control.salamander",
-                    "match": "\\b(if|else|while|for|in|break|continue|return|pass|wait|until)\\b"
+                    "match": "\\b(if|else|while|loop|for|in|break|continue|return|pass|wait|until|yield)\\b"
                 },
                 {
                     "name": "keyword.other.salamander",

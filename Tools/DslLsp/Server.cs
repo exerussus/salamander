@@ -60,7 +60,18 @@ namespace Dsl.Tools.Lsp
         {
             while (true)
             {
-                var msg = _rpc.Read();
+                JObject msg;
+                try
+                {
+                    msg = _rpc.Read();
+                }
+                catch (Newtonsoft.Json.JsonException ex)
+                {
+                    // Тело сообщения уже вычитано целиком по Content-Length, поток цел —
+                    // одно битое сообщение не повод ронять сервер посреди сессии редактора.
+                    System.Console.Error.WriteLine("salamander-lsp: пропущено некорректное JSON-сообщение: " + ex.Message);
+                    continue;
+                }
                 if (msg == null) return; // клиент закрыл поток
 
                 var method = (string)msg["method"];

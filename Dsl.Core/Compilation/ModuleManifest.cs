@@ -111,6 +111,22 @@ namespace Dsl.Compilation
                 byName[m.Manifest.Name] = m;
             }
 
+            // Карантин: дубликат имени и манифест без имени — беда ОДНОГО модуля, а не
+            // всей сборки. Раньше E0300/E0301 выдавались на каждом проходе без привязки
+            // к файлу, «виновный» не вычислялся, и одна папка «mymod — копия» в каталоге
+            // модов отключала ВСЕ скрипты, включая базовые. Теперь лишний экземпляр
+            // (первый по порядку загрузки остаётся) и безымянный манифест уходят в
+            // Excluded с причиной. Без карантина поведение прежнее — ошибка сборки.
+            if (quarantineBrokenModules)
+            {
+                for (int i = 0; i < namelessCount; i++)
+                    excluded.Add(new ExcludedModule { Name = "<без имени>", Reason = "в module.json нет поля name (E0300)" });
+                foreach (var d in duplicates)
+                    excluded.Add(new ExcludedModule { Name = d, Reason = "модуль с таким именем уже загружен — лишний экземпляр пропущен (E0301)" });
+                namelessCount = 0;
+                duplicates.Clear();
+            }
+
             var alive = new HashSet<string>(byName.Keys, StringComparer.Ordinal);
 
             // каждая итерация либо возвращает результат, либо исключает ≥1 модуль,
@@ -198,6 +214,15 @@ namespace Dsl.Compilation
                     foreach (var dep in m.Manifest.Dependencies ?? System.Array.Empty<string>()) visible.Add(dep);
 
                     var ast = new ModuleAst { Name = m.Manifest.Name, Visible = visible, Synchronous = m.Manifest.IsSynchronous };
+                    // Модуль без единого исходника компилируется «успешно» и молча ничего не
+                    // делает. Самая частая причина — опечатка в ключе манифеста: неизвестные
+                    // ключи JSON игнорируются, список файлов остаётся пустым, а чекер
+                    // отвечает «OK». Это не ошибка (пустой модуль законен), но и не тишина.
+                    if (m.Files.Count == 0)
+                        diag.Warning("W0300",
+                            $"Модуль '{m.Manifest.Name}' не содержит ни одного исходника: список \"sources\" в module.json " +
+                            "пуст или отсутствует (проверьте имя ключа и пути) — модуль ничего не делает.",
+                            SourcePos.None);
                     foreach (var (name, text) in m.Files)
                     {
                         var src = new SourceText(files.Count, name, text);

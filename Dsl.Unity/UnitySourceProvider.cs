@@ -37,7 +37,10 @@ namespace Dsl.Unity
             var set = new ModuleSourceSet { Manifest = manifest };
             for (int i = 0; i < sources.Count; i++)
             {
-                string logical = i < manifest.Sources.Length ? manifest.Sources[i] : sources[i].name;
+                // "sources": null в манифесте давал NullReferenceException
+                var declared = manifest.Sources ?? System.Array.Empty<string>();
+                if (sources[i] == null) continue; // пустой слот в инспекторе
+                string logical = i < declared.Length ? declared[i] : sources[i].name;
                 set.Files.Add(($"{manifest.Name}/{logical}", sources[i].text));
             }
             return set;

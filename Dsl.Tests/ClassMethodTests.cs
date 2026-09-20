@@ -210,8 +210,10 @@ namespace Dsl.Tests
             var wrongCount = Compile(@"
                 trigger T { event BuildPerks(Unit u, PerkBasket b) { b.AddPerk(); } }");
             Assert.IsFalse(wrongCount.Success);
-            Assert.IsTrue(Has(wrongCount, "E0188"), Dump(wrongCount),
-                "приёмник не считается аргументом скрипта");
+            // третий аргумент IsTrue — это params для форматирования, а не второе сообщение:
+            // пояснение терялось, а фигурные скобки в дампе могли уронить string.Format
+            Assert.IsTrue(Has(wrongCount, "E0188"),
+                "приёмник не считается аргументом скрипта\n" + Dump(wrongCount));
         }
 
         [Test]

@@ -88,17 +88,12 @@ namespace Dsl.Runtime
         {
             var stack = f.Stack;
             int sp = f.Sp;
-
-            // локальный помощник: push с ростом стека (struct-замыкание, без аллокаций)
-            void Push(Variant v)
-            {
-                if (sp >= stack.Length)
-                {
-                    f.EnsureStack(sp + 1);
-                    stack = f.Stack;
-                }
-                stack[sp++] = v;
-            }
+            // Счётчик инструкций и вершина стека — ЛОКАЛИ, push развёрнут на месте.
+            // Раньше push был локальной функцией: она захватывала sp и stack в
+            // структуру-замыкание, JIT держал их в памяти, а не в регистрах, и каждая
+            // инструкция платила за это (9.0 → 5.8 нс на инструкцию на CoreCLR x64).
+            // Инвариант: _instr записывается обратно на КАЖДОМ выходе из RunCore.
+            int instr = _instr;
 
             while (f.FrameCount > 0)
             {
@@ -111,15 +106,15 @@ namespace Dsl.Runtime
                 {
                     while (true)
                     {
-                    if (_instr >= cap)
+                    if (instr >= cap)
                     {
                         // бюджет запуска исчерпан — сохраняем состояние и отдаём
                         // управление движку; файбер можно продолжить позже
                         frame.Ip = ip;
                         f.Sp = sp;
-                        return RunResult.OutOfBudget;
+                        { _instr = instr; return RunResult.OutOfBudget; }
                     }
-                    _instr++;
+                    instr++;
 
                     var ins = code[ip++];
                     switch (ins.Op)
@@ -127,21 +122,21 @@ namespace Dsl.Runtime
                         case OpCode.Nop: break;
 
                         // ----- константы -----
-                        case OpCode.PushNil: Push(Variant.Nil); break;
-                        case OpCode.PushTrue: Push(Variant.Bool(true)); break;
-                        case OpCode.PushFalse: Push(Variant.Bool(false)); break;
-                        case OpCode.PushInt: Push(Variant.Int(ins.A)); break;
-                        case OpCode.PushFloat: Push(Variant.Float(BitConverter.Int32BitsToSingle(ins.A))); break;
+                        case OpCode.PushNil: { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = Variant.Nil; } break;
+                        case OpCode.PushTrue: { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = Variant.Bool(true); } break;
+                        case OpCode.PushFalse: { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = Variant.Bool(false); } break;
+                        case OpCode.PushInt: { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = Variant.Int(ins.A); } break;
+                        case OpCode.PushFloat: { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = Variant.Float(BitConverter.Int32BitsToSingle(ins.A)); } break;
                         case OpCode.PushDouble:
-                            Push(Variant.Double(BitConverter.Int64BitsToDouble(((long)ins.B << 32) | (uint)ins.A)));
+                            { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = Variant.Double(BitConverter.Int64BitsToDouble(((long)ins.B << 32) | (uint)ins.A)); }
                             break;
-                        case OpCode.PushStr: Push(Variant.Str(LitIds[ins.A])); break;
-                        case OpCode.PushEnum: Push(Variant.Enum(ins.A, ins.B)); break;
+                        case OpCode.PushStr: { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = Variant.Str(LitIds[ins.A]); } break;
+                        case OpCode.PushEnum: { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = Variant.Enum(ins.A, ins.B); } break;
 
                         // ----- локали / статики -----
-                        case OpCode.LoadLocal: Push(stack[frame.Base + ins.A]); break;
+                        case OpCode.LoadLocal: { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = stack[frame.Base + ins.A]; } break;
                         case OpCode.StoreLocal: stack[frame.Base + ins.A] = stack[--sp]; break;
-                        case OpCode.LoadStatic: Push(Statics[ins.A]); break;
+                        case OpCode.LoadStatic: { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = Statics[ins.A]; } break;
                         case OpCode.StoreStatic: Statics[ins.A] = stack[--sp]; break;
 
                         // ----- снапшот-итерация for-in (буферы на файбере) -----
@@ -150,6 +145,11 @@ namespace Dsl.Runtime
                             var coll = stack[--sp];
                             int bufId = f.IterDepth;
                             int n;
+                            // Len проверяет версию хэндла: ниже данные берутся напрямую по id,
+                            // и протухший хэндл давал NullReference («Внутренняя ошибка») либо
+                            // молча итерировал чужую коллекцию, занявшую тот же слот
+                            if (coll.Type == VariantType.Array || coll.Type == VariantType.List || coll.Type == VariantType.Map)
+                                _engine.Collections.Len(coll);
                             switch (coll.Type)
                             {
                                 case VariantType.Array:
@@ -216,7 +216,7 @@ namespace Dsl.Runtime
 
                             stack[iterBase + ins.A] = Variant.Int(idx);
                             if (has) stack[iterBase + ins.B] = elem;
-                            Push(Variant.Bool(has));
+                            { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = Variant.Bool(has); }
                             break;
                         }
 
@@ -225,9 +225,9 @@ namespace Dsl.Runtime
                             break;
 
                         // поля текущей подписки listener (блок висит на файбере)
-                        case OpCode.LoadAttach: Push(f.AttachFields[ins.A]); break;
+                        case OpCode.LoadAttach: { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = f.AttachFields[ins.A]; } break;
                         case OpCode.StoreAttach: f.AttachFields[ins.A] = stack[--sp]; break;
-                        case OpCode.PushSelf: Push(f.AttachSelf); break;
+                        case OpCode.PushSelf: { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = f.AttachSelf; } break;
 
                         // ----- хостовые свойства -----
                         case OpCode.LoadField:
@@ -235,7 +235,7 @@ namespace Dsl.Runtime
                             var objV = stack[--sp];
                             var obj = _engine.Entities.Resolve(objV);
                             if (obj == null) throw new ScriptError("Чтение свойства у null.");
-                            Push(_engine.Host.Getter(ins.A)(_engine, obj));
+                            { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = _engine.Host.Getter(ins.A)(_engine, obj); }
                             break;
                         }
                         case OpCode.StoreField:
@@ -255,33 +255,33 @@ namespace Dsl.Runtime
                         {
                             var b = stack[--sp]; var a = stack[--sp];
                             if (a.Type == VariantType.Int && b.Type == VariantType.Int)
-                                Push(Variant.Int(a.AsInt + b.AsInt));
+                                { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = Variant.Int(a.AsInt + b.AsInt); }
                             else if (a.Type == VariantType.Double || b.Type == VariantType.Double)
-                                Push(Variant.Double(a.ToD() + b.ToD()));
+                                { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = Variant.Double(a.ToD() + b.ToD()); }
                             else
-                                Push(Variant.Float(a.ToF() + b.ToF()));
+                                { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = Variant.Float(a.ToF() + b.ToF()); }
                             break;
                         }
                         case OpCode.Sub:
                         {
                             var b = stack[--sp]; var a = stack[--sp];
                             if (a.Type == VariantType.Int && b.Type == VariantType.Int)
-                                Push(Variant.Int(a.AsInt - b.AsInt));
+                                { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = Variant.Int(a.AsInt - b.AsInt); }
                             else if (a.Type == VariantType.Double || b.Type == VariantType.Double)
-                                Push(Variant.Double(a.ToD() - b.ToD()));
+                                { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = Variant.Double(a.ToD() - b.ToD()); }
                             else
-                                Push(Variant.Float(a.ToF() - b.ToF()));
+                                { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = Variant.Float(a.ToF() - b.ToF()); }
                             break;
                         }
                         case OpCode.Mul:
                         {
                             var b = stack[--sp]; var a = stack[--sp];
                             if (a.Type == VariantType.Int && b.Type == VariantType.Int)
-                                Push(Variant.Int(a.AsInt * b.AsInt));
+                                { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = Variant.Int(a.AsInt * b.AsInt); }
                             else if (a.Type == VariantType.Double || b.Type == VariantType.Double)
-                                Push(Variant.Double(a.ToD() * b.ToD()));
+                                { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = Variant.Double(a.ToD() * b.ToD()); }
                             else
-                                Push(Variant.Float(a.ToF() * b.ToF()));
+                                { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = Variant.Float(a.ToF() * b.ToF()); }
                             break;
                         }
                         case OpCode.Div:
@@ -295,14 +295,14 @@ namespace Dsl.Runtime
                                 // увидит бесполезное «Внутренняя ошибка»
                                 if (a.AsInt == int.MinValue && b.AsInt == -1)
                                     throw new ScriptError("Переполнение: результат -2147483648 / -1 не помещается в int.");
-                                Push(Variant.Int(a.AsInt / b.AsInt));
+                                { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = Variant.Int(a.AsInt / b.AsInt); }
                             }
                             else
                             {
                                 if (a.Type == VariantType.Double || b.Type == VariantType.Double)
-                                    Push(Variant.Double(a.ToD() / b.ToD()));
+                                    { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = Variant.Double(a.ToD() / b.ToD()); }
                                 else
-                                    Push(Variant.Float(a.ToF() / b.ToF())); // float: inf допустим
+                                    { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = Variant.Float(a.ToF() / b.ToF()); } // float: inf допустим
                             }
                             break;
                         }
@@ -312,16 +312,16 @@ namespace Dsl.Runtime
                             if (b.AsInt == 0) throw new ScriptError("Остаток от деления на ноль.");
                             // int.MinValue % -1 математически 0, но в C# это
                             // implementation-defined (может бросить OverflowException)
-                            if (a.AsInt == int.MinValue && b.AsInt == -1) { Push(Variant.Int(0)); break; }
-                            Push(Variant.Int(a.AsInt % b.AsInt));
+                            if (a.AsInt == int.MinValue && b.AsInt == -1) { { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = Variant.Int(0); } break; }
+                            { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = Variant.Int(a.AsInt % b.AsInt); }
                             break;
                         }
                         case OpCode.Neg:
                         {
                             var a = stack[--sp];
-                            if (a.Type == VariantType.Int) Push(Variant.Int(-a.AsInt));
-                            else if (a.Type == VariantType.Double) Push(Variant.Double(-a.AsDouble));
-                            else Push(Variant.Float(-a.ToF()));
+                            if (a.Type == VariantType.Int) { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = Variant.Int(-a.AsInt); }
+                            else if (a.Type == VariantType.Double) { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = Variant.Double(-a.AsDouble); }
+                            else { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = Variant.Float(-a.ToF()); }
                             break;
                         }
 
@@ -329,63 +329,63 @@ namespace Dsl.Runtime
                         case OpCode.Eq:
                         {
                             var b = stack[--sp]; var a = stack[--sp];
-                            Push(Variant.Bool(a.Equals(b)));
+                            { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = Variant.Bool(a.Equals(b)); }
                             break;
                         }
                         case OpCode.Ne:
                         {
                             var b = stack[--sp]; var a = stack[--sp];
-                            Push(Variant.Bool(!a.Equals(b)));
+                            { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = Variant.Bool(!a.Equals(b)); }
                             break;
                         }
                         case OpCode.Lt:
                         {
                             var b = stack[--sp]; var a = stack[--sp];
                             if (a.Type == VariantType.Int && b.Type == VariantType.Int)
-                                Push(Variant.Bool(a.AsInt < b.AsInt));
+                                { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = Variant.Bool(a.AsInt < b.AsInt); }
                             else if (a.Type == VariantType.Double || b.Type == VariantType.Double)
-                                Push(Variant.Bool(a.ToD() < b.ToD()));
+                                { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = Variant.Bool(a.ToD() < b.ToD()); }
                             else
-                                Push(Variant.Bool(a.ToF() < b.ToF()));
+                                { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = Variant.Bool(a.ToF() < b.ToF()); }
                             break;
                         }
                         case OpCode.Le:
                         {
                             var b = stack[--sp]; var a = stack[--sp];
                             if (a.Type == VariantType.Int && b.Type == VariantType.Int)
-                                Push(Variant.Bool(a.AsInt <= b.AsInt));
+                                { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = Variant.Bool(a.AsInt <= b.AsInt); }
                             else if (a.Type == VariantType.Double || b.Type == VariantType.Double)
-                                Push(Variant.Bool(a.ToD() <= b.ToD()));
+                                { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = Variant.Bool(a.ToD() <= b.ToD()); }
                             else
-                                Push(Variant.Bool(a.ToF() <= b.ToF()));
+                                { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = Variant.Bool(a.ToF() <= b.ToF()); }
                             break;
                         }
                         case OpCode.Gt:
                         {
                             var b = stack[--sp]; var a = stack[--sp];
                             if (a.Type == VariantType.Int && b.Type == VariantType.Int)
-                                Push(Variant.Bool(a.AsInt > b.AsInt));
+                                { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = Variant.Bool(a.AsInt > b.AsInt); }
                             else if (a.Type == VariantType.Double || b.Type == VariantType.Double)
-                                Push(Variant.Bool(a.ToD() > b.ToD()));
+                                { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = Variant.Bool(a.ToD() > b.ToD()); }
                             else
-                                Push(Variant.Bool(a.ToF() > b.ToF()));
+                                { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = Variant.Bool(a.ToF() > b.ToF()); }
                             break;
                         }
                         case OpCode.Ge:
                         {
                             var b = stack[--sp]; var a = stack[--sp];
                             if (a.Type == VariantType.Int && b.Type == VariantType.Int)
-                                Push(Variant.Bool(a.AsInt >= b.AsInt));
+                                { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = Variant.Bool(a.AsInt >= b.AsInt); }
                             else if (a.Type == VariantType.Double || b.Type == VariantType.Double)
-                                Push(Variant.Bool(a.ToD() >= b.ToD()));
+                                { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = Variant.Bool(a.ToD() >= b.ToD()); }
                             else
-                                Push(Variant.Bool(a.ToF() >= b.ToF()));
+                                { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = Variant.Bool(a.ToF() >= b.ToF()); }
                             break;
                         }
                         case OpCode.Not:
                         {
                             var a = stack[--sp];
-                            Push(Variant.Bool(!a.AsBool));
+                            { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = Variant.Bool(!a.AsBool); }
                             break;
                         }
 
@@ -398,7 +398,7 @@ namespace Dsl.Runtime
                             for (int i = sp - n; i < sp; i++)
                                 AppendVariant(strings, stack[i]);
                             sp -= n;
-                            Push(Variant.Str(strings.EndBuildIntern()));
+                            { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = Variant.Str(strings.EndBuildIntern()); }
                             break;
                         }
 
@@ -455,7 +455,7 @@ namespace Dsl.Runtime
                             _engine.Host.Function(ins.A)(ref ctx);
                             sp = argBase;
                             stack = f.Stack; // хост мог реентерабельно войти в движок
-                            Push(ctx.HasResult ? ctx.Result : Variant.Nil);
+                            { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = ctx.HasResult ? ctx.Result : Variant.Nil; }
                             // ...и там же запросить смерть этого файбера: например
                             // InvalidateEntity(цель) снимает подписку и возвращает её
                             // блок полей в пул. Без этой проверки файбер продолжил бы
@@ -464,7 +464,7 @@ namespace Dsl.Runtime
                             {
                                 frame.Ip = ip;
                                 f.Sp = sp;
-                                return RunResult.Completed;
+                                { _instr = instr; return RunResult.Completed; }
                             }
                             break;
                         }
@@ -477,12 +477,12 @@ namespace Dsl.Runtime
                             var res = _engine.ExecEngineOp((EngineOp)ins.A, f, argBase, argc);
                             sp = argBase;
                             stack = f.Stack; // обновить ДО Push: движок мог вырастить стек
-                            Push(res);
+                            { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = res; }
                             if (f.KillRequested)
                             {
                                 frame.Ip = ip;
                                 f.Sp = sp;
-                                return RunResult.Completed; // самоуничтожение через Engine.Kill
+                                { _instr = instr; return RunResult.Completed; } // самоуничтожение через Engine.Kill
                             }
                             break;
                         }
@@ -494,7 +494,7 @@ namespace Dsl.Runtime
                             f.Sp = sp;
                             var handle = _engine.SpawnFiber(ins.A, stack, argBase, argc, f.TriggerId);
                             sp = argBase;
-                            Push(handle);
+                            { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = handle; }
                             break;
                         }
 
@@ -515,13 +515,13 @@ namespace Dsl.Runtime
                             f.PendingWaitSeconds = pending;
                             frame.Ip = ip;
                             f.Sp = sp;
-                            return RunResult.Waited;
+                            { _instr = instr; return RunResult.Waited; }
                         }
                         case OpCode.YieldTick:
                         {
                             frame.Ip = ip;
                             f.Sp = sp;
-                            return RunResult.Yielded;
+                            { _instr = instr; return RunResult.Yielded; }
                         }
 
                         case OpCode.Return:
@@ -532,9 +532,9 @@ namespace Dsl.Runtime
                             if (f.FrameCount == 0)
                             {
                                 f.Sp = sp;
-                                return RunResult.Completed;
+                                { _instr = instr; return RunResult.Completed; }
                             }
-                            Push(ret); // результат — вызывающему
+                            { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = ret; } // результат — вызывающему
                             f.Sp = sp;
                             goto FrameSwitch;
                         }
@@ -543,11 +543,11 @@ namespace Dsl.Runtime
                         case OpCode.NewArray:
                         {
                             var size = stack[--sp];
-                            Push(_engine.Collections.NewArray(size.AsInt));
+                            { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = _engine.Collections.NewArray(size.AsInt); }
                             break;
                         }
-                        case OpCode.NewList: Push(_engine.Collections.NewList()); break;
-                        case OpCode.NewMap: Push(_engine.Collections.NewMap()); break;
+                        case OpCode.NewList: { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = _engine.Collections.NewList(); } break;
+                        case OpCode.NewMap: { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = _engine.Collections.NewMap(); } break;
 
                         case OpCode.ArrayLit:
                         {
@@ -556,7 +556,7 @@ namespace Dsl.Runtime
                             for (int i = 0; i < n; i++)
                                 _engine.Collections.Set(arr, Variant.Int(i), stack[sp - n + i]);
                             sp -= n;
-                            Push(arr);
+                            { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = arr; }
                             break;
                         }
 
@@ -564,7 +564,7 @@ namespace Dsl.Runtime
                         {
                             var idx = stack[--sp];
                             var coll = stack[--sp];
-                            Push(_engine.Collections.Get(coll, idx));
+                            { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = _engine.Collections.Get(coll, idx); }
                             break;
                         }
                         case OpCode.StoreIndex:
@@ -578,7 +578,7 @@ namespace Dsl.Runtime
                         case OpCode.Len:
                         {
                             var coll = stack[--sp];
-                            Push(Variant.Int(_engine.Collections.Len(coll)));
+                            { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = Variant.Int(_engine.Collections.Len(coll)); }
                             break;
                         }
                         case OpCode.ListAdd:
@@ -586,21 +586,21 @@ namespace Dsl.Runtime
                             var value = stack[--sp];
                             var coll = stack[--sp];
                             _engine.Collections.ListAdd(coll, value);
-                            Push(Variant.Nil); // вызовы всегда оставляют одно значение
+                            { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = Variant.Nil; } // вызовы всегда оставляют одно значение
                             break;
                         }
                         case OpCode.ListClear:
                         {
                             var coll = stack[--sp];
                             _engine.Collections.ListClear(coll);
-                            Push(Variant.Nil);
+                            { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = Variant.Nil; }
                             break;
                         }
                         case OpCode.MapHas:
                         {
                             var key = stack[--sp];
                             var coll = stack[--sp];
-                            Push(Variant.Bool(_engine.Collections.MapHas(coll, key)));
+                            { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = Variant.Bool(_engine.Collections.MapHas(coll, key)); }
                             break;
                         }
                         case OpCode.MapRemove:
@@ -608,7 +608,7 @@ namespace Dsl.Runtime
                             var key = stack[--sp];
                             var coll = stack[--sp];
                             _engine.Collections.MapRemove(coll, key);
-                            Push(Variant.Nil);
+                            { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = Variant.Nil; }
                             break;
                         }
 
@@ -621,7 +621,7 @@ namespace Dsl.Runtime
                         case OpCode.IntToFloat:
                         {
                             var a = stack[--sp];
-                            Push(Variant.Float(a.AsInt));
+                            { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = Variant.Float(a.AsInt); }
                             break;
                         }
 
@@ -636,6 +636,7 @@ namespace Dsl.Runtime
                     if (f.FrameCount > 0)
                         f.Frames[f.FrameCount - 1].Ip = ip;
                     f.Sp = sp;
+                    _instr = instr;
                     throw;
                 }
 
@@ -643,7 +644,7 @@ namespace Dsl.Runtime
             }
 
             f.Sp = sp;
-            return RunResult.Completed;
+            { _instr = instr; return RunResult.Completed; }
         }
 
         private void AppendVariant(StringTable strings, Variant v)

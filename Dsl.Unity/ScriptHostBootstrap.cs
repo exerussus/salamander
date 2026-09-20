@@ -253,7 +253,18 @@ namespace Dsl.Unity
             if (_dirty && UnityEngine.Time.unscaledTime - _dirtyAt >= _reloadDebounce)
             {
                 _dirty = false;
-                CompileAndLoad(); // при ошибке старая программа продолжает работать
+                try
+                {
+                    CompileAndLoad(); // при ошибке старая программа продолжает работать
+                }
+                catch (IOException ex)
+                {
+                    // редактор ещё держит файл открытым на запись — попробуем ещё раз после
+                    // паузы, иначе правка терялась до следующего сохранения
+                    Debug.LogWarning($"[script] Файл занят, перезагрузка отложена: {ex.Message}");
+                    _dirty = true;
+                    _dirtyAt = UnityEngine.Time.unscaledTime;
+                }
             }
 
             if (!_engine.IsLoaded) return;
@@ -367,7 +378,7 @@ namespace Dsl.Unity
             _watcher.Changed += OnFsEvent;
             _watcher.Created += OnFsEvent;
             _watcher.Deleted += OnFsEvent;
-            _watcher.Renamed += (_, __) => MarkDirty();
+            _watcher.Renamed += (_, e) => { if (IsScriptFile(e.FullPath) || IsScriptFile(e.OldFullPath)) MarkDirty(); };
             _watcher.EnableRaisingEvents = true;
 #else
             // FileSystemWatcher есть не на всех платформах, а файловая загрузка
@@ -377,7 +388,23 @@ namespace Dsl.Unity
 #endif
         }
 
-        private void OnFsEvent(object sender, FileSystemEventArgs e) => MarkDirty();
+        private void OnFsEvent(object sender, FileSystemEventArgs e)
+        {
+            if (IsScriptFile(e.FullPath)) MarkDirty();
+        }
+
+        // Перезагрузка = LoadProgram = смерть всех файберов и сброс состояния, поэтому
+        // реагируем только на то, что реально входит в программу. Без фильтра её
+        // запускали .meta-файлы Unity, собственный salamander-api.json и
+        // .idea/workspace.xml, который Rider переписывает постоянно.
+        private static bool IsScriptFile(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return true; // не знаем, что изменилось, — перестрахуемся
+            if (path.EndsWith(".sal", System.StringComparison.OrdinalIgnoreCase)) return true;
+            // папка (модуль удалили/переименовали целиком) — расширения нет
+            if (string.IsNullOrEmpty(Path.GetExtension(path))) return true;
+            return string.Equals(Path.GetFileName(path), "module.json", System.StringComparison.OrdinalIgnoreCase);
+        }
 
         private void MarkDirty() => _pendingDirty = true; // никакого Unity API из чужого потока
     }

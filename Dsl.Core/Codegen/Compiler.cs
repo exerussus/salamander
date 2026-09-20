@@ -213,7 +213,20 @@ namespace Dsl.Codegen
                 staticKeys[i] = (fs.OwnerKey ?? "?") + "." + fs.Name;
                 staticReadOnly[i] = fs.IsReadOnly;
                 staticDeclared[i] = fs.DeclaredInScript;
-                if (!fs.HasDefault) continue;
+                if (!fs.HasDefault)
+                {
+                    // Типизированный ноль ДО <init>. Раньше слот оставался Nil, и поле,
+                    // прочитанное раньше своего инициализатора (`int a = C.b + 1; int b = 5;`)
+                    // или объявленное без него, давало Nil в арифметике: VM уходила во
+                    // float-ветку, и в int-поле оказывался Float — дальше его биты читались
+                    // как индекс (1065353216). Остальные типы по-прежнему Nil = null.
+                    //
+                    // Поля блоков-архетипов НЕ трогаем: там Nil — документированный контракт
+                    // для игры («поле объявлено, значения нет», TryGetArchetypeConst → IsNil).
+                    bool archetypeField = fs.OwnerKey != null && fs.OwnerKey.StartsWith("a:", System.StringComparison.Ordinal);
+                    if (!archetypeField) staticDefaults[i] = TypedZero(fs.Type);
+                    continue;
+                }
                 // строковый дефолт интернируется в общий пул литералов — так же,
                 // как это делает EmitConst для const string
                 staticDefaults[i] = fs.Type != null && fs.Type.Kind == TypeKind.Str
@@ -306,7 +319,7 @@ namespace Dsl.Codegen
                 var f = fs.Decl;
                 SetLine(f.Pos);
                 if (f.Init != null) EmitExpr(f.Init);
-                else Emit(OpCode.PushNil);
+                else EmitTypedZero(fs.Type);
                 Emit(OpCode.StoreAttach, fs.Slot);
             }
             Emit(OpCode.Return, 0);
@@ -392,6 +405,37 @@ namespace Dsl.Codegen
         // стейтменты
         // ===================================================================
 
+        /// <summary>
+        /// Значение «по умолчанию» для числовых и bool-типов — настоящий ноль своего
+        /// типа. Nil в числовом слоте ломает статическую типизацию: арифметика VM
+        /// выбирает ветку по тегу значения, и `Nil + 1` считается как float.
+        /// </summary>
+        private static Variant TypedZero(TypeRef t)
+        {
+            if (t == null) return Variant.Nil;
+            switch (t.Kind)
+            {
+                case TypeKind.Int: return Variant.Int(0);
+                case TypeKind.Float: return Variant.Float(0f);
+                case TypeKind.Double: return Variant.Double(0.0);
+                case TypeKind.Bool: return Variant.Bool(false);
+                default: return Variant.Nil;
+            }
+        }
+
+        private void EmitTypedZero(TypeRef t)
+        {
+            if (t == null) { Emit(OpCode.PushNil); return; }
+            switch (t.Kind)
+            {
+                case TypeKind.Int: Emit(OpCode.PushInt, 0); break;
+                case TypeKind.Float: Emit(OpCode.PushFloat, System.BitConverter.SingleToInt32Bits(0f)); break;
+                case TypeKind.Double: Emit(OpCode.PushDouble, 0, 0); break;
+                case TypeKind.Bool: Emit(OpCode.PushFalse); break;
+                default: Emit(OpCode.PushNil); break;
+            }
+        }
+
         private void EmitBlock(Block b)
         {
             foreach (var s in b.Stmts) EmitStmt(s);
@@ -409,7 +453,7 @@ namespace Dsl.Codegen
 
                 case VarDeclStmt v:
                     if (v.Init != null) EmitExpr(v.Init);
-                    else Emit(OpCode.PushNil);
+                    else EmitTypedZero(v.Type); // `int x;` — это 0, а не Nil (см. TypedZero)
                     Emit(OpCode.StoreLocal, v.Slot);
                     break;
 
