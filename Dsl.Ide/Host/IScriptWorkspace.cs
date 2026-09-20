@@ -95,6 +95,7 @@ namespace Dsl.Ide
     {
         private readonly string _root;
         private readonly string _buildFile;
+        private readonly IModuleReader _reader;
         private WorkspaceModules _last;
 
         private FileSystemWatcher _watcher;
@@ -103,11 +104,20 @@ namespace Dsl.Ide
         private long _scanToken;        // запасной путь без вотчера
         private int _scanSkip;
 
-        public FileSystemWorkspace(string root, string buildFile = null)
+        /// <param name="reader">
+        /// Чем читать модули: свой формат пака подставляется сюда, и тогда IDE
+        /// видит его ровно так же, как LSP и чекер с тем же читателем.
+        /// null — <see cref="WorkspaceLoader.DefaultReader"/> (module.json).
+        /// </param>
+        public FileSystemWorkspace(string root, string buildFile = null, IModuleReader reader = null)
         {
             _root = string.IsNullOrEmpty(root) ? null : Path.GetFullPath(root);
             _buildFile = buildFile;
+            _reader = reader;
         }
+
+        /// <summary>Читатель модулей этого воркспейса (никогда не null).</summary>
+        public IModuleReader Reader => _reader ?? WorkspaceLoader.DefaultReader ?? ModuleJsonReader.Instance;
 
         public string DisplayName => _root == null ? "нет папки" : Path.GetFileName(_root.TrimEnd('/', '\\'));
         public string Root => _root;
@@ -116,7 +126,7 @@ namespace Dsl.Ide
         public WorkspaceModules Load()
         {
             var ws = _root != null && Directory.Exists(_root)
-                ? WorkspaceLoader.Load(_root, _buildFile)
+                ? WorkspaceLoader.Load(_root, _buildFile, _reader)
                 : new WorkspaceModules();
             // ключи файлового воркспейса — полные пути
             var keys = new List<string>(ws.LogicalToPath.Keys);
@@ -222,14 +232,16 @@ namespace Dsl.Ide
         private void Bump() => System.Threading.Interlocked.Increment(ref _changes);
 
         // только то, что меняет набор модулей: исходники, манифесты, папки
-        private static bool Relevant(string path)
+        private bool Relevant(string path)
         {
             if (string.IsNullOrEmpty(path)) return true;
             string name = Path.GetFileName(path);
             if (name.Length == 0 || name[0] == '.') return false;
             if (name.EndsWith(".meta", StringComparison.OrdinalIgnoreCase)) return false;
             if (name.EndsWith(".sal", StringComparison.OrdinalIgnoreCase)) return true;
-            if (string.Equals(name, "module.json", StringComparison.OrdinalIgnoreCase)) return true;
+            // имя манифеста знает читатель: у своего формата пака оно своё
+            try { if (Reader.IsManifestFile(path)) return true; }
+            catch { }
             if (string.Equals(name, WorkspaceLoader.BuildFileName, StringComparison.OrdinalIgnoreCase)) return true;
             return string.IsNullOrEmpty(Path.GetExtension(name)); // папка модуля переименована/удалена
         }
@@ -241,8 +253,9 @@ namespace Dsl.Ide
                 long h = 17;
                 foreach (var f in ModuleLoader.EnumerateFiles(_root, "*.sal"))
                     h = h * 31 + Mix(f);
-                foreach (var f in ModuleLoader.EnumerateFiles(_root, "module.json"))
-                    h = h * 31 + Mix(f);
+                // манифесты: имя знает читатель, поэтому берём все .json и спрашиваем его
+                foreach (var f in ModuleLoader.EnumerateFiles(_root, "*.json"))
+                    if (Reader.IsManifestFile(f)) h = h * 31 + Mix(f);
                 string build = _buildFile ?? Path.Combine(_root, WorkspaceLoader.BuildFileName);
                 if (File.Exists(build)) h = h * 31 + Mix(build);
                 return h;
@@ -274,11 +287,12 @@ namespace Dsl.Ide
                 error = $"модуль «{moduleName}» не найден";
                 return null;
             }
-            return CreateInModuleDir(dir, relativePath, out error);
+            return CreateInModuleDir(dir, relativePath, out error, Reader);
         }
 
-        /// <summary>Создать .sal в папке модуля и добавить его в module.json (если список явный).</summary>
-        public static string CreateInModuleDir(string moduleDir, string relativePath, out string error)
+        /// <summary>Создать .sal в папке модуля и прописать его в манифесте.</summary>
+        public static string CreateInModuleDir(string moduleDir, string relativePath, out string error,
+                                               IModuleReader reader = null)
         {
             error = null;
             string rel = (relativePath ?? "").Trim().Replace('\\', '/').TrimStart('/');
@@ -297,53 +311,18 @@ namespace Dsl.Ide
 
             string name = Path.GetFileNameWithoutExtension(full);
             if (!WriteFile(full, $"// {name}\n", out error)) return null;
-            if (!RegisterInManifest(Path.Combine(moduleDir, "module.json"), rel, out string warn))
+            var r = reader ?? WorkspaceLoader.DefaultReader ?? ModuleJsonReader.Instance;
+            if (!r.AddFile(moduleDir, rel, out string warn))
                 error = warn; // файл создан, но в манифест не попал — вызывающий покажет предупреждение
             return full;
         }
 
-        /// <summary>
-        /// Добавить путь в список исходников module.json. Ключ — "scripts" (новые
-        /// манифесты) или "sources" (старые): какой уже есть. Глобы в списке не
-        /// поддерживаются осознанно (порядок файлов задаёт порядок обработчиков),
-        /// поэтому маска ничего не подхватывает и файл дописывается как обычно.
-        /// </summary>
-        public static bool RegisterInManifest(string manifestPath, string rel, out string warning)
-        {
-            warning = null;
-            try
-            {
-                var jo = JObject.Parse(File.ReadAllText(manifestPath));
-                string key = jo["scripts"] != null ? "scripts" : "sources";
-                if (!(jo[key] is JArray arr)) { arr = new JArray(); jo[key] = arr; }
-                foreach (var t in arr)
-                {
-                    string s = (string)t ?? "";
-                    if (string.Equals(s.Replace('\\', '/'), rel, StringComparison.OrdinalIgnoreCase)) return true;
-                }
-                arr.Add(rel);
-                File.WriteAllText(manifestPath, jo.ToString(Formatting.Indented) + "\n", new UTF8Encoding(false));
-                return true;
-            }
-            catch (Exception e)
-            {
-                warning = "файл создан, но module.json не обновлён: " + e.Message;
-                return false;
-            }
-        }
-
         public IEnumerable<string> ListUnlistedFiles(string moduleName)
         {
-            if (_last == null || !_last.ModuleDirs.TryGetValue(moduleName ?? "", out var dir)) yield break;
-            var listed = new HashSet<string>(_last.LogicalToPath.Values, StringComparer.OrdinalIgnoreCase);
-            List<string> files;
-            try { files = ModuleLoader.EnumerateFiles(dir, "*.sal", 4); }
-            catch { yield break; }
-            foreach (var f in files)
-            {
-                string full = Path.GetFullPath(f);
-                if (!listed.Contains(full)) yield return full;
-            }
+            if (_last == null || !_last.ModuleDirs.TryGetValue(moduleName ?? "", out var dir))
+                return Array.Empty<string>();
+            try { return Reader.ListUnlisted(dir); }
+            catch { return Array.Empty<string>(); }
         }
     }
 

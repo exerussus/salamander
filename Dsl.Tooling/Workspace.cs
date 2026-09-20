@@ -52,6 +52,16 @@ namespace Dsl.Tooling
         public const string BuildFileName = "salamander-build.json";
 
         /// <summary>
+        /// Чем читать модули, когда читатель не передан явно. Хост со своим
+        /// форматом пака подменяет его один раз на старте (LSP, чекер), и дальше
+        /// все вызовы без параметра работают с этим форматом.
+        /// </summary>
+        public static IModuleReader DefaultReader = ModuleJsonReader.Instance;
+
+        private static IModuleReader Pick(IModuleReader reader) =>
+            reader ?? DefaultReader ?? ModuleJsonReader.Instance;
+
+        /// <summary>
         /// Где лежит salamander-api.json: в корне, иначе ближайший к корню в
         /// подпапках (манифест обычно выгружается в StreamingAssets/&lt;modsFolder&gt;).
         /// null — не найден.
@@ -71,8 +81,10 @@ namespace Dsl.Tooling
         /// </summary>
         /// <param name="modulesRoot">Корень поиска модулей.</param>
         /// <param name="buildFile">Явный build-файл; null — &lt;root&gt;/salamander-build.json.</param>
-        public static WorkspaceModules Load(string modulesRoot, string buildFile = null)
+        /// <param name="reader">Чем читать модули; null — <see cref="DefaultReader"/>.</param>
+        public static WorkspaceModules Load(string modulesRoot, string buildFile = null, IModuleReader reader = null)
         {
+            var r = Pick(reader);
             var ws = new WorkspaceModules();
             Action<string, string> onError = (file, message) =>
                 ws.LoadErrors.Add(new KeyValuePair<string, string>(file, message));
@@ -90,7 +102,7 @@ namespace Dsl.Tooling
                     string baseDir = Path.GetDirectoryName(Path.GetFullPath(buildPath)) ?? modulesRoot;
                     foreach (var t in build["modules"] ?? new JArray())
                         dirs.Add(Path.GetFullPath(Path.Combine(baseDir, (string)t)));
-                    foreach (var dir in dirs) AddModule(ws, dir, onError);
+                    foreach (var dir in dirs) AddModule(ws, dir, onError, r);
                 }
                 catch (Exception ex)
                 {
@@ -102,14 +114,16 @@ namespace Dsl.Tooling
 
             // обход ВГЛУБЬ: корень задаёт IDE, и в Unity-проекте модули лежат
             // в StreamingAssets/..., а не прямыми детьми корня
-            foreach (var dir in FindModuleDirs(modulesRoot))
-                AddModule(ws, dir, onError);
+            foreach (var dir in FindModuleDirs(modulesRoot, ModuleLoader.DefaultScanDepth, r))
+                AddModule(ws, dir, onError, r);
             return ws;
         }
 
         /// <summary>Папки модулей под корнем — тем же обходом, что ModuleLoader.LoadFromTree.</summary>
-        public static List<string> FindModuleDirs(string rootPath, int maxDepth = ModuleLoader.DefaultScanDepth)
+        public static List<string> FindModuleDirs(string rootPath, int maxDepth = ModuleLoader.DefaultScanDepth,
+                                                  IModuleReader reader = null)
         {
+            var r = Pick(reader);
             var moduleDirs = new List<string>();
             if (string.IsNullOrEmpty(rootPath) || !Directory.Exists(rootPath)) return moduleDirs;
 
@@ -120,7 +134,7 @@ namespace Dsl.Tooling
                 foreach (var dir in level)
                 {
                     bool isModule;
-                    try { isModule = File.Exists(Path.Combine(dir, "module.json")); }
+                    try { isModule = r.IsModuleDir(dir); }
                     catch { continue; }
 
                     if (isModule) { moduleDirs.Add(dir); continue; } // внутрь модуля не идём
@@ -139,22 +153,23 @@ namespace Dsl.Tooling
             return moduleDirs;
         }
 
-        /// <summary>Ближайшая вверх папка с module.json (не выше maxUp уровней); null — файл вне модуля.</summary>
-        public static string FindModuleDirOf(string filePath, int maxUp = 6)
+        /// <summary>Ближайшая вверх папка модуля (не выше maxUp уровней); null — файл вне модуля.</summary>
+        public static string FindModuleDirOf(string filePath, int maxUp = 6, IModuleReader reader = null)
         {
+            var r = Pick(reader);
             try
             {
                 var dir = new DirectoryInfo(Path.GetDirectoryName(Path.GetFullPath(filePath)) ?? "");
                 for (int depth = 0; dir != null && depth <= maxUp; depth++, dir = dir.Parent)
-                    if (File.Exists(Path.Combine(dir.FullName, "module.json"))) return dir.FullName;
+                    if (r.IsModuleDir(dir.FullName)) return dir.FullName;
             }
             catch { /* недопустимый путь — вне модуля */ }
             return null;
         }
 
-        private static void AddModule(WorkspaceModules ws, string dir, Action<string, string> onError)
+        private static void AddModule(WorkspaceModules ws, string dir, Action<string, string> onError, IModuleReader reader)
         {
-            var set = ModuleLoader.LoadModuleDir(dir, onError, ws.LogicalToPath);
+            var set = reader.ReadModule(dir, onError, ws.LogicalToPath);
             if (set == null) return;
             ws.Modules.Add(set);
             string name = set.Manifest?.Name ?? Path.GetFileName(dir);
