@@ -1,4 +1,4 @@
-namespace Dsl.Tools.Lsp
+namespace Dsl.Tooling
 {
     /// <summary>Документация встроенного класса Engine (для комплишенов и hover).</summary>
     public sealed class EngineMethod
