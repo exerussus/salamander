@@ -141,6 +141,24 @@ namespace Dsl.Hosting
             return this;
         }
 
+        // ===================================================================
+        // Сборка
+        // ===================================================================
+
+        /// <summary>
+        /// Гранулярность карантина, когда игра собирает с
+        /// <c>quarantineBrokenModules: true</c>:
+        /// <code>
+        /// host.Quarantine(QuarantineScope.File); // опечатка стоит файла, а не пака
+        /// </code>
+        /// По умолчанию <see cref="QuarantineScope.Module"/> — как было.
+        /// </summary>
+        public HostBuilder Quarantine(QuarantineScope scope)
+        {
+            Registry.Quarantine = scope;
+            return this;
+        }
+
         /// <summary>
         /// Объявить вид игровой сущности (spell/item/hero/...): скрипты описывают
         /// механики блоками «вид id { event ... }», хост поднимает события адресно

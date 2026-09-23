@@ -102,6 +102,8 @@ namespace Dsl.Ide
                 log(IdeLogKind.Error, $"Перезагрузка не удалась: ошибок {errors} — работает предыдущая версия.");
             foreach (var ex in r.Excluded)
                 log(IdeLogKind.Error, $"Модуль «{ex.Name}» исключён: {ex.Reason}");
+            foreach (var ex in r.ExcludedFiles)
+                log(IdeLogKind.Error, $"Файл «{ex.File}» исключён: {ex.Reason}");
             foreach (var d in r.Diagnostics)
                 if (d.Severity == Severity.Error)
                     log(IdeLogKind.Error, d.ToString());

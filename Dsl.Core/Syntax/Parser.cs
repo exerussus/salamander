@@ -214,7 +214,10 @@ namespace Dsl.Syntax
             Advance(); // хотя бы один токен — прогресс обязателен
             while (!Is(TokenKind.Eof) && !Is(TokenKind.RBrace)
                    && !Is(TokenKind.KwConst) && !Is(TokenKind.KwFunc)
-                   && !Is(TokenKind.KwAction) && !Is(TokenKind.KwEvent))
+                   && !Is(TokenKind.KwAction) && !Is(TokenKind.KwEvent)
+                   // слово слоя — тоже начало члена: иначе «after event X» после
+                   // мусора потеряло бы модификатор и стало бы ядром
+                   && !(Is(TokenKind.Ident) && TryMergeMode(Cur.Text, out _) && IsFuncKeyword(Peek().Kind)))
             {
                 if (Match(TokenKind.Semicolon)) return;
                 Advance();
@@ -238,8 +241,61 @@ namespace Dsl.Syntax
                     Advance();
                     return ParseField(readOnly: true);
 
+                // before/after/replace — тоже контекстные: модификатором слово считается
+                // только перед event/func/action, поле или локаль с таким именем живут
+                case TokenKind.Ident when TryMergeMode(Cur.Text, out var mode) && IsFuncKeyword(Peek().Kind):
+                {
+                    Advance();
+                    var kind = Cur.Kind == TokenKind.KwEvent ? FuncKind.Event
+                             : Cur.Kind == TokenKind.KwAction ? FuncKind.Action
+                             : FuncKind.Func;
+                    var fn = ParseFunc(kind);
+                    fn.Mode = mode;
+                    return fn;
+                }
+
+                // «after int x;» / «replace const ...» — слово явно задумано модификатором,
+                // но стоит перед полем. Разбор «тип after, имя int» дал бы невнятное
+                // «ожидалось ';'», поэтому говорим прямо и разбираем член дальше
+                case TokenKind.Ident when TryMergeMode(Cur.Text, out _) && LooksLikeFieldAfterModifier():
+                {
+                    _diag.Error("E0241",
+                        $"'{Cur.Text}' ставится только перед event, func или action. У полей слоёв нет: " +
+                        "поздний блок просто перезаписывает значение.", Cur.Pos);
+                    Advance();
+                    return ParseMember();
+                }
+
                 default: return ParseField();
             }
+        }
+
+        private static bool TryMergeMode(string word, out MergeMode mode)
+        {
+            switch (word)
+            {
+                case "before": mode = MergeMode.Before; return true;
+                case "after": mode = MergeMode.After; return true;
+                case "replace": mode = MergeMode.Replace; return true;
+                default: mode = MergeMode.Core; return false;
+            }
+        }
+
+        private static bool IsFuncKeyword(TokenKind k) =>
+            k == TokenKind.KwEvent || k == TokenKind.KwFunc || k == TokenKind.KwAction;
+
+        /// <summary>
+        /// За словом-модификатором идёт поле: «const ...», «readonly T x» или
+        /// «T x» / «T&lt;..&gt; x» / «T[] x». Обычное поле ТИПА before выглядит как
+        /// «before x ...» — за именем уже не идентификатор, его не трогаем.
+        /// </summary>
+        private bool LooksLikeFieldAfterModifier()
+        {
+            var next = Peek().Kind;
+            if (next == TokenKind.KwConst) return true;
+            if (next != TokenKind.Ident) return false;
+            var after = Peek(2).Kind;
+            return after == TokenKind.Ident || after == TokenKind.Lt || after == TokenKind.LBracket;
         }
 
         private FieldMember ParseConst()
@@ -442,8 +498,52 @@ namespace Dsl.Syntax
                     Expect(TokenKind.Semicolon, "E0070", "';'");
                     return new PassStmt { Pos = p };
                 }
+                case TokenKind.PlusPlus:
+                case TokenKind.MinusMinus:
+                {
+                    // префиксная форма «++x;» — стейтмент ровно того же смысла, что «x++;»
+                    var opTok = Advance();
+                    var target = ParsePostfix(ParsePrimary());
+                    return FinishIncDec(target, opTok, opTok.Pos);
+                }
                 default: return ParseExprOrAssign();
             }
+        }
+
+        /// <summary>
+        /// x++ / x-- как стейтмент: десахар в «x += 1» / «x -= 1» — дальше работает
+        /// обычное составное присваивание (readonly, свойства хоста, индексы, int→float).
+        /// Числовую цель проверяет чекер (E0247).
+        /// </summary>
+        private Stmt FinishIncDec(Expr target, Token opTok, SourcePos pos)
+        {
+            if (!(target is IdentExpr || target is MemberExpr || target is IndexExpr || target is QualifiedExpr))
+                _diag.Error("E0248",
+                    $"'{opTok.Text}' применяется к переменной, полю или элементу, а не к выражению.", opTok.Pos);
+            RejectIncDecAfterValue(); // «x++++»
+            Expect(TokenKind.Semicolon, "E0045", "';'");
+            return new AssignStmt
+            {
+                Target = target,
+                Op = opTok.Kind == TokenKind.PlusPlus ? TokenKind.PlusAssign : TokenKind.MinusAssign,
+                Value = new LiteralExpr { LKind = LiteralKind.Int, IntValue = 1, Pos = opTok.Pos },
+                IsIncDec = true,
+                Pos = pos,
+            };
+        }
+
+        /// <summary>
+        /// «y = x++;» / «return x--;»: ++/-- там, где нужно значение. В языке это
+        /// только стейтмент — у него нет значения, и порядок «до/после» не всплывает.
+        /// Сообщаем прямо и пропускаем токен, чтобы разбор шёл дальше.
+        /// </summary>
+        private void RejectIncDecAfterValue()
+        {
+            if (!Is(TokenKind.PlusPlus) && !Is(TokenKind.MinusMinus)) return;
+            _diag.Error("E0248",
+                $"'{Cur.Text}' — отдельный стейтмент, значения у него нет: сначала «x{Cur.Text};», потом используйте x.",
+                Cur.Pos);
+            Advance();
         }
 
         private Stmt ParseVarDecl()
@@ -452,6 +552,7 @@ namespace Dsl.Syntax
             var name = Expect(TokenKind.Ident, "E0032", "имя переменной").Text;
             Expect(TokenKind.Assign, "E0033", "'=' (var требует инициализатор)");
             var init = ParseExpr();
+            RejectIncDecAfterValue();
             Expect(TokenKind.Semicolon, "E0034", "';'");
             return new VarDeclStmt { Name = name, DeclType = null, Init = init, Pos = pos };
         }
@@ -520,6 +621,7 @@ namespace Dsl.Syntax
             var pos = Advance().Pos;
             Expr val = null;
             if (!Is(TokenKind.Semicolon)) val = ParseExpr();
+            RejectIncDecAfterValue();
             Expect(TokenKind.Semicolon, "E0041", "';'");
             return new ReturnStmt { Value = val, Pos = pos };
         }
@@ -552,6 +654,7 @@ namespace Dsl.Syntax
                     var name = Advance().Text;
                     Expr init = null;
                     if (Match(TokenKind.Assign)) init = ParseExpr();
+                    RejectIncDecAfterValue();
                     Expect(TokenKind.Semicolon, "E0044", "';'");
                     return new VarDeclStmt { DeclType = ty, Name = name, Init = init, Pos = pos };
                 }
@@ -567,12 +670,17 @@ namespace Dsl.Syntax
                 case TokenKind.MinusAssign:
                 case TokenKind.StarAssign:
                 case TokenKind.SlashAssign:
+                case TokenKind.PercentAssign:
                 {
                     var op = Advance().Kind;
                     var value = ParseExpr();
+                    RejectIncDecAfterValue();
                     Expect(TokenKind.Semicolon, "E0045", "';'");
                     return new AssignStmt { Target = target, Op = op, Value = value, Pos = pos };
                 }
+                case TokenKind.PlusPlus:
+                case TokenKind.MinusMinus:
+                    return FinishIncDec(target, Advance(), pos);
                 default:
                     Expect(TokenKind.Semicolon, "E0046", "';'");
                     return new ExprStmt { Expr = target, Pos = pos };
@@ -634,6 +742,15 @@ namespace Dsl.Syntax
 
         private Expr ParseUnaryCore()
         {
+            if (Is(TokenKind.PlusPlus) || Is(TokenKind.MinusMinus))
+            {
+                // «y = ++x;» — в выражении ++/-- нет (стейтмент-форма разбирается в ParseStmtCore)
+                _diag.Error("E0248",
+                    $"'{Cur.Text}' — отдельный стейтмент, значения у него нет: сначала «{Cur.Text}x;», потом используйте x.",
+                    Cur.Pos);
+                Advance();
+                return ParseUnary();
+            }
             if (Is(TokenKind.Not) || Is(TokenKind.Minus))
             {
                 var op = Advance();

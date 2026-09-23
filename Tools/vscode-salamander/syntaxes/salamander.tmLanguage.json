@@ -58,6 +58,15 @@
                     }
                 },
                 {
+                    "comment": "Слои мерж-цепочки: before/after/replace — контекстные слова, модификатор только перед event/func/action.",
+                    "match": "\\b(before|after|replace)\\s+(?=(?:event|func|action)\\b)",
+                    "captures": {
+                        "1": {
+                            "name": "storage.modifier.salamander"
+                        }
+                    }
+                },
+                {
                     "comment": "Обработчик события: имя задаёт игра, вызвать его из скрипта нельзя — отдельный скоуп, чтобы красить не как функцию.",
                     "match": "\\b(event)\\s+([A-Za-z_]\\w*)",
                     "captures": {
@@ -143,6 +152,11 @@
                 {
                     "name": "keyword.other.salamander",
                     "match": "\\b(spawn|new|const|readonly|var|disabled)\\b"
+                },
+                {
+                    "comment": "base(...) — вызов предыдущей версии члена (контекстное слово).",
+                    "name": "keyword.other.base.salamander",
+                    "match": "(?<![.\\w])base(?=\\s*\\()"
                 }
             ]
         },
@@ -200,7 +214,7 @@
         },
         "operators": {
             "name": "keyword.operator.salamander",
-            "match": "->|\\.\\.|==|!=|<=|>=|&&|\\|\\||[+\\-*/%<>=!]"
+            "match": "\\+\\+|--|->|\\.\\.|==|!=|<=|>=|&&|\\|\\||[+\\-*/%]=|[+\\-*/%<>=!]"
         },
         "string": {
             "name": "string.quoted.double.salamander",

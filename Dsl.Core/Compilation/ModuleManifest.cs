@@ -60,6 +60,19 @@ namespace Dsl.Compilation
         public override string ToString() => $"{Name}: {Reason}";
     }
 
+    /// <summary>
+    /// Файл, исключённый карантином по файлу (<see cref="QuarantineScope.File"/>),
+    /// и почему. Модуль-владелец при этом жив.
+    /// </summary>
+    public sealed class ExcludedFile
+    {
+        public string Module;
+        /// <summary>Логическое имя "&lt;модуль&gt;/&lt;путь&gt;" — как в <see cref="Diagnostic.File"/>.</summary>
+        public string File;
+        public string Reason;
+        public override string ToString() => $"{File}: {Reason}";
+    }
+
     public sealed class CompilationResult
     {
         public CompiledProgram Program;          // null при ошибках
@@ -70,6 +83,13 @@ namespace Dsl.Compilation
         /// Program может быть успешной, но собранной БЕЗ этих модулей.
         /// </summary>
         public IReadOnlyList<ExcludedModule> Excluded = System.Array.Empty<ExcludedModule>();
+
+        /// <summary>
+        /// Файлы, которые выкинул карантин по файлу (<see cref="HostRegistry.Quarantine"/>
+        /// == <see cref="QuarantineScope.File"/>). Их модули живы. Ошибки этих файлов —
+        /// в <see cref="Diagnostics"/>, даже когда Program собрана.
+        /// </summary>
+        public IReadOnlyList<ExcludedFile> ExcludedFiles = System.Array.Empty<ExcludedFile>();
 
         public bool Success => Program != null;
     }
@@ -87,6 +107,13 @@ namespace Dsl.Compilation
     /// Мерж-семантика при этом работает в нужную сторону сама: мод-патч является
     /// зависимым от базы, поэтому его исключение снимает только патч, а сущность
     /// откатывается к ранней версии.
+    ///
+    /// Гранулярность карантина задаёт хост (<see cref="HostRegistry.Quarantine"/>).
+    /// При <see cref="QuarantineScope.File"/> ошибка в исходнике стоит ФАЙЛА: он
+    /// исключается, модуль и его зависимые собираются дальше; файл, сломавшийся без
+    /// выкинутого, выпадает следующим проходом — пока сборка не сойдётся. Модуль с
+    /// зависимыми по-прежнему уходит за беды без файла (E0300–E0306) и за ошибки,
+    /// которые ни к одному файлу не привязаны.
     /// </summary>
     public static class ScriptCompiler
     {
@@ -129,9 +156,46 @@ namespace Dsl.Compilation
 
             var alive = new HashSet<string>(byName.Keys, StringComparer.Ordinal);
 
-            // каждая итерация либо возвращает результат, либо исключает ≥1 модуль,
-            // поэтому цикл конечен
-            for (int guard = byName.Count + 1; guard >= 0; guard--)
+            // ----- карантин по файлу: состояние между проходами -----
+            // fileOwner — логическое имя файла → модуль; dropped — выкинутые файлы;
+            // carried — их диагностики: каждый проход собирает DiagnosticBag заново,
+            // и без переноса причина исключения пропала бы вместе с проходом.
+            bool fileScope = quarantineBrokenModules && host != null && host.Quarantine == QuarantineScope.File;
+            var fileOwner = new Dictionary<string, string>(StringComparer.Ordinal);
+            var dropped = new HashSet<string>(StringComparer.Ordinal);
+            var carried = new List<Diagnostic>();
+            var excludedFiles = new List<ExcludedFile>();
+            if (fileScope)
+                foreach (var m in modules ?? new List<ModuleSourceSet>())
+                {
+                    if (m?.Manifest?.Name == null || !byName.TryGetValue(m.Manifest.Name, out var owner) || owner != m) continue;
+                    foreach (var f in m.Files)
+                        if (f.name != null && !fileOwner.ContainsKey(f.name))
+                            fileOwner[f.name] = m.Manifest.Name;
+                }
+
+            CompilationResult Finish(CompiledProgram program, IReadOnlyList<Diagnostic> items)
+            {
+                IReadOnlyList<Diagnostic> all = items;
+                if (carried.Count > 0)
+                {
+                    var merged = new List<Diagnostic>(carried.Count + items.Count);
+                    merged.AddRange(carried);
+                    merged.AddRange(items);
+                    all = merged;
+                }
+                return new CompilationResult
+                {
+                    Program = program,
+                    Diagnostics = all,
+                    Excluded = excluded,
+                    ExcludedFiles = excludedFiles,
+                };
+            }
+
+            // каждая итерация либо возвращает результат, либо исключает ≥1 модуль
+            // или файл, поэтому цикл конечен
+            for (int guard = byName.Count + fileOwner.Count + 1; guard >= 0; guard--)
             {
                 var files = new List<SourceText>();
                 var diag = new DiagnosticBag(files);
@@ -200,9 +264,9 @@ namespace Dsl.Compilation
                 if (bad.Count > 0)
                 {
                     if (!quarantineBrokenModules)
-                        return new CompilationResult { Diagnostics = diag.Items, Excluded = excluded };
+                        return Finish(null, diag.Items);
                     if (!ExcludeAndContinue(byName, alive, bad, excluded))
-                        return new CompilationResult { Diagnostics = diag.Items, Excluded = excluded };
+                        return Finish(null, diag.Items);
                     continue;
                 }
 
@@ -225,6 +289,9 @@ namespace Dsl.Compilation
                             SourcePos.None);
                     foreach (var (name, text) in m.Files)
                     {
+                        // выкинутый карантином файл: модуль жив, а его нет
+                        if (name != null && dropped.Contains(name)) continue;
+
                         var src = new SourceText(files.Count, name, text);
                         files.Add(src);
 
@@ -245,17 +312,19 @@ namespace Dsl.Compilation
                     if (!diag.HasErrors)
                     {
                         var program = new BytecodeCompiler(host, sem, files).Compile(moduleAsts);
-                        return new CompilationResult
-                        {
-                            Program = program,
-                            Diagnostics = diag.Items,
-                            Excluded = excluded,
-                        };
+                        return Finish(program, diag.Items);
                     }
                 }
 
                 if (!quarantineBrokenModules)
-                    return new CompilationResult { Diagnostics = diag.Items, Excluded = excluded };
+                    return Finish(null, diag.Items);
+
+                // карантин по файлу: выкидываем файлы с ошибками, модули живут.
+                // Синтаксическая ошибка останавливает проход до чекера, поэтому
+                // сначала выпадают файлы с ошибками парсера, следующим проходом —
+                // семантические, в том числе у тех, кто ссылался на выкинутое.
+                if (fileScope && DropBrokenFiles(diag.Items, fileOwner, alive, dropped, carried, excludedFiles))
+                    continue;
 
                 // ошибки в исходниках: виновника определяем по имени файла
                 // (логическое имя — "<модуль>/<путь>")
@@ -270,10 +339,46 @@ namespace Dsl.Compilation
                 }
 
                 if (guilty.Count == 0 || !ExcludeAndContinue(byName, alive, guilty, excluded))
-                    return new CompilationResult { Diagnostics = diag.Items, Excluded = excluded };
+                    return Finish(null, diag.Items);
             }
 
-            return new CompilationResult { Diagnostics = System.Array.Empty<Diagnostic>(), Excluded = excluded };
+            return Finish(null, System.Array.Empty<Diagnostic>());
+        }
+
+        /// <summary>
+        /// Карантин по файлу: исключить файлы с ошибками (владелец жив, файл ещё не
+        /// выкинут) и перенести их диагностики в <paramref name="carried"/>.
+        /// false — ни одна ошибка к такому файлу не привязана (только &lt;unknown&gt;,
+        /// &lt;compiler&gt; и т.п.): решать дальше по модулю.
+        /// </summary>
+        private static bool DropBrokenFiles(IReadOnlyList<Diagnostic> items,
+                                            Dictionary<string, string> fileOwner,
+                                            HashSet<string> alive,
+                                            HashSet<string> dropped,
+                                            List<Diagnostic> carried,
+                                            List<ExcludedFile> excludedFiles)
+        {
+            var reasons = new Dictionary<string, string>(StringComparer.Ordinal);
+            var order = new List<string>();
+            foreach (var d in items)
+            {
+                if (d.Severity != Severity.Error || d.File == null) continue;
+                if (dropped.Contains(d.File) || reasons.ContainsKey(d.File)) continue;
+                if (!fileOwner.TryGetValue(d.File, out var owner) || !alive.Contains(owner)) continue;
+                reasons[d.File] = $"ошибка компиляции {d.Code} ({d.File}:{d.Line})";
+                order.Add(d.File);
+            }
+            if (order.Count == 0) return false;
+
+            foreach (var d in items)
+                if (d.File != null && reasons.ContainsKey(d.File))
+                    carried.Add(d);
+            foreach (var f in order)
+            {
+                dropped.Add(f);
+                excludedFiles.Add(new ExcludedFile { Module = fileOwner[f], File = f, Reason = reasons[f] });
+            }
+            return true;
         }
 
         private static string ModuleOfFile(string file)
@@ -323,6 +428,33 @@ namespace Dsl.Compilation
                 excluded.Add(new ExcludedModule { Name = kv.Key, Reason = kv.Value });
             }
             return true;
+        }
+
+        /// <summary>
+        /// Порядок загрузки модулей — тот же, что у компиляции: зависимости раньше
+        /// зависимых, независимые — по имени. Нужен инструментам (порядок версий
+        /// члена в подсказках редактора). Ничего не диагностирует: модули с
+        /// циклами, дублями имён и без имени просто уходят в конец.
+        /// </summary>
+        public static List<ModuleSourceSet> LoadOrder(List<ModuleSourceSet> modules)
+        {
+            var byName = new Dictionary<string, ModuleSourceSet>(StringComparer.Ordinal);
+            var rest = new List<ModuleSourceSet>();
+            foreach (var m in modules ?? new List<ModuleSourceSet>())
+            {
+                if (m?.Manifest == null || string.IsNullOrEmpty(m.Manifest.Name) || byName.ContainsKey(m.Manifest.Name))
+                {
+                    if (m != null) rest.Add(m);
+                    continue;
+                }
+                byName[m.Manifest.Name] = m;
+            }
+            var alive = new HashSet<string>(byName.Keys, StringComparer.Ordinal);
+            var order = TopoSort(byName, alive, new DiagnosticBag(new List<SourceText>()), out _);
+            var placed = new HashSet<ModuleSourceSet>(order);
+            foreach (var m in byName.Values) if (!placed.Contains(m)) order.Add(m);
+            order.AddRange(rest);
+            return order;
         }
 
         private static List<ModuleSourceSet> TopoSort(Dictionary<string, ModuleSourceSet> byName,

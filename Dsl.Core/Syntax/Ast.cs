@@ -102,6 +102,7 @@ namespace Dsl.Syntax
         public bool IsReadOnly;
 
         // аннотации семантики:
+        public string DeclModule;      // модуль блока, где объявлено (контекст проверки инициализатора)
         public TypeRef Type;
         public int StaticSlot = -1;    // индекс в таблице статиков (для не-const)
         public Dsl.Runtime.Variant ConstValue; // для const — свёрнутое значение
@@ -109,6 +110,14 @@ namespace Dsl.Syntax
     }
 
     public enum FuncKind : byte { Func, Action, Event }
+
+    /// <summary>
+    /// Как версия члена встаёт в мерж-цепочку сущности. Core — обычное
+    /// объявление: заменяет только ядро, слои остаются. Before/After — слой
+    /// до/после ядра. Replace — стирает всё, что объявлено раньше (ядро и слои),
+    /// и становится новым ядром.
+    /// </summary>
+    public enum MergeMode : byte { Core, Before, After, Replace }
 
     public sealed class Param : Node
     {
@@ -131,6 +140,18 @@ namespace Dsl.Syntax
         public int LocalCount;        // сколько слотов локалей (params + var-ы)
         public Decl Owner;            // класс/триггер-владелец
         public int EventId = -1;      // для Kind==Event: id хостового события
+
+        /// <summary>before/after/replace перед event/func/action; Core — слова нет.</summary>
+        public MergeMode Mode;
+
+        // мерж-цепочки (заполняет чекер):
+        public int BlockOrdinal = -1;      // сквозной номер блока-декларации — порядок мержа
+        public MemberChain Chain;          // цепочка члена, в которую входит эта версия
+        public ChainSynth Synth;           // не null — синтетическая функция (вход цепочки / селектор base)
+        public FuncMember BaseSelector;    // кэш селектора base() этой версии (если нужен гейт)
+
+        /// <summary>Версия-ядро: обычное объявление или replace (не слой).</summary>
+        public bool IsCore => Mode == MergeMode.Core || Mode == MergeMode.Replace;
     }
 
     // ===== стейтменты =======================================================
@@ -157,6 +178,8 @@ namespace Dsl.Syntax
         public Expr Target;    // Ident / Member / Index
         public TokenKind Op;   // Assign / PlusAssign / ...
         public Expr Value;
+        /// <summary>x++ / x-- / ++x / --x: парсер десахарит в «+= 1» / «-= 1», чекер требует числовую цель.</summary>
+        public bool IsIncDec;
     }
 
     public sealed class ExprStmt : Stmt
@@ -266,6 +289,8 @@ namespace Dsl.Syntax
         // голова составного имени API ("Api" при зарегистрированном "Api.Weapon"):
         // само по себе не значение и не API — только узел пути
         ApiNamespaceRef,
+        // встроенный Math (если ни скрипт, ни игра не объявили своё имя Math)
+        MathRef,
     }
 
     public sealed class IdentExpr : Expr
@@ -326,6 +351,9 @@ namespace Dsl.Syntax
 
     /// <summary>'pass;' — осознанно пустой стейтмент (в т.ч. чтобы «убить» обработчик при переопределении).</summary>
     public sealed class PassStmt : Stmt { }
+
+    // base(...) отдельного узла не имеет: это обычный CallExpr с IdentExpr "base",
+    // чекер привязывает его к предыдущей версии члена (CallKind.ScriptFunc)
 
     /// <summary>'self' — сущность, к которой привязана текущая подписка listener.</summary>
     public sealed class SelfExpr : Expr { }

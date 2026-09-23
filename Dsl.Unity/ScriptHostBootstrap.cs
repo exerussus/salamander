@@ -399,6 +399,8 @@ namespace Dsl.Unity
 
             foreach (var ex in result.Excluded)
                 Debug.LogError($"[script] Модуль '{ex.Name}' ИСКЛЮЧЁН из сборки — {ex.Reason}");
+            foreach (var ex in result.ExcludedFiles)
+                Debug.LogError($"[script] Файл '{ex.File}' ИСКЛЮЧЁН из сборки — {ex.Reason}; остальной модуль '{ex.Module}' работает");
 
             if (result.Success)
             {

@@ -371,6 +371,22 @@ namespace Dsl.Tools.Lsp
             var modules = WorkspaceCompiler.WithOverlays(ws,
                 abs => _open.TryGetValue(Path.GetFullPath(abs), out var live) ? live : null);
 
+            // порядок загрузки файлов — для подсказки о версиях члена (слои
+            // before/after и replace зависят от него, а индекс обходит папки по пути)
+            var fileRank = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            var fileLabel = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var m in ScriptCompiler.LoadOrder(modules))
+                foreach (var (logical, _) in m.Files)
+                    if (logical != null && ws.LogicalToPath.TryGetValue(logical, out var absPath))
+                    {
+                        string full = Path.GetFullPath(absPath);
+                        if (fileRank.ContainsKey(full)) continue;
+                        fileRank[full] = fileRank.Count;
+                        fileLabel[full] = logical; // «мод/путь.sal»: у базы и мода файлы часто тёзки
+                    }
+            _ls.FileOrder = key => key != null && fileRank.TryGetValue(key, out var rank) ? rank : int.MaxValue;
+            _ls.FileLabel = key => key != null && fileLabel.TryGetValue(key, out var label) ? label : null;
+
             if (modules.Count > 0)
             {
                 var result = ScriptCompiler.Compile(registry, apiVersion, modules);

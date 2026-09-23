@@ -25,7 +25,40 @@ namespace Dsl.Tooling
         /// <summary>Текст файла по ключу (оверлей несохранённого буфера или диск); null — нет файла.</summary>
         public Func<string, string> TextProvider = _ => null;
 
+        /// <summary>
+        /// Ранг файла в порядке загрузки (модуль → файл) — по нему подсказка
+        /// раскладывает версии члена. null или int.MaxValue — порядок индекса
+        /// (приблизительный: так обходит папки владелец индекса).
+        /// </summary>
+        public Func<string, int> FileOrder;
+
+        /// <summary>
+        /// Как назвать файл в подсказке («мод/путь.sal»): при раскладке «одна
+        /// сущность — один файл» у базы и мода одинаковые имена файлов, и без
+        /// модуля «sword.sal:4 → sword.sal:3» не различить. null — сам ключ
+        /// (путь сокращается до имени файла).
+        /// </summary>
+        public Func<string, string> FileLabel;
+
         private string GetText(string file) => TextProvider?.Invoke(file);
+
+        /// <summary>
+        /// Встроенный Math уступает любому своему имени Math — API, классу или
+        /// енуму игры и скриптовой декларации, — ровно как компилятор.
+        /// </summary>
+        private bool MathShadowed()
+        {
+            if (Api != null)
+            {
+                foreach (var a in Api.Apis ?? Array.Empty<ApiManifest.ApiDef>()) if (a.Name == "Math") return true;
+                foreach (var c in Api.Classes ?? Array.Empty<ApiManifest.ClassDef>()) if (c.Name == "Math") return true;
+                foreach (var e in Api.Enums ?? Array.Empty<ApiManifest.EnumDef>()) if (e.Name == "Math") return true;
+            }
+            foreach (var fi in Index.Files)
+                foreach (var d in fi.Value.Decls)
+                    if (d.Name == "Math") return true;
+            return false;
+        }
 
         // ===================================================================
         // Автодополнение
@@ -61,6 +94,15 @@ namespace Dsl.Tooling
                     foreach (var em in EngineDocs.Methods)
                         Add(em.Name, CompletionKind.Method, em.Signature, em.Summary,
                             insert: ApiFormat.CallSnippet(em.Name, ApiFormat.ParamLabels(em)), snippet: true);
+                    return items;
+                }
+                if (target == "Math" && !MathShadowed())
+                {
+                    foreach (var mm in EngineDocs.MathMethods)
+                        Add(mm.Name, CompletionKind.Method, mm.Signature, mm.Summary,
+                            insert: ApiFormat.CallSnippet(mm.Name, ApiFormat.ParamLabels(mm)), snippet: true);
+                    foreach (var (cn, ct, cd) in EngineDocs.MathConsts)
+                        Add(cn, CompletionKind.Constant, $"Math.{cn}: {ct}", cd);
                     return items;
                 }
                 // API хоста: сначала методы самого API (если такое имя есть),
@@ -208,8 +250,10 @@ namespace Dsl.Tooling
 
             // 3) голый идентификатор: ключевые слова + типы + глобалы + API
             foreach (var kw in EngineDocs.Keywords) Add(kw, CompletionKind.Keyword, null);
+            foreach (var (chainWord, chainDoc) in EngineDocs.ChainWords) Add(chainWord, CompletionKind.Keyword, null, chainDoc);
             foreach (var tp in EngineDocs.Types) Add(tp, CompletionKind.Class, null);
             Add("Engine", CompletionKind.Module, "встроенный класс движка");
+            if (!MathShadowed()) Add("Math", CompletionKind.Module, "встроенная математика: Min, Max, Clamp, Lerp, Round, …");
             if (Api?.Apis != null) foreach (var api in Api.Apis) Add(api.Name, CompletionKind.Module, api.Summary ?? "API игры");
             if (Api?.Structs != null) foreach (var st in Api.Structs) Add(st.Name, CompletionKind.Struct, st.Summary ?? "структура");
             if (Api?.Enums != null) foreach (var en in Api.Enums) Add(en.Name, CompletionKind.Enum, en.Summary ?? "enum хоста");
@@ -286,6 +330,11 @@ namespace Dsl.Tooling
                 foreach (var em in EngineDocs.Methods)
                     if (em.Name == method) { label = em.Signature; doc = em.Summary; plabels = ApiFormat.ParamLabels(em); break; }
             }
+            else if (owner == "Math" && !MathShadowed())
+            {
+                foreach (var mm in EngineDocs.MathMethods)
+                    if (mm.Name == method) { label = mm.Signature; doc = mm.Summary; plabels = ApiFormat.ParamLabels(mm); break; }
+            }
             else if (owner.Length > 0 && Api?.Apis != null)
             {
                 foreach (var api in Api.Apis)
@@ -329,6 +378,12 @@ namespace Dsl.Tooling
             var (word, wordCol) = TextUtil.WordAt(lineText, col1);
             if (word == null) return null;
 
+            // мерж-цепочка: слово before/after/replace/base — справка и версии члена;
+            // имя члена в объявлении — версии дописываются к обычной подсказке
+            var chainWordMd = ChainWordHover(file, line1, lineText, word, wordCol);
+            if (chainWordMd != null) return chainWordMd;
+            string versionsMd = MemberVersionsHover(file, line1, lineText, word, wordCol);
+
             string md = null;
             bool afterEngine = TextUtil.HasPrefix(lineText, wordCol, "Engine.");
 
@@ -336,6 +391,21 @@ namespace Dsl.Tooling
             {
                 foreach (var em in EngineDocs.Methods)
                     if (em.Name == word) { md = $"```\n{em.Signature}\n```\n{em.Summary}"; break; }
+            }
+            // встроенный Math: методы, PI и само имя
+            if (md == null && !MathShadowed())
+            {
+                if (TextUtil.HasPrefix(lineText, wordCol, "Math."))
+                {
+                    foreach (var mm in EngineDocs.MathMethods)
+                        if (mm.Name == word) { md = $"```\n{mm.Signature}\n```\n{mm.Summary}"; break; }
+                    if (md == null)
+                        foreach (var (cn, ct, cd) in EngineDocs.MathConsts)
+                            if (cn == word) { md = $"```\nMath.{cn}: {ct}\n```\n{cd}"; break; }
+                }
+                else if (word == "Math" && !TextUtil.HasPrefix(lineText, wordCol, "."))
+                    md = "```\nMath\n```\nВстроенная математика: Min, Max, Clamp, Abs, Sign, Floor, Ceil, Round, Sqrt, Pow, Lerp и Math.PI. " +
+                         "Тип результата — общий тип аргументов (int → float → double).";
             }
             if (md == null && Api?.Apis != null)
                 foreach (var api in Api.Apis)
@@ -482,7 +552,160 @@ namespace Dsl.Tooling
                         if (d.Name == word) { md = $"**{d.Kind} {d.Name}**"; break; }
             }
 
+            if (versionsMd != null) md = md == null ? versionsMd : md + "\n\n---\n\n" + versionsMd;
             return md;
+        }
+
+        // ===================================================================
+        // Мерж-цепочки в подсказке: версии одного члена по всем блокам
+        // ===================================================================
+
+        private static readonly Regex MemberDeclRx =
+            new Regex(@"(?:\b(before|after|replace)\s+)?\b(event|func|action)\s+(\w+)", RegexOptions.Compiled);
+
+        /// <summary>Наведение на before/after/replace перед event/func/action или на base(.</summary>
+        private string ChainWordHover(string file, int line1, string lineText, string word, int wordCol)
+        {
+            string doc = null;
+            foreach (var (w, d) in EngineDocs.ChainWords) if (w == word) { doc = d; break; }
+            if (doc == null) return null;
+
+            if (word == "base")
+            {
+                // base( — вызов, а не объявление и не член значения
+                int after = wordCol - 1 + word.Length;
+                while (after < lineText.Length && lineText[after] == ' ') after++;
+                if (after >= lineText.Length || lineText[after] != '(') return null;
+                string head = lineText.Substring(0, wordCol - 1).TrimEnd();
+                if (head.EndsWith(".") || Regex.IsMatch(head, @"\bfunc$")) return null;
+
+                // член, в теле которого стоит base(): ближайшее объявление выше.
+                // Своя функция с именем base важнее слова — тогда это обычный вызов
+                var encl = Index.EnclosingDecl(file, line1);
+                DeclSymbol member = null;
+                if (encl != null)
+                    foreach (var ch in encl.Children)
+                    {
+                        if (ch.Kind == "func" && ch.Name == "base") return null;
+                        if ((ch.Kind == "event" || ch.Kind == "func" || ch.Kind == "action")
+                            && ch.Line <= line1 && (member == null || ch.Line > member.Line))
+                            member = ch;
+                    }
+                string listing = member != null ? VersionsListing(file, line1, member.Name, member.Kind) : null;
+                return "```\nbase(...)\n```\n" + doc + (listing != null ? "\n\n---\n\n" + listing : "");
+            }
+
+            foreach (Match m in MemberDeclRx.Matches(lineText))
+            {
+                if (!m.Groups[1].Success || m.Groups[1].Index + 1 != wordCol) continue;
+                string listing = VersionsListing(file, line1, m.Groups[3].Value, m.Groups[2].Value);
+                return $"```\n{word} {m.Groups[2].Value}\n```\n" + doc + (listing != null ? "\n\n---\n\n" + listing : "");
+            }
+            return null;
+        }
+
+        /// <summary>Наведение на имя члена в его объявлении: версии, если их больше одной или есть слой.</summary>
+        private string MemberVersionsHover(string file, int line1, string lineText, string word, int wordCol)
+        {
+            foreach (Match m in MemberDeclRx.Matches(lineText))
+            {
+                if (m.Groups[3].Value != word || m.Groups[3].Index + 1 != wordCol) continue;
+                return VersionsListing(file, line1, word, m.Groups[2].Value, onlyIfLayered: true);
+            }
+            return null;
+        }
+
+        private sealed class MemberVersion
+        {
+            public string File;
+            public int Rank;      // порядок загрузки файла (FileOrder) или int.MaxValue
+            public int IndexPos;  // порядок в индексе — запасной ключ
+            public int DeclLine;  // строка блока: версии одного блока идут вместе
+            public int Line;
+            public string Mode;   // null / before / after / replace
+        }
+
+        /// <summary>
+        /// Все версии члена сущности, в которой стоит курсор (тот же вид и имя
+        /// блока), в порядке мержа и то, что выполнится в итоге. Гейт модулей
+        /// здесь не учитывается: подсказка статическая.
+        /// </summary>
+        private string VersionsListing(string file, int line1, string member, string memberKind, bool onlyIfLayered = false)
+        {
+            var encl = Index.EnclosingDecl(file, line1);
+            if (encl == null || member == null) return null;
+
+            var versions = new List<MemberVersion>();
+            int pos = 0;
+            foreach (var kv in Index.Files)
+            {
+                int rank = FileOrder != null ? FileOrder(kv.Key) : int.MaxValue;
+                foreach (var d in kv.Value.Decls)
+                {
+                    if (d.Kind != encl.Kind || d.Name != encl.Name) continue;
+                    foreach (var ch in d.Children)
+                        if (ch.Name == member && ch.Kind == memberKind)
+                            versions.Add(new MemberVersion
+                            {
+                                File = kv.Key, Rank = rank, IndexPos = pos,
+                                DeclLine = d.Line, Line = ch.Line, Mode = ch.Mode,
+                            });
+                }
+                pos++;
+            }
+            if (versions.Count == 0) return null;
+            if (onlyIfLayered && versions.Count == 1 && versions[0].Mode == null) return null;
+
+            // порядок мержа: файл → блок; внутри блока ядро (или replace) раньше слоёв
+            versions.Sort((a, b) =>
+            {
+                if (a.Rank != b.Rank) return a.Rank.CompareTo(b.Rank);
+                if (a.IndexPos != b.IndexPos) return a.IndexPos.CompareTo(b.IndexPos);
+                if (a.DeclLine != b.DeclLine) return a.DeclLine.CompareTo(b.DeclLine);
+                bool ca = a.Mode == null || a.Mode == "replace", cb = b.Mode == null || b.Mode == "replace";
+                if (ca != cb) return ca ? -1 : 1;
+                return a.Line.CompareTo(b.Line);
+            });
+
+            var befores = new List<MemberVersion>();
+            var afters = new List<MemberVersion>();
+            MemberVersion core = null;
+            foreach (var v in versions)
+            {
+                switch (v.Mode)
+                {
+                    case "replace": befores.Clear(); afters.Clear(); core = v; break;
+                    case "before": befores.Add(v); break;
+                    case "after": afters.Add(v); break;
+                    default: core = v; break;
+                }
+            }
+
+            string Where(MemberVersion v) => $"{FileLabel?.Invoke(v.File) ?? ShortName(v.File)}:{v.Line}";
+            var sb = new System.Text.StringBuilder();
+            sb.Append($"**Версии `{memberKind} {member}`** в `{encl.Kind} {encl.Name}`");
+            sb.Append(FileOrder != null ? " — в порядке загрузки:\n\n" : " — в порядке файлов индекса (точный порядок загрузки задаёт сборка):\n\n");
+            for (int i = 0; i < versions.Count; i++)
+            {
+                var v = versions[i];
+                bool here = v.File == file && v.Line == line1;
+                sb.Append($"{i + 1}. `{(v.Mode != null ? v.Mode + " " : "")}{memberKind}` — {Where(v)}{(here ? " ← здесь" : "")}\n");
+            }
+
+            var run = new List<string>();
+            foreach (var v in befores) run.Add($"before {Where(v)}");
+            run.Add(core != null ? $"**ядро** {Where(core)}" : "*(ядра нет)*");
+            foreach (var v in afters) run.Add($"after {Where(v)}");
+            sb.Append("\nВыполнится: ").Append(string.Join(" → ", run)).Append('.');
+            sb.Append("\n\nВыключенный модуль прозрачен: его версии пропускаются, его replace ничего не стирает.");
+            return sb.ToString();
+        }
+
+        private static string ShortName(string key)
+        {
+            if (string.IsNullOrEmpty(key)) return "?";
+            int cut = Math.Max(key.LastIndexOf('/'), key.LastIndexOf('\\'));
+            return cut >= 0 ? key.Substring(cut + 1) : key;
         }
 
         // ===================================================================

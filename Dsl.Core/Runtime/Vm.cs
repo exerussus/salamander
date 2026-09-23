@@ -418,6 +418,14 @@ namespace Dsl.Runtime
                         }
                         case OpCode.Pop: sp--; break;
 
+                        // гейт модуля: версии модов в мерж-цепочке проверяют, включён ли их модуль
+                        case OpCode.JumpIfModuleOff:
+                            if (!_engine.IsModuleEnabledAt(ins.B)) ip = ins.A;
+                            break;
+                        case OpCode.JumpIfModuleOn:
+                            if (_engine.IsModuleEnabledAt(ins.B)) ip = ins.A;
+                            break;
+
                         // ----- вызовы -----
                         case OpCode.CallScript:
                         {

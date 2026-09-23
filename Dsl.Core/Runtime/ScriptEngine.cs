@@ -34,6 +34,10 @@ namespace Dsl.Runtime
         private bool[] _moduleEnabled = Array.Empty<bool>();
         private readonly Dictionary<string, int> _moduleIndex = new Dictionary<string, int>();
 
+        /// <summary>Включён ли модуль по индексу программы (гейт версий модов в мерж-цепочках).</summary>
+        internal bool IsModuleEnabledAt(int index) =>
+            (uint)index < (uint)_moduleEnabled.Length && _moduleEnabled[index];
+
         // планировщик
         private readonly Queue<long> _runQueue = new Queue<long>();
         private readonly List<long> _nextTick = new List<long>();
@@ -1078,6 +1082,10 @@ namespace Dsl.Runtime
         {
             var stack = self.Stack;
             Variant Arg(int i) => stack[argBase + i];
+
+            // встроенный Math — чистые функции без состояния движка; его операции
+            // стоят в конце EngineOp, начиная с MathMin
+            if (op >= EngineOp.MathMin) return MathOps.Exec(op, stack, argBase);
 
             switch (op)
             {

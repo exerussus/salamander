@@ -22,6 +22,9 @@ namespace Dsl.Codegen
         private readonly List<string> _stringLits = new List<string>();
         private readonly Dictionary<string, int> _stringLitIds = new Dictionary<string, int>();
 
+        // имя модуля -> индекс (гейт модулей в функциях-цепочках)
+        private Dictionary<string, int> _moduleIndex = new Dictionary<string, int>();
+
         // состояние текущей функции
         private List<Instr> _code;
         private int _line;
@@ -46,17 +49,22 @@ namespace Dsl.Codegen
         {
             var chunks = new List<Chunk>(_sem.Funcs.Count + _sem.Listeners.Count);
 
+            // карта модулей: нужна и таблицам, и гейту в функциях-цепочках
+            var moduleIndex = new Dictionary<string, int>();
+            for (int i = 0; i < _sem.ModuleNames.Count; i++)
+                moduleIndex[_sem.ModuleNames[i]] = i;
+            _moduleIndex = moduleIndex;
+
             // [0] — синтетический <init>: инициализаторы статических полей по порядку
             chunks.Add(CompileInit());
 
             for (int i = 1; i < _sem.Funcs.Count; i++)
-                chunks.Add(CompileFunc(_sem.Funcs[i]));
+            {
+                var fn = _sem.Funcs[i];
+                chunks.Add(fn.Synth != null ? CompileChainSynth(fn) : CompileFunc(fn));
+            }
 
-            // таблица триггеров + карта модулей
-            var moduleIndex = new Dictionary<string, int>();
-            for (int i = 0; i < _sem.ModuleNames.Count; i++)
-                moduleIndex[_sem.ModuleNames[i]] = i;
-
+            // таблица триггеров
             var triggers = new TriggerRuntimeInfo[_sem.Triggers.Count];
             var triggerIdByName = new Dictionary<string, int>();
             for (int i = 0; i < _sem.Triggers.Count; i++)
@@ -77,18 +85,12 @@ namespace Dsl.Codegen
             // таблица обработчиков: [eventId] -> в детерминированном порядке
             var perEvent = new List<EventHandlerRef>[_host.EventCount];
             for (int e = 0; e < perEvent.Length; e++) perEvent[e] = new List<EventHandlerRef>();
-            // блоки одного триггера слиты: одноимённые обработчики — переопределение,
-            // в диспатч попадает только ПОЗДНЯЯ версия каждого события
-            var trigEventWinner = new Dictionary<int, int>(); // eventId -> funcIndex
+            // блоки одного триггера слиты: все версии события — одна мерж-цепочка,
+            // в диспатч попадает её вход (поздняя версия или функция-цепочка)
             foreach (var t in _sem.Triggers)
-            {
-                trigEventWinner.Clear();
-                foreach (var ev in t.Events)
-                    if (ev.EventId >= 0)
-                        trigEventWinner[ev.EventId] = ev.FuncIndex; // поздний блок побеждает
-                foreach (var kv in trigEventWinner)
-                    perEvent[kv.Key].Add(new EventHandlerRef { TriggerId = t.RuntimeId, FuncIndex = kv.Value });
-            }
+                foreach (var ch in t.Chains.List)
+                    if (ch.IsHostEvent && ch.Entry != null && ch.Entry.EventId >= 0)
+                        perEvent[ch.Entry.EventId].Add(new EventHandlerRef { TriggerId = t.RuntimeId, FuncIndex = ch.Entry.FuncIndex });
 
             var handlers = new EventHandlerRef[perEvent.Length][];
             for (int e = 0; e < perEvent.Length; e++) handlers[e] = perEvent[e].ToArray();
@@ -129,18 +131,20 @@ namespace Dsl.Codegen
 
                 var map = new int[_host.EventCount];
                 for (int e = 0; e < map.Length; e++) map[e] = -1;
-                foreach (var ev in ls.Events)
+                foreach (var ch in ls.Chains.List)
                 {
-                    if (ev.EventId < 0) continue;
-                    map[ev.EventId] = ev.FuncIndex;
-                    eventHasListeners[ev.EventId] = true;
+                    if (!ch.IsHostEvent || ch.Entry == null || ch.Entry.EventId < 0) continue;
+                    map[ch.Entry.EventId] = ch.Entry.FuncIndex;
+                    eventHasListeners[ch.Entry.EventId] = true;
                 }
                 listenerHandlerFunc[i] = map;
             }
 
             // архетипы: интернируем id в плотные индексы. Блоки одного (вид, id)
-            // уже слиты чекером в одну сущность; события в списке идут в порядке
-            // объявления — поздний обработчик перезаписывает слот (later-wins)
+            // уже слиты чекером в одну сущность; у каждого события — вход его
+            // мерж-цепочки. Гейт слота — модуль ВЛАДЕЛЬЦА (первого блока), как у
+            // триггеров и listener: версии других модулей проверяют свой модуль
+            // сами, внутри цепочки
             var archKinds = new ArchetypeKindRuntime[_host.ArchetypeKindCount];
             var archIdLists = new List<string>[archKinds.Length];
             var archHandlerLists = new List<ArchHandler[]>[archKinds.Length];
@@ -173,13 +177,11 @@ namespace Dsl.Codegen
                     archHandlerLists[asym.KindId].Add(fresh);
                 }
                 var slot = archHandlerLists[asym.KindId][ai];
-                foreach (var ev in asym.Events)
+                int ami = moduleIndex.TryGetValue(asym.Module, out var amiv) ? amiv : 0;
+                foreach (var ch in asym.Chains.List)
                 {
-                    // мерж-сущность собирает обработчики из разных модулей —
-                    // гейт Enable/DisableModule должен бить по владельцу события
-                    var evModule = ev.Owner is ArchetypeDecl ad ? ad.Module : asym.Module;
-                    int ami = moduleIndex.TryGetValue(evModule, out var amiv) ? amiv : 0;
-                    slot[ev.EventId] = new ArchHandler { Func = ev.FuncIndex, ModuleIndex = ami };
+                    if (!ch.IsHostEvent || ch.Entry == null || ch.Entry.EventId < 0) continue;
+                    slot[ch.Entry.EventId] = new ArchHandler { Func = ch.Entry.FuncIndex, ModuleIndex = ami };
                 }
             }
             for (int k = 0; k < archKinds.Length; k++)
@@ -345,14 +347,143 @@ namespace Dsl.Codegen
             Emit(OpCode.Return, 0); // страховка на «стекание» с конца
 
             string ownerName = fn.Owner?.Name ?? "?";
+            // слои и replace подписаны в стектрейсе: у одного члена бывает
+            // несколько версий, и «в T.OnHit» не сказало бы, в какой из них ошибка
+            string suffix = fn.Mode == MergeMode.Before ? " [before]"
+                          : fn.Mode == MergeMode.After ? " [after]"
+                          : fn.Mode == MergeMode.Replace ? " [replace]"
+                          : "";
             return new Chunk
             {
-                Name = ownerName + "." + fn.Name,
+                Name = ownerName + "." + fn.Name + suffix,
                 File = _fileName,
                 ParamCount = fn.Params.Count,
                 LocalCount = fn.LocalCount,
                 Code = _code.ToArray(),
             };
+        }
+
+        // ===================================================================
+        // функции-цепочки (слои before/after, replace, гейт модулей)
+        // ===================================================================
+
+        /// <summary>
+        /// Синтетическая функция мерж-цепочки. Вход (Entry): слои before в порядке
+        /// мержа → первое включённое ядро сверху вниз → слои after; результат ядра
+        /// держится в скрытой локали, пока работают слои after. Селектор base():
+        /// первое включённое ядро ниже вызывающей версии. Всё — обычные CallScript
+        /// в том же файбере: wait в слое задерживает ядро, сейв видит обычные
+        /// кадры, отпечаток программы учитывает этот код как любой другой.
+        /// </summary>
+        private Chunk CompileChainSynth(FuncMember fn)
+        {
+            _code = new List<Instr>();
+            _fileName = FileNameOf(fn.Pos);
+            _line = fn.Pos.Line;
+            _loops.Clear();
+
+            var synth = fn.Synth;
+            var ch = synth.Chain;
+            var links = ch.Links;
+            int argc = fn.Params.Count;
+            bool hasResult = fn.ReturnType != null && fn.ReturnType.Kind != TypeKind.Void;
+
+            if (synth.Kind == ChainSynthKind.BaseSelector)
+            {
+                EmitCoreSelect(fn, ch, synth.Below, synth.CallerModule, argc);
+                Emit(OpCode.Return, hasResult ? 1 : 0);
+            }
+            else
+            {
+                int start = System.Math.Max(ch.Boundary, 0);
+                for (int i = start; i < links.Count; i++)
+                    if (links[i].Mode == MergeMode.Before) EmitLayer(ch, i, argc);
+
+                EmitCoreSelect(fn, ch, links.Count, null, argc);
+                if (hasResult) Emit(OpCode.StoreLocal, argc); // скрытая локаль сразу за параметрами
+                else Emit(OpCode.Pop);
+
+                for (int i = start; i < links.Count; i++)
+                    if (links[i].Mode == MergeMode.After) EmitLayer(ch, i, argc);
+
+                if (hasResult) { Emit(OpCode.LoadLocal, argc); Emit(OpCode.Return, 1); }
+                else Emit(OpCode.Return, 0);
+            }
+
+            string ownerName = fn.Owner?.Name ?? "?";
+            return new Chunk
+            {
+                Name = ownerName + "." + fn.Name + (synth.Kind == ChainSynthKind.BaseSelector ? " [base]" : " [цепочка]"),
+                File = _fileName,
+                ParamCount = argc,
+                LocalCount = fn.LocalCount,
+                Code = _code.ToArray(),
+            };
+        }
+
+        /// <summary>
+        /// Слой before/after: пропускается, если выключен его модуль или
+        /// включён replace, объявленный ПОЗЖЕ него (такой replace его стёр).
+        /// Replace модуля-владельца сюда не доходит: он граница, и всё раньше
+        /// него в цепочку не попадает вовсе.
+        /// </summary>
+        private void EmitLayer(MemberChain ch, int index, int argc)
+        {
+            var layer = ch.Links[index];
+            var skips = new List<int>();
+            if (ch.IsGated(layer))
+                skips.Add(EmitModuleJump(OpCode.JumpIfModuleOff, layer));
+            for (int r = index + 1; r < ch.Links.Count; r++)
+                if (ch.Links[r].Mode == MergeMode.Replace)
+                    skips.Add(EmitModuleJump(OpCode.JumpIfModuleOn, ch.Links[r]));
+
+            // строку не переключаем: чанк цепочки подписан файлом образца, а версии
+            // лежат в других файлах — стектрейс показал бы чужую строку
+            for (int a = 0; a < argc; a++) Emit(OpCode.LoadLocal, a);
+            Emit(OpCode.CallScript, layer.FuncIndex, argc);
+            Emit(OpCode.Pop); // результат слоя не нужен
+            foreach (var s in skips) Patch(s, HereLabel);
+        }
+
+        /// <summary>
+        /// Первое включённое ядро среди версий с индексом &lt; below, сверху вниз;
+        /// оставляет на стеке ровно одно значение (результат или ноль своего типа,
+        /// если включённых версий не нашлось). Версия без гейта обрывает поиск:
+        /// ниже неё управление не дойдёт никогда.
+        /// </summary>
+        private void EmitCoreSelect(FuncMember fn, MemberChain ch, int below, string callerModule, int argc)
+        {
+            var done = new List<int>();
+            bool terminated = false;
+            for (int j = below - 1; j >= 0 && !terminated; j--)
+            {
+                var c = ch.Links[j];
+                if (!c.IsCore) continue;
+                bool gated = ch.IsGated(c, callerModule);
+                int skip = gated ? EmitModuleJump(OpCode.JumpIfModuleOff, c) : -1;
+                for (int a = 0; a < argc; a++) Emit(OpCode.LoadLocal, a);
+                Emit(OpCode.CallScript, c.FuncIndex, argc);
+                if (gated)
+                {
+                    done.Add(EmitJump(OpCode.Jump));
+                    Patch(skip, HereLabel);
+                }
+                else terminated = true;
+            }
+            if (!terminated) EmitTypedZero(fn.ReturnType); // все версии выключены (или ядра нет)
+            foreach (var d in done) Patch(d, HereLabel);
+        }
+
+        /// <summary>Переход по состоянию модуля версии: A — цель (патчится), B — индекс модуля.</summary>
+        private int EmitModuleJump(OpCode op, FuncMember link)
+        {
+            string m = link.Owner?.Module;
+            // инвариант: модуль версии есть в программе. Тихий 0 проверял бы чужой модуль
+            if (m == null || !_moduleIndex.TryGetValue(m, out int mi))
+                throw new System.InvalidOperationException(
+                    $"Модуль '{m}' версии '{link.Name}' отсутствует в программе — гейт цепочки не собрать.");
+            _code.Add(new Instr(op, -1, mi, _line));
+            return _code.Count - 1;
         }
 
         private string FileNameOf(SourcePos pos)
