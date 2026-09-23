@@ -280,6 +280,11 @@ namespace Dsl.Text
                 case '-' when n == '=': Advance(); Advance(); return Tk(TokenKind.MinusAssign, "-=", start);
                 case '*' when n == '=': Advance(); Advance(); return Tk(TokenKind.StarAssign, "*=", start);
                 case '/' when n == '=': Advance(); Advance(); return Tk(TokenKind.SlashAssign, "/=", start);
+                case '%' when n == '=': Advance(); Advance(); return Tk(TokenKind.PercentAssign, "%=", start);
+                // ++/-- — как в C#: слитно это один токен, поэтому «a--b» больше не
+                // «a - (-b)»; с пробелом («a - -b») всё по-прежнему
+                case '+' when n == '+': Advance(); Advance(); return Tk(TokenKind.PlusPlus, "++", start);
+                case '-' when n == '-': Advance(); Advance(); return Tk(TokenKind.MinusMinus, "--", start);
             }
 
             // односимвольные

@@ -12,6 +12,8 @@ namespace Dsl.Tooling
         public string Kind;    // class/trigger/listener/enum/<вид архетипа>/field/const/func/event/action/member
         public int Line;       // 1-based
         public int Col;        // 1-based
+        /// <summary>Для func/event/action: "before"/"after"/"replace" или null (обычная версия).</summary>
+        public string Mode;
         public readonly List<DeclSymbol> Children = new List<DeclSymbol>();
     }
 
@@ -125,6 +127,9 @@ namespace Dsl.Tooling
                                              : fn.Kind == FuncKind.Action ? "action" : "func",
                                         Line = fn.Pos.Line,
                                         Col = fn.Pos.Column,
+                                        Mode = fn.Mode == MergeMode.Before ? "before"
+                                             : fn.Mode == MergeMode.After ? "after"
+                                             : fn.Mode == MergeMode.Replace ? "replace" : null,
                                     });
                                     break;
                             }

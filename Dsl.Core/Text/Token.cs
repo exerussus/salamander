@@ -33,6 +33,9 @@ namespace Dsl.Text
         Plus, Minus, Star, Slash, Percent,
         Lt, Le, Gt, Ge, EqEq, NotEq,
         AndAnd, OrOr, Not,
+
+        // в конце: номера токенов нигде не хранятся, но так порядок старых не меняется
+        PercentAssign, PlusPlus, MinusMinus,
     }
 
     /// <summary>

@@ -65,6 +65,14 @@ namespace Dsl.Tooling
             if (api?.Enums != null) foreach (var e in api.Enums) _typeNames.Add(e.Name);
             if (api?.Structs != null) foreach (var st in api.Structs) _typeNames.Add(st.Name);
 
+            // встроенный Math красится как Engine — если его имя не занято скриптом
+            // или типом игры (тогда компилятор тоже возьмёт их, а не встроенный)
+            if (!_declNames.Contains("Math") && !_typeNames.Contains("Math"))
+            {
+                _apiNames.Add("Math");
+                _constPaths.Add("Math.PI");
+            }
+
             Fingerprint = Mix(1, _declNames) ^ Mix(2, _kindNames) ^ Mix(3, _apiNames) ^ Mix(4, _constPaths) ^ Mix(5, _typeNames);
         }
 
@@ -137,6 +145,13 @@ namespace Dsl.Tooling
             // readonly — контекстное слово: лексер отдаёт его идентификатором, но
             // перед «Тип имя» это модификатор, и красить его надо как ключевое слово
             if (txt == "readonly" && next == TokenKind.Ident) return TtKeyword;
+            // before/after/replace — тоже контекстные: модификатор только перед event/func/action
+            if ((txt == "before" || txt == "after" || txt == "replace")
+                && (next == TokenKind.KwEvent || next == TokenKind.KwFunc || next == TokenKind.KwAction))
+                return TtKeyword;
+            // base(...) — вызов предыдущей версии члена; «func base()» — объявление, не слово
+            if (txt == "base" && next == TokenKind.LParen && prev != TokenKind.Dot && prev != TokenKind.KwFunc)
+                return TtKeyword;
             return ClassifyIdentifier(txt, prev == TokenKind.KwEvent, prev == TokenKind.Dot, next == TokenKind.LParen, dottedPath);
         }
 

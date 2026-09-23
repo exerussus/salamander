@@ -68,6 +68,12 @@ namespace Dsl.Codegen
         // преобразования
         IntToFloat,   // top: int -> float
         ToDouble,     // top: int/float -> double (расширение числа вверх)
+
+        // гейт модуля в функциях мерж-цепочек (слои, replace, версии модов).
+        // В КОНЦЕ перечисления: номера старых кодов входят в отпечаток программы,
+        // и вставка в середину сменила бы отпечаток у программ без слоёв
+        JumpIfModuleOff, // A = индекс инструкции, B = индекс модуля: переход, если модуль выключен
+        JumpIfModuleOn,  // A = индекс инструкции, B = индекс модуля: переход, если модуль включён
     }
 
     /// <summary>Встроенные методы коллекций (list.Add и т.п.), различаются чекером.</summary>
@@ -86,6 +92,15 @@ namespace Dsl.Codegen
         IsValid,
         TriggerExists, ClassExists,
         Attach, Detach, DetachAll, IsSubscribed,
+
+        // встроенный Math (чистые функции, разбирает Runtime/MathOps). В КОНЦЕ
+        // перечисления: номер операции лежит в байткоде и входит в отпечаток
+        // программы — вставка в середину сменила бы его у скриптов без Math.
+        // MathMin обязан оставаться первым из них: ExecEngineOp отдаёт в MathOps
+        // всё, что начиная с него
+        MathMin, MathMax, MathClamp, MathAbs, MathSign,
+        MathFloor, MathCeil, MathRound,
+        MathSqrt, MathPow, MathLerp,
     }
 
     /// <summary>

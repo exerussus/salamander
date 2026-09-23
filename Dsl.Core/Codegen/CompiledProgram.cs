@@ -37,8 +37,8 @@ namespace Dsl.Codegen
     /// <summary>Обработчик события архетипа: функция + модуль-владелец (для гейта Enable/DisableModule).</summary>
     public struct ArchHandler
     {
-        public int Func;        // funcIndex или -1
-        public int ModuleIndex; // чей модуль поставил обработчик (мерж later-wins!)
+        public int Func;        // funcIndex входа мерж-цепочки или -1
+        public int ModuleIndex; // модуль ПЕРВОГО блока сущности; версии других модулей гейтятся внутри цепочки
     }
 
     /// <summary>

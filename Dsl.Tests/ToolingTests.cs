@@ -205,5 +205,95 @@ namespace Dsl.Tests
                 try { Directory.Delete(root, true); } catch { }
             }
         }
+
+        // before/after/replace/base — контекстные: слово только в своей позиции
+        [Test]
+        public void Classifier_ChainWords_AreContextual()
+        {
+            const string text = "class C { int after = 1; after func F() { } func G() { base(); } }\n";
+            var spans = _ls.CreateClassifier().ClassifyDocument("c.sal", text);
+            int TypeAt(int index)
+            {
+                foreach (var s in spans) if (s.Line == 1 && s.Col == index + 1) return s.Type;
+                return -1;
+            }
+            int field = text.IndexOf("after", StringComparison.Ordinal);
+            int modifier = text.IndexOf("after", field + 1, StringComparison.Ordinal);
+            int baseCall = text.IndexOf("base", StringComparison.Ordinal);
+            Assert.AreNotEqual(SemanticClassifier.TtKeyword, TypeAt(field), "поле с именем after — не слово");
+            Assert.AreEqual(SemanticClassifier.TtKeyword, TypeAt(modifier), "after перед func — модификатор");
+            Assert.AreEqual(SemanticClassifier.TtKeyword, TypeAt(baseCall), "base( — вызов предыдущей версии");
+        }
+
+        // безусловный список слов красит подсветка встроенной IDE — контекстным там не место
+        [Test]
+        public void ChainWords_AreNotUnconditionalKeywords_ButAreCompleted()
+        {
+            foreach (var w in new[] { "before", "after", "replace", "base" })
+                CollectionAssert.DoesNotContain(EngineDocs.Keywords, w);
+            var labels = Labels(_ls.Complete("a.sal", 11, 1));
+            CollectionAssert.Contains(labels, "after");
+            CollectionAssert.Contains(labels, "base");
+        }
+
+        [Test]
+        public void BuiltinMath_CompletionHoverSignature_AndYieldsToOwnMath()
+        {
+            _texts["m.sal"] = "trigger M\n{\n    event OnPerks(Unit u, PerkBasket b)\n    {\n        int r = Math.Round(Math.PI);\n        Math.\n    }\n}\n";
+            _ls.Index.Update("m.sal", _texts["m.sal"]);
+
+            var labels = Labels(_ls.Complete("m.sal", 6, 14));
+            CollectionAssert.Contains(labels, "Clamp");
+            CollectionAssert.Contains(labels, "PI");
+
+            string line = "        int r = Math.Round(Math.PI);";
+            StringAssert.Contains("Math.Round(число x) -> int", _ls.Hover("m.sal", 5, line.IndexOf("Round", StringComparison.Ordinal) + 2));
+            StringAssert.Contains("Math.PI: float", _ls.Hover("m.sal", 5, line.IndexOf("PI", StringComparison.Ordinal) + 1));
+            Assert.AreEqual("Math.Round(число x) -> int",
+                _ls.SignatureHelp("m.sal", 5, line.IndexOf("Math.PI", StringComparison.Ordinal) + 1)?.Label);
+
+            // свой class Math в воркспейсе — встроенный больше не подсказывается, как и в компиляторе
+            _texts["own.sal"] = "class Math\n{\n    func Twice(int x) -> int { return x * 2; }\n}\n";
+            _ls.Index.Update("own.sal", _texts["own.sal"]);
+            labels = Labels(_ls.Complete("m.sal", 6, 14));
+            CollectionAssert.DoesNotContain(labels, "Clamp");
+            CollectionAssert.Contains(labels, "Twice");
+        }
+
+        private void IndexChainFiles()
+        {
+            _texts["base.sal"] = "spell fireball\n{\n    event OnCast(Unit c)\n    {\n    }\n}\n";
+            _texts["mod.sal"] = "spell fireball\n{\n    after event OnCast(Unit c) { }\n    before event OnCast(Unit c) { }\n}\n";
+            _texts["mod2.sal"] = "spell fireball\n{\n    replace event OnCast(Unit c) { }\n}\n";
+            foreach (var k in new[] { "base.sal", "mod.sal", "mod2.sal" }) _ls.Index.Update(k, _texts[k]);
+            var order = new Dictionary<string, int> { ["base.sal"] = 0, ["mod.sal"] = 1, ["mod2.sal"] = 2 };
+            _ls.FileOrder = k => order.TryGetValue(k, out var r) ? r : int.MaxValue;
+        }
+
+        [Test]
+        public void Hover_MemberName_ListsVersionsInLoadOrder()
+        {
+            IndexChainFiles();
+            _texts.Remove("mod2.sal");
+            _ls.Index.Remove("mod2.sal");
+
+            string line = "    after event OnCast(Unit c) { }";
+            string md = _ls.Hover("mod.sal", 3, line.IndexOf("OnCast", StringComparison.Ordinal) + 2);
+            Assert.IsNotNull(md);
+            StringAssert.Contains("OnCast(", md, "обычная подсказка события осталась");
+            StringAssert.Contains("Выполнится: before mod.sal:4 → **ядро** base.sal:3 → after mod.sal:3", md);
+            StringAssert.Contains("← здесь", md);
+        }
+
+        [Test]
+        public void Hover_ReplaceWord_ExplainsAndShowsWhatSurvives()
+        {
+            IndexChainFiles();
+            string line = "    replace event OnCast(Unit c) { }";
+            string md = _ls.Hover("mod2.sal", 3, line.IndexOf("replace", StringComparison.Ordinal) + 2);
+            Assert.IsNotNull(md);
+            StringAssert.Contains("Стирает", md);
+            StringAssert.Contains("Выполнится: **ядро** mod2.sal:3.", md, "replace стёр ядро базы и слои mod.sal");
+        }
     }
 }
