@@ -78,6 +78,15 @@ namespace Dsl.Unity
         [Tooltip("Пауза после последнего изменения файла перед перекомпиляцией, сек")]
         [SerializeField] private float _reloadDebounce = 0.3f;
 
+        [Tooltip("Если правка затронула только ТЕЛА функций (метод класса, обработчик архетипа/триггера), " +
+                 "подменять их в живом движке без перезагрузки: поля, подписки и файберы сохраняются. " +
+                 "Иначе (новое поле, член, сигнатура) — обычная перезагрузка со сбросом состояния.")]
+        [SerializeField] private bool _hotSwapBodies = true;
+
+        [Tooltip("Файбер, стоящий внутри изменённой функции (например, в wait): дорабатывает старую " +
+                 "версию или убивается. Новые вызовы в любом случае идут в новую версию.")]
+        [SerializeField] private HotSwapFiberPolicy _hotSwapFiberPolicy = HotSwapFiberPolicy.FinishOnOldCode;
+
         [Header("Инструменты")]
         [Tooltip("В редакторе выгружать salamander-api.json рядом с модулями: его читают CLI-чекер и расширение VS Code")]
         [SerializeField] private bool _exportApiManifest = true;
@@ -120,6 +129,20 @@ namespace Dsl.Unity
         /// Снимается, когда IDE снова применяет набор бутстрапа.
         /// </summary>
         public bool HotReloadSuspended { get; set; }
+
+        /// <summary>Подменять тела функций без перезагрузки, когда это возможно (см. ScriptEngine.TryHotSwap).</summary>
+        public bool HotSwapBodies { get => _hotSwapBodies; set => _hotSwapBodies = value; }
+
+        /// <summary>Судьба файберов внутри изменённых функций при горячей замене.</summary>
+        public HotSwapFiberPolicy HotSwapFiberPolicy { get => _hotSwapFiberPolicy; set => _hotSwapFiberPolicy = value; }
+
+        /// <summary>
+        /// Итог попытки горячей замены при последней успешной компиляции: Applied —
+        /// подменены только тела; иначе Reason объясняет, почему была полная
+        /// перезагрузка. null — замена не пробовалась (первая загрузка, выключена,
+        /// явная полная перезагрузка).
+        /// </summary>
+        public HotSwapReport LastHotSwap { get; private set; }
 
         // отпечаток исходников последней компиляции — хот-релоад по вотчеру его
         // сравнивает и не перезапускает программу, если текст не менялся (ложные
@@ -382,6 +405,16 @@ namespace Dsl.Unity
         /// вшитые в сцену модули). Возвращает результат (null — движок не поднят).
         /// </summary>
         public CompilationResult CompileAndLoadFrom(List<ModuleSourceSet> modules)
+            => CompileAndLoadFrom(modules, allowHotSwap: true);
+
+        /// <summary>Полная перезагрузка со сбросом состояния — даже если правка допускала горячую замену.</summary>
+        public CompilationResult ReloadFull() => CompileAndLoadFrom(LoadModules(), allowHotSwap: false);
+
+        /// <summary>
+        /// То же, что CompileAndLoadFrom(modules), но allowHotSwap = false запрещает
+        /// горячую замену тел: программа перезагружается целиком.
+        /// </summary>
+        public CompilationResult CompileAndLoadFrom(List<ModuleSourceSet> modules, bool allowHotSwap)
         {
             if (_engine == null || _registry == null) return null;
             modules ??= new List<ModuleSourceSet>();
@@ -404,9 +437,25 @@ namespace Dsl.Unity
 
             if (result.Success)
             {
-                _engine.LoadProgram(result.Program);
-                Debug.Log($"[script] Программа загружена: модулей {result.Program.Modules.Length}, " +
-                          $"триггеров {result.Program.Triggers.Length}, функций {result.Program.Functions.Length}.");
+                LastHotSwap = null;
+                bool swapped = false;
+                if (allowHotSwap && _hotSwapBodies && _engine.HasProgram)
+                {
+                    // правка только тел функций — подменяем их в живом движке;
+                    // иначе причина в лог и обычная перезагрузка
+                    var swap = _engine.TryHotSwap(result.Program, _hotSwapFiberPolicy);
+                    LastHotSwap = swap;
+                    swapped = swap.Applied;
+                    Debug.Log(swap.Applied
+                        ? "[script] " + (swap.NoChanges ? "Код не изменился — программа не тронута." : swap.ToString())
+                        : $"[script] Полная перезагрузка: {swap.Reason}.");
+                }
+                if (!swapped)
+                {
+                    _engine.LoadProgram(result.Program);
+                    Debug.Log($"[script] Программа загружена: модулей {result.Program.Modules.Length}, " +
+                              $"триггеров {result.Program.Triggers.Length}, функций {result.Program.Functions.Length}.");
+                }
             }
             else
             {

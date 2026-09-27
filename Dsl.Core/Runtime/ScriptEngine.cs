@@ -234,6 +234,7 @@ namespace Dsl.Runtime
             for (int i = 0; i < prog.StringLiterals.Length; i++)
                 _litIds[i] = Strings.Intern(prog.StringLiterals[i]);
             Strings.FreezeStatics();
+            _hotLitFrom = int.MaxValue; // литералов после заморозки нет (их дописывает только TryHotSwap)
 
             _statics = new Variant[Math.Max(1, prog.StaticCount)];
             _prog = prog;
@@ -1479,6 +1480,7 @@ namespace Dsl.Runtime
             Collections.BeginSweep();
 
             for (int i = 0; i < _statics.Length; i++) MarkValue(_statics[i]);
+            MarkHotLiterals();
 
             for (int i = 0; i < _raiseArgCount && i < _raiseArgs.Length; i++) MarkValue(_raiseArgs[i]);
 

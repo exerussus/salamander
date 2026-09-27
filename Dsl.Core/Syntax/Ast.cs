@@ -44,8 +44,18 @@ namespace Dsl.Syntax
 
     public abstract class Decl : Node
     {
+        /// <summary>
+        /// Полное имя: внутри «namespace A.B { class Foo }» это "A.B.Foo". Именно
+        /// оно — личность сущности: ключ мержа блоков, имя в рантайме и в сейве.
+        /// </summary>
         public string Name;
         public string Module; // заполняется загрузчиком: какому модулю принадлежит
+
+        /// <summary>Пространство имён блока ("A.B") или null — глобальное.</summary>
+        public string Namespace;
+
+        /// <summary>Имя как оно написано в объявлении (без пространства имён).</summary>
+        public string ShortName => Namespace == null ? Name : Name.Substring(Namespace.Length + 1);
     }
 
     public sealed class EnumDecl : Decl
@@ -291,6 +301,9 @@ namespace Dsl.Syntax
         ApiNamespaceRef,
         // встроенный Math (если ни скрипт, ни игра не объявили своё имя Math)
         MathRef,
+        // скриптовое пространство имён ("Mods" в "Mods.Buffs.Apply()"): узел пути,
+        // само по себе не значение; полный путь лежит в Sym (string)
+        NamespaceRef,
     }
 
     public sealed class IdentExpr : Expr
@@ -299,6 +312,12 @@ namespace Dsl.Syntax
         public IdentKind IdKind;
         public int Slot = -1;   // Local slot / static slot
         public object Sym;      // ссылка на символ (ClassSymbol/TriggerSymbol/...) при необходимости
+
+        /// <summary>
+        /// Узел собран чекером из цепочки «Ns.Sub.Name» и уже разрешён (Name —
+        /// полное имя): повторная проверка не ищет его заново по областям.
+        /// </summary>
+        public bool Folded;
     }
 
     /// <summary>module::Name — квалификация именем модуля.</summary>
@@ -309,6 +328,7 @@ namespace Dsl.Syntax
         public IdentKind IdKind;
         public int Slot = -1;
         public object Sym;
+        public bool Folded;     // см. IdentExpr.Folded: "mod::Ns.Name", собранное чекером
     }
 
     public enum MemberKind : byte

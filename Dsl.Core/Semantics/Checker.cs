@@ -59,6 +59,10 @@ namespace Dsl.Semantics
         private int _declSeq; // сквозной номер блока-декларации: порядок мержа версий членов
         private readonly Dictionary<string, ModuleAst> _moduleByName = new Dictionary<string, ModuleAst>();
 
+        // пространства имён: полный путь (и каждый его префикс: "A", "A.B") ->
+        // модули, где он объявлен. Видимость — как у символов, через зависимости
+        private readonly Dictionary<string, HashSet<string>> _nsModules = new Dictionary<string, HashSet<string>>();
+
         private static readonly HashSet<string> Reserved = new HashSet<string>
         {
             "Engine", "List", "Map", "Fiber",
@@ -67,6 +71,7 @@ namespace Dsl.Semantics
 
         // ===== текущий контекст второго прохода =====
         private ModuleAst _module;
+        private string _ns;                 // namespace текущей декларации (null — глобальная)
         private Dictionary<string, FieldSymbol> _ownerFields;
         private Dictionary<string, FuncMember> _ownerFuncs;
         private FuncMember _fn;
@@ -100,6 +105,10 @@ namespace Dsl.Semantics
                         d.Module = m.Name;
             }
 
+            // до прохода 1: пространства имён. Нужны раньше объявлений — типы
+            // полей и параметров разрешаются уже в проходе 1 ("Mods.Kind k")
+            CollectNamespaces(modules);
+
             // проход 1: объявления
             foreach (var m in modules)
             {
@@ -108,6 +117,8 @@ namespace Dsl.Semantics
                     foreach (var d in f.Decls)
                         CollectDecl(d);
             }
+            _ns = null;
+            CheckNamespaceSymbolClashes(modules);
 
             // между проходами: мерж-цепочки членов (слои, replace, гейт модулей).
             // Вызовы в телах вяжутся на вход цепочки, поэтому он нужен до проверки
@@ -120,8 +131,12 @@ namespace Dsl.Semantics
                 _module = m;
                 foreach (var f in m.Files)
                     foreach (var d in f.Decls)
+                    {
+                        _ns = d.Namespace;
                         CheckDeclBodies(d);
+                    }
             }
+            _ns = null;
 
             // Мерж-сущность обязана иметь хотя бы одно событие — но не у всякого
             // вида. Проверяем ИТОГ мержа, а не блок: отдельный блок бывает чистым
@@ -174,12 +189,17 @@ namespace Dsl.Semantics
         private void CollectDecl(Decl d)
         {
             _declSeq++;
-            if (Reserved.Contains(d.Name))
+            _ns = d.Namespace;
+            if (Reserved.Contains(d.ShortName))
             {
-                _diag.Error("E0100", $"Имя '{d.Name}' зарезервировано.", d.Pos);
+                _diag.Error("E0100", $"Имя '{d.ShortName}' зарезервировано.", d.Pos);
                 return;
             }
-            if (_host.TryGetClass(d.Name, out _) || _host.TryGetApi(d.Name, out _) || _host.TryGetEnum(d.Name, out _))
+            // внутри namespace полное имя с хостовым не совпадает никогда, а короткое
+            // внутри своего пространства перекрывает хостовое (как в C#) — поэтому
+            // конфликт с хостом возможен только у глобальных объявлений
+            if (d.Namespace == null
+                && (_host.TryGetClass(d.Name, out _) || _host.TryGetApi(d.Name, out _) || _host.TryGetEnum(d.Name, out _)))
             {
                 _diag.Error("E0101", $"Имя '{d.Name}' уже занято хостом (класс/API/енум).", d.Pos);
                 return;
@@ -193,6 +213,262 @@ namespace Dsl.Semantics
                 case ListenerDecl l: CollectListener(l); break;
                 case ArchetypeDecl a: CollectArchetype(a); break;
             }
+        }
+
+        // ===================================================================
+        // Пространства имён
+        // ===================================================================
+
+        /// <summary>
+        /// Регистрирует каждое пространство имён и все его префиксы ("A.B.C" →
+        /// "A", "A.B", "A.B.C") за модулями, где они объявлены. Корень пути не
+        /// может совпадать с именами хоста и встроенными: "Api.Weapon.Cut()" или
+        /// "Engine.Log()" иначе стали бы неоднозначными.
+        /// </summary>
+        private void CollectNamespaces(List<ModuleAst> modules)
+        {
+            var badRoots = new HashSet<string>();
+            foreach (var m in modules)
+                foreach (var f in m.Files)
+                    foreach (var d in f.Decls)
+                    {
+                        if (d.Namespace == null) continue;
+                        // "?" — namespace без имени: E0310 уже выдал парсер, каскад не нужен
+                        if (d.Namespace == "?" || d.Namespace.StartsWith("?.", System.StringComparison.Ordinal)) continue;
+                        string bad = ForbiddenNamespaceSegment(d.Namespace);
+                        if (bad != null)
+                        {
+                            if (badRoots.Add(d.Namespace))
+                                _diag.Error("E0312",
+                                    $"Пространство имён '{d.Namespace}': имя '{bad}' занято " +
+                                    "(встроенное или объявлено игрой).", d.Pos);
+                            continue;
+                        }
+
+                        string path = d.Namespace;
+                        while (true)
+                        {
+                            if (!_nsModules.TryGetValue(path, out var mods))
+                                _nsModules[path] = mods = new HashSet<string>();
+                            mods.Add(m.Name);
+                            int cut = path.LastIndexOf('.');
+                            if (cut < 0) break;
+                            path = path.Substring(0, cut);
+                        }
+                    }
+        }
+
+        /// <summary>
+        /// Первый недопустимый сегмент пути или null. Встроенные имена запрещены
+        /// в любом сегменте (иначе внутри "Mods" вложенный "Mods.Engine" перекрыл
+        /// бы Engine.Log), имена игры — только в корне: вложенный "Mods.Unit"
+        /// никому не мешает, полное имя у него другое.
+        /// </summary>
+        private string ForbiddenNamespaceSegment(string path)
+        {
+            var segs = path.Split('.');
+            for (int i = 0; i < segs.Length; i++)
+            {
+                string seg = segs[i];
+                if (Reserved.Contains(seg) || seg == "Engine" || seg == "Math") return seg;
+                if (i == 0 && (_host.TryGetApi(seg, out _) || _host.IsApiNamespace(seg)
+                               || _host.TryGetClass(seg, out _) || _host.TryGetEnum(seg, out _)
+                               || _host.TryGetStruct(seg, out _)))
+                    return seg;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Символ и пространство имён с одним полным именем ("class Mods" рядом с
+        /// "namespace Mods") сделали бы "Mods.X" двусмысленным — запрещаем.
+        /// </summary>
+        private void CheckNamespaceSymbolClashes(List<ModuleAst> modules)
+        {
+            if (_nsModules.Count == 0) return;
+            var reported = new HashSet<string>();
+            foreach (var m in modules)
+                foreach (var f in m.Files)
+                    foreach (var d in f.Decls)
+                    {
+                        if (d is ArchetypeDecl) continue;
+                        if (_nsModules.ContainsKey(d.Name) && reported.Add(d.Name))
+                            _diag.Error("E0313",
+                                $"'{d.Name}' уже объявлено как пространство имён — у объявления и namespace " +
+                                "не может быть одного полного имени.", d.Pos);
+                    }
+        }
+
+        private static string ParentNamespace(string ns)
+        {
+            int cut = ns.LastIndexOf('.');
+            return cut < 0 ? null : ns.Substring(0, cut);
+        }
+
+        /// <summary>Пространство имён объявлено хотя бы в одном видимом модуле.</summary>
+        private bool IsNamespaceVisible(string path) =>
+            _nsModules.TryGetValue(path, out var mods) && mods.Overlaps(_module.Visible);
+
+        private bool IsNamespaceInModule(string module, string path) =>
+            _nsModules.TryGetValue(path, out var mods) && mods.Contains(module);
+
+        /// <summary>
+        /// Разрешение простого имени по областям, как в C#: сперва текущее
+        /// пространство имён, затем объемлющие — на каждом уровне символ и
+        /// вложенное пространство имён равноправны (их коллизию запрещает E0313).
+        /// Глобальный уровень (includeGlobal) — в самом конце: вызывающий ставит
+        /// между областями namespace и глобальными символами проверку хоста.
+        /// </summary>
+        private ResolveResult ResolveScoped(string name, bool includeGlobal, out Symbol sym, out string nsPath)
+        {
+            sym = null;
+            nsPath = null;
+            for (var ns = _ns; ns != null; ns = ParentNamespace(ns))
+            {
+                string full = ns + "." + name;
+                var r = _globals.ResolveSimple(full, _module.Visible, out sym);
+                if (r != ResolveResult.NotFound) return r;
+                if (IsNamespaceVisible(full)) { nsPath = full; return ResolveResult.Found; }
+            }
+            if (!includeGlobal) return ResolveResult.NotFound;
+            var g = _globals.ResolveSimple(name, _module.Visible, out sym);
+            if (g != ResolveResult.NotFound) return g;
+            if (IsNamespaceVisible(name)) { nsPath = name; return ResolveResult.Found; }
+            return ResolveResult.NotFound;
+        }
+
+        /// <summary>
+        /// Свернуть «Ns.Sub.Name» в один разрешённый узел. Цепочка сворачивается,
+        /// только если её голова — пространство имён (локаль, поле, хост и символ
+        /// с тем же именем важнее — ровно в порядке CheckIdent). Результат:
+        ///  - IdentExpr/QualifiedExpr с полным именем и Folded = true — символ
+        ///    (class/trigger/listener/enum) или более глубокое пространство имён;
+        ///  - null — это не путь по пространствам имён (или он уже кончился на
+        ///    символе: "Ns.Kind.Fire" — тогда цель me.Target заменена на
+        ///    свёрнутый "Ns.Kind", а сам доступ к члену разберёт CheckMember).
+        /// Ошибка внутри пути («в namespace нет X») даёт свёрнутый узел без
+        /// символа с типом Error — дальше каскада нет.
+        /// </summary>
+        private Expr TryFoldNamespaceMember(MemberExpr me)
+        {
+            string nsPath;
+            string module = null;
+            switch (me.Target)
+            {
+                case IdentExpr id:
+                    if (!TryIdentAsNamespace(id, out nsPath)) return null;
+                    break;
+                case QualifiedExpr q:
+                    if (!TryQualifiedAsNamespace(q, out nsPath)) return null;
+                    module = q.Module;
+                    break;
+                case MemberExpr inner:
+                {
+                    var folded = TryFoldNamespaceMember(inner);
+                    if (folded == null) return null;
+                    me.Target = folded;
+                    if (folded is IdentExpr fi && fi.IdKind == IdentKind.NamespaceRef) nsPath = (string)fi.Sym;
+                    else if (folded is QualifiedExpr fq && fq.IdKind == IdentKind.NamespaceRef)
+                    {
+                        nsPath = (string)fq.Sym;
+                        module = fq.Module;
+                    }
+                    else return null; // путь кончился на символе — дальше обычный доступ к члену
+                    break;
+                }
+                default:
+                    return null;
+            }
+
+            string full = nsPath + "." + me.Name;
+            if (module == null)
+            {
+                var id = new IdentExpr { Name = full, Pos = me.Pos, Folded = true };
+                if (IsNamespaceVisible(full))
+                {
+                    id.IdKind = IdentKind.NamespaceRef;
+                    id.Sym = full;
+                    id.Type = TypeRef.Error;
+                    return id;
+                }
+                switch (_globals.ResolveSimple(full, _module.Visible, out var sym))
+                {
+                    case ResolveResult.Found:
+                        AnnotateGlobalIdent(id, sym);
+                        return id;
+                    case ResolveResult.Ambiguous:
+                        _diag.Error("E0155",
+                            $"Имя '{full}' объявлено в нескольких видимых модулях — уточните: module::{full}.",
+                            me.Pos);
+                        break;
+                    default:
+                        _diag.Error("E0314", $"В пространстве имён '{nsPath}' нет '{me.Name}'.", me.Pos);
+                        break;
+                }
+                id.Type = TypeRef.Error;
+                return id;
+            }
+            else
+            {
+                var q = new QualifiedExpr { Module = module, Name = full, Pos = me.Pos, Folded = true };
+                if (IsNamespaceInModule(module, full))
+                {
+                    q.IdKind = IdentKind.NamespaceRef;
+                    q.Sym = full;
+                    q.Type = TypeRef.Error;
+                    return q;
+                }
+                if (_globals.TryResolveQualified(module, full, out var sym))
+                    AnnotateQualified(q, sym);
+                else
+                    _diag.Error("E0314", $"В пространстве имён '{module}::{nsPath}' нет '{me.Name}'.", me.Pos);
+                q.Type = TypeRef.Error;
+                return q;
+            }
+        }
+
+        /// <summary>
+        /// Идентификатор — пространство имён? Тот же порядок, что в CheckIdent:
+        /// локаль, поле, Engine и хост важнее; дальше области по ResolveScoped.
+        /// Без диагностик — промах просто значит «это не путь».
+        /// </summary>
+        private bool TryIdentAsNamespace(IdentExpr id, out string nsPath)
+        {
+            nsPath = null;
+            if (id.Folded)
+            {
+                if (id.IdKind != IdentKind.NamespaceRef) return false;
+                nsPath = (string)id.Sym;
+                return true;
+            }
+            if (_nsModules.Count == 0) return false;
+            if (FindLocal(id.Name) != null) return false;
+            if (_ownerFields != null && _ownerFields.ContainsKey(id.Name)) return false;
+
+            // области namespace — раньше хоста (свои имена перекрывают игровые)
+            if (ResolveScoped(id.Name, false, out var sym, out nsPath) != ResolveResult.NotFound)
+                return sym == null && nsPath != null;
+            if (id.Name == "Engine" || _host.TryGetApi(id.Name, out _) || _host.IsApiNamespace(id.Name)
+                || _host.TryGetEnum(id.Name, out _) || _host.TryGetClass(id.Name, out _))
+                return false;
+            if (ResolveScoped(id.Name, true, out sym, out nsPath) != ResolveResult.Found) return false;
+            return sym == null && nsPath != null;
+        }
+
+        private bool TryQualifiedAsNamespace(QualifiedExpr q, out string nsPath)
+        {
+            nsPath = null;
+            if (q.Folded)
+            {
+                if (q.IdKind != IdentKind.NamespaceRef) return false;
+                nsPath = (string)q.Sym;
+                return true;
+            }
+            if (!_module.Visible.Contains(q.Module)) return false;          // ошибку даст CheckQualified
+            if (_globals.TryResolveQualified(q.Module, q.Name, out _)) return false;
+            if (!IsNamespaceInModule(q.Module, q.Name)) return false;
+            nsPath = q.Name;
+            return true;
         }
 
         private void CollectEnum(EnumDecl e)
@@ -901,6 +1177,12 @@ namespace Dsl.Semantics
                         sym.ConstStr = lit.StrValue; return;
                 }
             }
+            // "const Mods.Kind K = Mods.Kind.Fire": цель свернуть в "Mods.Kind" до разбора
+            if (f.Init is MemberExpr cme && cme.Target is MemberExpr ct)
+            {
+                var folded = TryFoldNamespaceMember(ct);
+                if (folded != null) cme.Target = folded;
+            }
             if (f.Init is MemberExpr me && me.Target is IdentExpr te && f.Type.Kind == TypeKind.Enum)
             {
                 if (TryResolveEnumType(te.Name, out int enumId, out var members)
@@ -1234,6 +1516,8 @@ namespace Dsl.Semantics
                         case "Fiber": return TypeRef.Fiber;
                         case "Subscription": return TypeRef.Subscription;
                     }
+                    // енум своего namespace перекрывает одноимённый тип игры
+                    if (TryResolveNamespacedEnum(n.Name, out var nsEnum)) return TypeRef.EnumOf(nsEnum.Id);
                     if (_host.TryGetClass(n.Name, out var hc)) return TypeRef.Entity(hc.Id);
                     if (_host.TryGetStruct(n.Name, out var hs)) return TypeRef.StructOf(hs.Id);
                     if (TryResolveEnumType(n.Name, out int eid, out _)) return TypeRef.EnumOf(eid);
@@ -1267,6 +1551,13 @@ namespace Dsl.Semantics
         /// <summary>Ищет енум по имени: сперва хостовые, потом скриптовые (по видимости).</summary>
         private bool TryResolveEnumType(string name, out int enumId, out Dictionary<string, int> members)
         {
+            // свои области namespace и составные имена — раньше игровых (как в CheckIdent)
+            if (TryResolveNamespacedEnum(name, out var nes))
+            {
+                enumId = nes.Id;
+                members = nes.Members;
+                return true;
+            }
             if (_host.TryGetEnum(name, out var he))
             {
                 enumId = he.Id;
@@ -1283,6 +1574,29 @@ namespace Dsl.Semantics
             enumId = -1;
             members = null;
             return false;
+        }
+
+        /// <summary>
+        /// Енум по имени из текущего пространства имён ("Kind" внутри Mods) или
+        /// по составному имени ("Mods.Kind", "Buffs.Kind" внутри Mods): голова
+        /// разрешается по областям, хвост дописывается к найденному пути.
+        /// </summary>
+        private bool TryResolveNamespacedEnum(string name, out EnumSymbol es)
+        {
+            es = null;
+            if (_nsModules.Count == 0) return false;
+            int dot = name.IndexOf('.');
+            if (dot < 0)
+            {
+                if (_ns == null) return false;
+                return ResolveScoped(name, false, out var s, out _) == ResolveResult.Found
+                       && (es = s as EnumSymbol) != null;
+            }
+            string head = name.Substring(0, dot);
+            if (ResolveScoped(head, true, out _, out var nsPath) != ResolveResult.Found || nsPath == null)
+                return false;
+            return _globals.ResolveSimple(nsPath + name.Substring(dot), _module.Visible, out var s2) == ResolveResult.Found
+                   && (es = s2 as EnumSymbol) != null;
         }
 
         // ===================================================================
@@ -1362,9 +1676,12 @@ namespace Dsl.Semantics
         private void CheckFuncBody(FuncMember fn)
         {
             var savedModule = _module;
+            var savedNs = _ns;
             _module = ModuleOf(fn.Owner?.Module, savedModule);
+            // у всех блоков сущности одно полное имя — значит, и один namespace
+            if (fn.Owner != null) _ns = fn.Owner.Namespace;
             try { CheckFuncBodyCore(fn); }
-            finally { _module = savedModule; }
+            finally { _module = savedModule; _ns = savedNs; }
         }
 
         private void CheckFuncBodyCore(FuncMember fn)
@@ -1885,7 +2202,18 @@ namespace Dsl.Semantics
                 case InterpExpr ip: return CheckInterp(ip);
                 case IdentExpr id: return CheckIdent(id);
                 case QualifiedExpr q: return CheckQualified(q);
-                case MemberExpr me: return CheckMember(me);
+                case MemberExpr me:
+                {
+                    // «Ns.Sub.Name» — путь по пространствам имён: узел подменяется
+                    // свёрнутым, и дальше его видят как обычный идентификатор
+                    var folded = TryFoldNamespaceMember(me);
+                    if (folded != null)
+                    {
+                        e = folded;
+                        return CheckExpr(ref e);
+                    }
+                    return CheckMember(me);
+                }
                 case IndexExpr ix: return CheckIndex(ix);
                 case CallExpr call: return CheckCall(call);
                 case SpawnExpr sp: return CheckSpawn(sp);
@@ -1943,6 +2271,13 @@ namespace Dsl.Semantics
 
         private TypeRef CheckIdent(IdentExpr id)
         {
+            // 0) узел, свёрнутый из «Ns.Name» (TryFoldNamespaceMember): уже разрешён
+            if (id.Folded)
+            {
+                if (id.IdKind == IdentKind.NamespaceRef) return NamespaceNotAValue(id.Name, id.Pos, id);
+                return id.Sym is Symbol fsym ? AnnotateGlobalIdent(id, fsym) : (id.Type = TypeRef.Error);
+            }
+
             // 1) локаль
             var loc = FindLocal(id.Name);
             if (loc != null)
@@ -1960,6 +2295,26 @@ namespace Dsl.Semantics
                 id.Slot = fs.Slot;
                 id.Sym = fs;
                 return id.Type = fs.Type;
+            }
+
+            // 2½) своё пространство имён и объемлющие: имена мода перекрывают
+            // игровые и глобальные (как в C#) — поэтому раньше Engine и хоста
+            if (_ns != null)
+            {
+                switch (ResolveScoped(id.Name, false, out var nsSym, out var nsPath))
+                {
+                    case ResolveResult.Found when nsSym != null:
+                        return AnnotateGlobalIdent(id, nsSym);
+                    case ResolveResult.Found:
+                        id.IdKind = IdentKind.NamespaceRef;
+                        id.Sym = nsPath;
+                        return NamespaceNotAValue(nsPath, id.Pos, id);
+                    case ResolveResult.Ambiguous:
+                        _diag.Error("E0155",
+                            $"Имя '{id.Name}' объявлено в нескольких видимых модулях — уточните: module::{id.Name}.",
+                            id.Pos);
+                        return id.Type = TypeRef.Error;
+                }
             }
 
             // 3) встроенный Engine
@@ -2006,6 +2361,14 @@ namespace Dsl.Semantics
                         id.Pos);
                     return id.Type = TypeRef.Error;
                 default:
+                    // 5½) глобальное пространство имён — голова пути «Mods.X»;
+                    // само по себе не значение (путь CheckMember/CheckCall сворачивает)
+                    if (IsNamespaceVisible(id.Name))
+                    {
+                        id.IdKind = IdentKind.NamespaceRef;
+                        id.Sym = id.Name;
+                        return NamespaceNotAValue(id.Name, id.Pos, id);
+                    }
                     // 6) встроенный Math — последним: локаль, поле, API/класс/енум
                     // игры и скриптовый class с этим именем важнее, поэтому игра со
                     // своим Api("Math") и старые скрипты со своим class Math не ломаются
@@ -2049,6 +2412,13 @@ namespace Dsl.Semantics
 
         private TypeRef CheckQualified(QualifiedExpr q)
         {
+            if (q.Folded)
+            {
+                if (q.IdKind == IdentKind.NamespaceRef)
+                    return NamespaceNotAValue(q.Module + "::" + q.Name, q.Pos, q);
+                if (q.Sym is Symbol fsym) AnnotateQualified(q, fsym);
+                return q.Type = TypeRef.Error;
+            }
             if (!_module.Visible.Contains(q.Module))
             {
                 _diag.Error("E0157", $"Модуль '{q.Module}' не входит в зависимости текущего модуля.", q.Pos);
@@ -2056,9 +2426,21 @@ namespace Dsl.Semantics
             }
             if (!_globals.TryResolveQualified(q.Module, q.Name, out var sym))
             {
+                if (IsNamespaceInModule(q.Module, q.Name))
+                {
+                    q.IdKind = IdentKind.NamespaceRef;
+                    q.Sym = q.Name;
+                    return NamespaceNotAValue(q.Module + "::" + q.Name, q.Pos, q);
+                }
                 _diag.Error("E0158", $"В модуле '{q.Module}' нет символа '{q.Name}'.", q.Pos);
                 return q.Type = TypeRef.Error;
             }
+            AnnotateQualified(q, sym);
+            return q.Type = TypeRef.Error; // как и Ident: типы/классы — не значения
+        }
+
+        private static void AnnotateQualified(QualifiedExpr q, Symbol sym)
+        {
             switch (sym)
             {
                 case ClassSymbol cs: q.IdKind = IdentKind.ClassRef; q.Sym = cs; break;
@@ -2066,7 +2448,17 @@ namespace Dsl.Semantics
                 case ListenerSymbol lsq: q.IdKind = IdentKind.ListenerRef; q.Slot = lsq.RuntimeId; q.Sym = lsq; break;
                 case EnumSymbol es: q.IdKind = IdentKind.EnumTypeRef; q.Slot = es.Id; q.Sym = es; break;
             }
-            return q.Type = TypeRef.Error; // как и Ident: типы/классы — не значения
+        }
+
+        /// <summary>
+        /// Пространство имён там, где нужно значение. До сюда доходят только
+        /// «голые» пути: головы цепочек CheckMember и CheckCall сворачивают раньше.
+        /// </summary>
+        private TypeRef NamespaceNotAValue(string path, SourcePos pos, Expr node)
+        {
+            _diag.Error("E0315",
+                $"'{path}' — пространство имён, а не значение. Допишите имя объявления: {path}.Имя.", pos);
+            return node.Type = TypeRef.Error;
         }
 
         private TypeRef CheckMember(MemberExpr me)
@@ -2592,6 +2984,25 @@ namespace Dsl.Semantics
             // 2) вызов через точку: Target.Name(...)
             if (call.Callee is MemberExpr me)
             {
+                // цель — путь по пространствам имён: "Mods.Buffs.Apply(...)" →
+                // цель сворачивается в "Mods.Buffs" (класс) до разбора ниже
+                if (me.Target is MemberExpr mt)
+                {
+                    var folded = TryFoldNamespaceMember(mt);
+                    if (folded != null) me.Target = folded;
+                }
+                // у самого пространства имён методов нет: "Mods.Foo()"
+                if ((me.Target is IdentExpr nid && TryIdentAsNamespace(nid, out string callNs))
+                    || (me.Target is QualifiedExpr nq && TryQualifiedAsNamespace(nq, out callNs)))
+                {
+                    string what = callNs + "." + me.Name;
+                    _diag.Error("E0316",
+                        $"'{what}(...)': у пространства имён нет функций. Функции живут в классах — " +
+                        $"вызывайте {callNs}.Класс.{me.Name}(...).", me.Pos);
+                    CheckArgsLoose(call);
+                    return call.Type = TypeRef.Error;
+                }
+
                 // цель — идентификатор класса/API/Engine или module::Class
                 if (me.Target is IdentExpr tid)
                 {

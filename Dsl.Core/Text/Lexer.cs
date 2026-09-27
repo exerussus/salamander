@@ -24,6 +24,7 @@ namespace Dsl.Text
             { "class", TokenKind.KwClass },
             { "trigger", TokenKind.KwTrigger },
             { "listener", TokenKind.KwListener },
+            { "namespace", TokenKind.KwNamespace },
             { "self", TokenKind.KwSelf },
             { "pass", TokenKind.KwPass },
             { "disabled", TokenKind.KwDisabled },

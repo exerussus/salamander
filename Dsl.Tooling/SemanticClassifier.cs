@@ -30,6 +30,11 @@ namespace Dsl.Tooling
                          TtNamespace = 10, TtEnumMember = 11, TtDecorator = 12;
 
         private readonly HashSet<string> _declNames = new HashSet<string>(StringComparer.Ordinal);
+        // namespace: сегменты путей (красятся как namespace) и составные имена
+        // объявлений — полные и их хвосты от 2 сегментов ("Buffs.Cfg" внутри Mods)
+        private readonly HashSet<string> _nsNames = new HashSet<string>(StringComparer.Ordinal);
+        private readonly HashSet<string> _nsPaths = new HashSet<string>(StringComparer.Ordinal);
+        private readonly HashSet<string> _declPaths = new HashSet<string>(StringComparer.Ordinal);
         private readonly HashSet<string> _kindNames = new HashSet<string>(StringComparer.Ordinal);
         private readonly HashSet<string> _apiNames = new HashSet<string>(StringComparer.Ordinal) { "Engine" };
         private readonly HashSet<string> _constPaths = new HashSet<string>(StringComparer.Ordinal);
@@ -41,7 +46,8 @@ namespace Dsl.Tooling
                 foreach (var fi in index.Files)
                     foreach (var d in fi.Value.Decls)
                     {
-                        _declNames.Add(d.Name);
+                        if (d.Namespace == null) _declNames.Add(d.Name);
+                        else AddNamespaced(d);
                         if (d.Kind != "class" && d.Kind != "trigger" && d.Kind != "listener" && d.Kind != "enum")
                             _kindNames.Add(d.Kind); // слова-виды архетипов (spell/item/...)
                     }
@@ -73,7 +79,27 @@ namespace Dsl.Tooling
                 _constPaths.Add("Math.PI");
             }
 
-            Fingerprint = Mix(1, _declNames) ^ Mix(2, _kindNames) ^ Mix(3, _apiNames) ^ Mix(4, _constPaths) ^ Mix(5, _typeNames);
+            Fingerprint = Mix(1, _declNames) ^ Mix(2, _kindNames) ^ Mix(3, _apiNames) ^ Mix(4, _constPaths) ^ Mix(5, _typeNames)
+                        ^ Mix(6, _nsNames) ^ Mix(7, _nsPaths) ^ Mix(8, _declPaths);
+        }
+
+        /// <summary>
+        /// Объявление из namespace: короткое имя красится как класс (внутри своего
+        /// пространства им и пишут), сегменты пути — как namespace; составные
+        /// пути кладутся со всеми хвостами, чтобы относительная запись
+        /// ("Buffs.Cfg" изнутри Mods) красилась так же, как полная.
+        /// </summary>
+        private void AddNamespaced(DeclSymbol d)
+        {
+            _declNames.Add(d.ShortName);
+            var segs = d.Name.Split('.');
+            for (int i = 0; i < segs.Length - 1; i++) _nsNames.Add(segs[i]);
+            for (int from = 0; from < segs.Length - 1; from++)
+            {
+                _declPaths.Add(string.Join(".", segs, from, segs.Length - from));
+                for (int to = from + 2; to < segs.Length; to++)          // пути пространств имён от 2 сегментов
+                    _nsPaths.Add(string.Join(".", segs, from, to - from));
+            }
         }
 
         /// <summary>
@@ -125,6 +151,12 @@ namespace Dsl.Tooling
                 // константа API — не свойство сущности: у неё нет владельца-значения,
                 // и цвет именованного значения ближе по смыслу
                 if (dottedPath != null && _constPaths.Contains(dottedPath)) return TtEnumMember;
+                // путь по пространствам имён: "Buffs" в Mods.Buffs.Cfg — namespace, "Cfg" — класс
+                if (dottedPath != null && !beforeParen)
+                {
+                    if (_nsPaths.Contains(dottedPath)) return TtNamespace;
+                    if (_declPaths.Contains(dottedPath)) return TtClass;
+                }
                 return beforeParen ? TtFunction : TtProperty;
             }
             if (beforeParen) return TtFunction;
@@ -132,6 +164,7 @@ namespace Dsl.Tooling
             if (_kindNames.Contains(txt)) return TtKeyword;   // spell/item — читаются как слова языка
             if (_typeNames.Contains(txt)) return TtType;
             if (_declNames.Contains(txt)) return TtClass;
+            if (_nsNames.Contains(txt)) return TtNamespace;
             return TtVariable;
         }
 

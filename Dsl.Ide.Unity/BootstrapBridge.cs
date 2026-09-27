@@ -105,6 +105,7 @@ namespace Dsl.Ide
             {
                 _bootstrap.HotReloadSuspended = false;
                 _bootstrap.CompileAndLoad();
+                ReportHotSwap();
                 return;
             }
 
@@ -129,12 +130,26 @@ namespace Dsl.Ide
             var merged = ApplySupport.Merge(baseSet, overrides, addable);
             ReportSkipped(baseSet, overrides, addable);
             var result = _bootstrap.CompileAndLoadFrom(merged);
+            ReportHotSwap();
 
             // хот-релоад перечитывает ТОЛЬКО источники бутстрапа. Если в движке
             // теперь не они (правки из памяти, лишние модули), первое же событие
             // файловой системы откатило бы применённое — ставим паузу. Компиляция
             // не удалась — в движке осталась прежняя программа, пауза не нужна.
             _bootstrap.HotReloadSuspended = result != null && result.Success && !ApplySupport.SameModules(baseSet, merged);
+        }
+
+        /// <summary>Как применилось: подменены только тела функций или была полная перезагрузка.</summary>
+        private void ReportHotSwap()
+        {
+            var hs = _bootstrap.LastHotSwap;
+            if (hs == null) return;
+            if (hs.Applied)
+                _log?.Invoke(IdeLogKind.Info, hs.NoChanges
+                    ? "Код не изменился — программа в игре не тронута."
+                    : "Применено без перезагрузки — " + hs + ".");
+            else
+                _log?.Invoke(IdeLogKind.Info, "Полная перезагрузка (состояние скриптов сброшено): " + hs.Reason + ".");
         }
 
         /// <summary>Сказать вслух про модули воркспейса, которые в игру не поехали.</summary>

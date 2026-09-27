@@ -70,6 +70,27 @@ namespace Dsl.Codegen
     public sealed class CompiledProgram
     {
         public Chunk[] Functions;              // [0] — синтетический <init>
+
+        /// <summary>
+        /// Сколько функций в начале Functions — «живые» (их индексы раздал
+        /// компилятор). Хвост после них — отставные тела после горячей замены:
+        /// на них дорабатывают файберы, которые стояли внутри изменённой функции.
+        /// 0 — хвоста нет, живые все (программа прямо из компилятора).
+        /// </summary>
+        public int LiveFunctionCount;
+
+        /// <summary>Число живых функций (без отставных тел горячей замены).</summary>
+        public int LiveFunctions => LiveFunctionCount > 0 ? LiveFunctionCount : (Functions?.Length ?? 0);
+
+        /// <summary>Поверхностная копия под горячую замену (кэш отпечатка сброшен).</summary>
+        internal CompiledProgram CloneForHotSwap()
+        {
+            var c = (CompiledProgram)MemberwiseClone();
+            c._fingerprint = 0;
+            c._fingerprintDone = false;
+            return c;
+        }
+
         public int StaticCount;                // размер массива статиков
 
         /// <summary>

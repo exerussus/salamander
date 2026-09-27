@@ -17,7 +17,7 @@ namespace Dsl.Text
         InterpString,  // интерполяция, Value = InterpTemplate
 
         // ключевые слова
-        KwClass, KwTrigger, KwDisabled, KwEnum, KwListener, KwSelf, KwPass,
+        KwClass, KwTrigger, KwDisabled, KwEnum, KwListener, KwNamespace, KwSelf, KwPass,
         KwFunc, KwAction, KwEvent, KwConst, KwVar,
         KwIf, KwElse, KwWhile, KwFor, KwIn, KwLoop,
         KwBreak, KwContinue, KwReturn,

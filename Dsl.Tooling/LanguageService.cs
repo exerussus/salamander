@@ -61,6 +61,69 @@ namespace Dsl.Tooling
         }
 
         // ===================================================================
+        // Пространства имён: разрешение путей как у компилятора
+        // ===================================================================
+
+        /// <summary>Пространство имён под курсором — у объемлющей декларации.</summary>
+        private string NamespaceAt(string file, int line1) => Index.EnclosingDecl(file, line1)?.Namespace;
+
+        private static string ParentNamespace(string ns)
+        {
+            int cut = ns.LastIndexOf('.');
+            return cut < 0 ? null : ns.Substring(0, cut);
+        }
+
+        /// <summary>Путь — пространство имён какой-то декларации (или его префикс)?</summary>
+        private bool IsNamespacePath(string path)
+        {
+            foreach (var fi in Index.Files)
+                foreach (var d in fi.Value.Decls)
+                    if (d.Namespace != null
+                        && (d.Namespace == path || d.Namespace.StartsWith(path + ".", StringComparison.Ordinal)))
+                        return true;
+            return false;
+        }
+
+        private DeclSymbol FindDecl(string fullName, out string declFile)
+        {
+            foreach (var fi in Index.Files)
+                foreach (var d in fi.Value.Decls)
+                    if (d.Name == fullName) { declFile = fi.Key; return d; }
+            declFile = null;
+            return null;
+        }
+
+        /// <summary>
+        /// Разрешить имя или путь ("Cfg", "Buffs.Cfg", "Mods.Buffs") из
+        /// пространства имён ns: сначала относительно ns и объемлющих, потом
+        /// глобально. Возвращает декларацию (decl != null) или путь пространства
+        /// имён (nsPath != null); оба null — не наше имя.
+        /// </summary>
+        private void ResolvePath(string ns, string dotted, out DeclSymbol decl, out string declFile, out string nsPath)
+        {
+            decl = null; declFile = null; nsPath = null;
+            for (var scope = ns; ; scope = ParentNamespace(scope))
+            {
+                string full = scope == null ? dotted : scope + "." + dotted;
+                decl = FindDecl(full, out declFile);
+                if (decl != null) return;
+                if (IsNamespacePath(full)) { nsPath = full; return; }
+                if (scope == null) return;
+            }
+        }
+
+        /// <summary>
+        /// Слово под курсором вместе с путём перед ним: для "Cfg" в "Mods.Cfg.v"
+        /// — "Mods.Cfg". null — перед словом нет цепочки через точку.
+        /// </summary>
+        private static string DottedWord(string lineText, string word, int wordCol)
+        {
+            int start = Math.Max(0, Math.Min(wordCol - 1, lineText.Length));
+            var mq = Regex.Match(lineText.Substring(0, start), @"((?:\w+\.)*\w+)\.$");
+            return mq.Success ? mq.Groups[1].Value + "." + word : word;
+        }
+
+        // ===================================================================
         // Автодополнение
         // ===================================================================
 
@@ -150,21 +213,45 @@ namespace Dsl.Tooling
                                 Add(en.Members[i], CompletionKind.EnumMember, $"{en.Name}.{en.Members[i]}", ApiFormat.MemberDoc(en, i));
                             return items;
                         }
-                foreach (var fi in Index.Files)
-                    foreach (var d in fi.Value.Decls)
-                        if (d.Name == target && (d.Kind == "enum" || d.Kind == "class"))
+                // скриптовые: имя разрешается по областям namespace, как в компиляторе
+                ResolvePath(NamespaceAt(file, line1), target, out var tDecl, out _, out var tNs);
+                if (tDecl != null && (tDecl.Kind == "enum" || tDecl.Kind == "class"))
+                {
+                    foreach (var ch in tDecl.Children)
+                        Add(ch.Name,
+                            ch.Kind == "func" ? CompletionKind.Method
+                            : ch.Kind == "member" ? CompletionKind.EnumMember
+                            : ch.Kind == "const" ? CompletionKind.Keyword
+                            : CompletionKind.Field,
+                            $"{tDecl.Kind} {tDecl.Name}",
+                            insert: ch.Kind == "func" ? $"{ch.Name}($1)$0" : null,
+                            snippet: ch.Kind == "func");
+                    return items;
+                }
+                if (tNs != null)
+                {
+                    // "Mods." — вложенные пространства имён и объявления прямо в нём
+                    var seenSeg = new HashSet<string>(StringComparer.Ordinal);
+                    string prefix = tNs + ".";
+                    foreach (var fi in Index.Files)
+                        foreach (var d in fi.Value.Decls)
                         {
-                            foreach (var ch in d.Children)
-                                Add(ch.Name,
-                                    ch.Kind == "func" ? CompletionKind.Method
-                                    : ch.Kind == "member" ? CompletionKind.EnumMember
-                                    : ch.Kind == "const" ? CompletionKind.Keyword
-                                    : CompletionKind.Field,
-                                    $"{d.Kind} {d.Name}",
-                                    insert: ch.Kind == "func" ? $"{ch.Name}($1)$0" : null,
-                                    snippet: ch.Kind == "func");
-                            return items;
+                            if (d.Namespace == null) continue;
+                            if (d.Namespace == tNs)
+                            {
+                                if (seenSeg.Add(d.ShortName))
+                                    Add(d.ShortName, d.Kind == "enum" ? CompletionKind.Enum : CompletionKind.Class, $"{d.Kind} {d.Name}");
+                            }
+                            else if (d.Namespace.StartsWith(prefix, StringComparison.Ordinal))
+                            {
+                                string rest = d.Namespace.Substring(prefix.Length);
+                                int dot = rest.IndexOf('.');
+                                string seg = dot < 0 ? rest : rest.Substring(0, dot);
+                                if (seenSeg.Add(seg)) Add(seg, CompletionKind.Module, $"namespace {tNs}.{seg}");
+                            }
                         }
+                    return items;
+                }
 
                 // цель — ЗНАЧЕНИЕ (локаль/параметр/поле). Тип угадываем по
                 // объявлению «Тип имя» выше по файлу (event OnDeath(Unit killer...)
@@ -258,9 +345,37 @@ namespace Dsl.Tooling
             if (Api?.Structs != null) foreach (var st in Api.Structs) Add(st.Name, CompletionKind.Struct, st.Summary ?? "структура");
             if (Api?.Enums != null) foreach (var en in Api.Enums) Add(en.Name, CompletionKind.Enum, en.Summary ?? "enum хоста");
             if (Api?.Classes != null) foreach (var c in Api.Classes) Add(c.Name, CompletionKind.Class, c.Summary ?? "сущность игры");
+            // скриптовые: глобальные — по имени, из namespace — корень пути, а
+            // объявления текущего и объемлющих пространств — коротким именем
+            string curNs = NamespaceAt(file, line1);
+            var seenScript = new HashSet<string>(StringComparer.Ordinal);
             foreach (var fi in Index.Files)
                 foreach (var d in fi.Value.Decls)
-                    Add(d.Name, d.Kind == "enum" ? CompletionKind.Enum : CompletionKind.Class, d.Kind);
+                {
+                    var kind = d.Kind == "enum" ? CompletionKind.Enum : CompletionKind.Class;
+                    if (d.Namespace == null)
+                    {
+                        if (seenScript.Add(d.Name)) Add(d.Name, kind, d.Kind);
+                        continue;
+                    }
+                    int rootDot = d.Namespace.IndexOf('.');
+                    string root = rootDot < 0 ? d.Namespace : d.Namespace.Substring(0, rootDot);
+                    if (seenScript.Add(root)) Add(root, CompletionKind.Module, "namespace " + root);
+                    for (var scope = curNs; scope != null; scope = ParentNamespace(scope))
+                    {
+                        if (d.Namespace == scope)
+                        {
+                            if (seenScript.Add(d.ShortName)) Add(d.ShortName, kind, $"{d.Kind} {d.Name}");
+                        }
+                        else if (d.Namespace.StartsWith(scope + ".", StringComparison.Ordinal))
+                        {
+                            string rest = d.Namespace.Substring(scope.Length + 1);
+                            int dot = rest.IndexOf('.');
+                            string seg = dot < 0 ? rest : rest.Substring(0, dot);
+                            if (seenScript.Add(seg)) Add(seg, CompletionKind.Module, $"namespace {scope}.{seg}");
+                        }
+                    }
+                }
             return items;
         }
 
@@ -547,9 +662,10 @@ namespace Dsl.Tooling
             }
             if (md == null)
             {
-                foreach (var fi in Index.Files)
-                    foreach (var d in fi.Value.Decls)
-                        if (d.Name == word) { md = $"**{d.Kind} {d.Name}**"; break; }
+                ResolvePath(NamespaceAt(file, line1), DottedWord(lineText, word, wordCol),
+                    out var hDecl, out _, out var hNs);
+                if (hDecl != null) md = $"**{hDecl.Kind} {hDecl.Name}**";
+                else if (hNs != null) md = $"**namespace {hNs}**";
             }
 
             if (versionsMd != null) md = md == null ? versionsMd : md + "\n\n---\n\n" + versionsMd;
@@ -715,7 +831,7 @@ namespace Dsl.Tooling
         public SymbolLocation Definition(string file, int line1, int col1)
         {
             var lineText = TextUtil.GetLine(GetText(file), line1) ?? "";
-            var (word, _) = TextUtil.WordAt(lineText, col1);
+            var (word, wordCol) = TextUtil.WordAt(lineText, col1);
             if (word == null) return null;
             int ix = word.LastIndexOf(':');
             if (ix >= 0) word = word.Substring(ix + 1); // module::Name -> Name
@@ -727,11 +843,17 @@ namespace Dsl.Tooling
                     if (ch.Name == word)
                         return Loc(file, ch.Line, ch.Col, word.Length);
 
-            // 2) глобальные декларации по всем файлам
-            foreach (var kv in Index.Files)
-                foreach (var d in kv.Value.Decls)
-                    if (d.Name == word)
-                        return Loc(kv.Key, d.Line, d.Col, word.Length);
+            // 2) глобальные декларации по всем файлам — по областям namespace;
+            // сам namespace ведёт к первому объявлению в нём
+            ResolvePath(NamespaceAt(file, line1), DottedWord(lineText, word, wordCol),
+                out var dDecl, out var dFile, out var dNs);
+            if (dDecl != null) return Loc(dFile, dDecl.Line, dDecl.Col, word.Length);
+            if (dNs != null)
+                foreach (var kv in Index.Files)
+                    foreach (var d in kv.Value.Decls)
+                        if (d.Namespace != null
+                            && (d.Namespace == dNs || d.Namespace.StartsWith(dNs + ".", StringComparison.Ordinal)))
+                            return Loc(kv.Key, d.Line, d.Col, word.Length);
 
             // 3) уникальный член где угодно (func класса, событие)
             string foundFile = null; DeclSymbol found = null; int hits = 0;

@@ -82,7 +82,7 @@ namespace Dsl.Tooling
 
         public static readonly string[] Keywords =
         {
-            "trigger", "class", "enum", "listener", "self", "pass", "disabled", "func", "action", "event",
+            "trigger", "class", "enum", "listener", "namespace", "self", "pass", "disabled", "func", "action", "event",
             "const", "readonly", "var", "if", "else", "while", "loop", "for", "in", "break", "continue", "return",
             "wait", "until", "yield", "spawn", "new", "true", "false", "null",
         };

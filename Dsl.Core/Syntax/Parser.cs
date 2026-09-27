@@ -70,6 +70,7 @@ namespace Dsl.Syntax
             var file = new ScriptFile { FileId = _fileId, Pos = Cur.Pos };
             while (!Is(TokenKind.Eof))
             {
+                if (Is(TokenKind.KwNamespace)) { ParseNamespace(file.Decls, null); continue; }
                 var d = ParseDecl();
                 if (d != null) file.Decls.Add(d);
                 else { if (!Is(TokenKind.Eof)) Advance(); } // защита от зацикливания
@@ -84,6 +85,85 @@ namespace Dsl.Syntax
             if (!Is(TokenKind.Eof))
                 _diag.Error("E0003", "Лишние символы в выражении интерполяции.", Cur.Pos);
             return e;
+        }
+
+        /// <summary>
+        /// namespace A.B { ... } — объявления внутри получают полное имя "A.B.Foo".
+        /// Блок открытый, как в C#: одно пространство имён можно продолжать в
+        /// других файлах и модулях, а блоки с одинаковым полным именем сливаются
+        /// как обычно. Вложенные namespace дописывают свой путь к внешнему.
+        /// Декларации складываются плоско в список файла — дерева нет, путь
+        /// живёт в Decl.Namespace.
+        /// </summary>
+        private void ParseNamespace(List<Decl> into, string outer)
+        {
+            var pos = Advance().Pos; // 'namespace'
+            if (_depth >= MaxNestingDepth) { DepthError(pos); return; }
+
+            string path = ParseNamespacePath();
+            if (path == null)
+            {
+                _diag.Error("E0310", $"Ожидалось имя пространства имён, встречено '{Cur.Text}'.", Cur.Pos);
+                // без имени блок не разобрать осмысленно — но '{' съедим как пространство без имени,
+                // чтобы объявления внутри не посыпались каскадом ошибок
+                if (!Is(TokenKind.LBrace)) return;
+                path = "?";
+            }
+            string full = outer == null ? path : outer + "." + path;
+
+            if (!Is(TokenKind.LBrace))
+            {
+                _diag.Error("E0007", $"Ожидалось '{{' после 'namespace {path}', встречено '{Cur.Text}'.", Cur.Pos);
+                return;
+            }
+            Advance(); // '{'
+
+            _depth++;
+            try
+            {
+                while (!Is(TokenKind.RBrace) && !Is(TokenKind.Eof))
+                {
+                    if (Is(TokenKind.KwNamespace)) { ParseNamespace(into, full); continue; }
+
+                    var d = ParseDecl();
+                    if (d == null)
+                    {
+                        if (!Is(TokenKind.RBrace) && !Is(TokenKind.Eof)) Advance(); // защита от зацикливания
+                        continue;
+                    }
+                    if (d is ArchetypeDecl ad)
+                    {
+                        // архетип адресуется хостом по (вид, id) из контента игры —
+                        // пространству имён там места нет; блок оставляем глобальным
+                        _diag.Error("E0311",
+                            $"'{ad.Kind} {ad.Name}' нельзя объявлять внутри namespace: хост находит архетипы " +
+                            "по виду и id, пространство имён в этот адрес не входит. Вынесите блок наружу.",
+                            ad.Pos);
+                    }
+                    else
+                    {
+                        d.Namespace = full;
+                        d.Name = full + "." + d.Name;
+                    }
+                    into.Add(d);
+                }
+            }
+            finally { _depth--; }
+
+            Expect(TokenKind.RBrace, "E0009", $"'}}', закрывающая namespace {full}");
+        }
+
+        /// <summary>A или A.B.C; null, если имени нет. Позицию двигает только по успеху.</summary>
+        private string ParseNamespacePath()
+        {
+            if (!Is(TokenKind.Ident)) return null;
+            var sb = new System.Text.StringBuilder(Advance().Text);
+            while (Is(TokenKind.Dot) && Peek().Kind == TokenKind.Ident)
+            {
+                Advance();
+                sb.Append('.').Append(Advance().Text);
+            }
+            return sb.ToString();
         }
 
         private Decl ParseDecl()
@@ -371,6 +451,7 @@ namespace Dsl.Syntax
         {
             var pos = Cur.Pos;
             var name = Expect(TokenKind.Ident, "E0026", "имя типа").Text;
+            name = ContinueDottedTypeName(name);
 
             TypeSyntax result;
             if (Is(TokenKind.Lt))
@@ -395,6 +476,22 @@ namespace Dsl.Syntax
             return result;
         }
 
+        /// <summary>
+        /// Хвост составного имени типа: "Mods.Buffs.Kind" — енум из namespace.
+        /// Точка без идентификатора за ней не наша (оставляем как есть).
+        /// </summary>
+        private string ContinueDottedTypeName(string head)
+        {
+            if (!(Is(TokenKind.Dot) && Peek().Kind == TokenKind.Ident)) return head;
+            var sb = new System.Text.StringBuilder(head);
+            while (Is(TokenKind.Dot) && Peek().Kind == TokenKind.Ident)
+            {
+                Advance();
+                sb.Append('.').Append(Advance().Text);
+            }
+            return sb.ToString();
+        }
+
         /// <summary>Пытается разобрать тип; при неудаче откатывает позицию.</summary>
         private TypeSyntax TryParseType(out int savedI)
         {
@@ -410,7 +507,7 @@ namespace Dsl.Syntax
             if (!Is(TokenKind.Ident)) return null;
             // тихий разбор без диагностик: временно ловим через ручную проверку
             var pos = Cur.Pos;
-            var name = Advance().Text;
+            var name = ContinueDottedTypeName(Advance().Text);
             TypeSyntax result;
             if (Is(TokenKind.Lt))
             {

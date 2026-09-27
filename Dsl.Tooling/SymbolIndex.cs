@@ -8,7 +8,12 @@ namespace Dsl.Tooling
     /// <summary>Декларация файла (или её член) из настоящего парсера.</summary>
     public sealed class DeclSymbol
     {
+        /// <summary>Полное имя: "Mods.Buffs.Cfg" для объявления внутри namespace.</summary>
         public string Name;
+        /// <summary>Пространство имён верхнеуровневой декларации ("Mods.Buffs") или null.</summary>
+        public string Namespace;
+        /// <summary>Имя без пространства имён — как оно написано в объявлении.</summary>
+        public string ShortName => Namespace == null ? Name : Name.Substring(Namespace.Length + 1);
         public string Kind;    // class/trigger/listener/enum/<вид архетипа>/field/const/func/event/action/member
         public int Line;       // 1-based
         public int Col;        // 1-based
@@ -91,7 +96,7 @@ namespace Dsl.Tooling
                 foreach (var d in file.Decls)
                 {
                     if (d == null) continue;
-                    var sym = new DeclSymbol { Name = d.Name, Line = d.Pos.Line, Col = d.Pos.Column };
+                    var sym = new DeclSymbol { Name = d.Name, Namespace = d.Namespace, Line = d.Pos.Line, Col = d.Pos.Column };
                     List<Member> members = null;
                     switch (d)
                     {
