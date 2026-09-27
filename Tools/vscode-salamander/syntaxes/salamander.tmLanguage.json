@@ -47,6 +47,18 @@
                     }
                 },
                 {
+                    "comment": "namespace A.B { ... } — путь целиком красится как пространство имён",
+                    "match": "\\b(namespace)\\s+([A-Za-z_]\\w*(?:\\s*\\.\\s*[A-Za-z_]\\w*)*)",
+                    "captures": {
+                        "1": {
+                            "name": "storage.type.namespace.salamander"
+                        },
+                        "2": {
+                            "name": "entity.name.namespace.salamander"
+                        }
+                    }
+                },
+                {
                     "match": "\\b(trigger|class|enum|listener)\\s+([A-Za-z_]\\w*)",
                     "captures": {
                         "1": {
@@ -353,7 +365,7 @@
         },
         "archetype-decl": {
             "comment": "Блок-архетип: вид (объявлен хостом) + id. spell fireball { / item \"sword.v2\" {",
-            "match": "^\\s*(?!(?:trigger|class|enum|listener|func|action|event|if|else|while|for|in|break|continue|return|wait|until|spawn|new|const|readonly|var|disabled|true|false|null|int|float|bool|string|void|pass|self)\\b)([A-Za-z_]\\w*)\\s+(\"[^\"]*\"|[A-Za-z_]\\w*)\\s*(?=\\{)",
+            "match": "^\\s*(?!(?:trigger|class|enum|listener|namespace|func|action|event|if|else|while|for|in|break|continue|return|wait|until|spawn|new|const|readonly|var|disabled|true|false|null|int|float|bool|string|void|pass|self)\\b)([A-Za-z_]\\w*)\\s+(\"[^\"]*\"|[A-Za-z_]\\w*)\\s*(?=\\{)",
             "captures": {
                 "1": {
                     "name": "storage.type.archetype.salamander"

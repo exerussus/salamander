@@ -18,6 +18,13 @@ namespace Dsl.Text
         private int _line;
         private int _col;
 
+        /// <summary>
+        /// Doc-комментарии «/// текст» по номеру строки (1-based) — описание
+        /// объявления или члена под ними: его показывают подсказки IDE. Для кода
+        /// обычный комментарий. null — в файле их нет.
+        /// </summary>
+        public Dictionary<int, string> DocComments { get; private set; }
+
         private static readonly Dictionary<string, TokenKind> Keywords =
             new Dictionary<string, TokenKind>
         {
@@ -115,7 +122,12 @@ namespace Dsl.Text
                 // // однострочный комментарий
                 if (c == '/' && Peek() == '/')
                 {
+                    // «///» (но не «////» — это просто разделитель) — doc-комментарий
+                    bool doc = Peek(2) == '/' && Peek(3) != '/';
+                    int line = _line;
+                    int from = _pos + 3;
                     while (!End && Cur != '\n') Advance();
+                    if (doc) AddDoc(line, from, _pos);
                     continue;
                 }
                 // /* ... */ блочный комментарий
@@ -133,6 +145,14 @@ namespace Dsl.Text
                 }
                 break;
             }
+        }
+
+        private void AddDoc(int line, int from, int to)
+        {
+            if (from > to) from = to;
+            string text = _src.Substring(from, to - from).TrimEnd('\r', ' ', '\t');
+            if (text.StartsWith(" ")) text = text.Substring(1);
+            (DocComments ??= new Dictionary<int, string>())[line] = text;
         }
 
         private Token LexIdentOrKeyword(SourcePos start)

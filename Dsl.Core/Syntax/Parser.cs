@@ -25,12 +25,36 @@ namespace Dsl.Syntax
         private int _depth;
         private bool _depthReported;
 
-        public Parser(List<Token> tokens, int fileId, DiagnosticBag diag)
+        public Parser(List<Token> tokens, int fileId, DiagnosticBag diag, Dictionary<int, string> docComments = null)
         {
             _t = tokens;
             _fileId = fileId;
             _diag = diag;
+            _docs = docComments;
         }
+
+        // «///» по строкам (Lexer.DocComments): описание прикрепляется к объявлению
+        // или члену, если идёт сплошным блоком прямо над его первой строкой
+        private readonly Dictionary<int, string> _docs;
+
+        private string DocAbove(int line)
+        {
+            if (_docs == null || _docs.Count == 0) return null;
+            int first = line;
+            while (_docs.ContainsKey(first - 1)) first--;
+            if (first == line) return null;
+            if (first == line - 1) return _docs[first];
+            var sb = new System.Text.StringBuilder();
+            for (int l = first; l < line; l++)
+            {
+                if (sb.Length > 0) sb.Append('\n');
+                sb.Append(_docs[l]);
+            }
+            return sb.ToString();
+        }
+
+        /// <summary>Строка, с которой начинается член или объявление — модификаторы стоят раньше ключевого слова.</summary>
+        private int StartLine(int tokenIndex) => _t[System.Math.Min(tokenIndex, _t.Count - 1)].Pos.Line;
 
         private void DepthError(SourcePos pos)
         {
@@ -71,7 +95,9 @@ namespace Dsl.Syntax
             while (!Is(TokenKind.Eof))
             {
                 if (Is(TokenKind.KwNamespace)) { ParseNamespace(file.Decls, null); continue; }
+                int declStart = _i;
                 var d = ParseDecl();
+                if (d != null) d.Doc = DocAbove(StartLine(declStart));
                 if (d != null) file.Decls.Add(d);
                 else { if (!Is(TokenKind.Eof)) Advance(); } // защита от зацикливания
             }
@@ -125,7 +151,9 @@ namespace Dsl.Syntax
                 {
                     if (Is(TokenKind.KwNamespace)) { ParseNamespace(into, full); continue; }
 
+                    int declStart = _i;
                     var d = ParseDecl();
+                    if (d != null) d.Doc = DocAbove(StartLine(declStart));
                     if (d == null)
                     {
                         if (!Is(TokenKind.RBrace) && !Is(TokenKind.Eof)) Advance(); // защита от зацикливания
@@ -274,7 +302,11 @@ namespace Dsl.Syntax
             {
                 int before = _i;
                 var m = ParseMember();
-                if (m != null) into.Add(m);
+                if (m != null)
+                {
+                    m.Doc = DocAbove(StartLine(before));
+                    into.Add(m);
+                }
                 if (_i != before) continue;
 
                 _diag.Error("E0219",

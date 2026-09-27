@@ -18,6 +18,8 @@ namespace Dsl.Ide
         public Dictionary<string, int> DocVersions;
         /// <summary>Логическое имя → ключ документа (для раскладки диагностик по файлам).</summary>
         public Dictionary<string, string> LogicalToKey;
+        /// <summary>Справочные модули в этой компиляции (их диагностики не показываются); null — нет.</summary>
+        public Dsl.Tooling.ReferenceSet References;
 
         // выходы
         public CompilationResult Result;

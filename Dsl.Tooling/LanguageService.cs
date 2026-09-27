@@ -14,7 +14,7 @@ namespace Dsl.Tooling
     /// Состояние (манифест, индекс, источник текстов) принадлежит владельцу
     /// сервиса; сам сервис ничего не читает с диска. Не потокобезопасен.
     /// </summary>
-    public sealed class LanguageService
+    public sealed partial class LanguageService
     {
         /// <summary>Манифест API хоста; null — манифеста нет (язык и Engine.* всё равно подсказываются).</summary>
         public ApiManifest Api;
@@ -213,8 +213,16 @@ namespace Dsl.Tooling
                                 Add(en.Members[i], CompletionKind.EnumMember, $"{en.Name}.{en.Members[i]}", ApiFormat.MemberDoc(en, i));
                             return items;
                         }
-                // скриптовые: имя разрешается по областям namespace, как в компиляторе
-                ResolvePath(NamespaceAt(file, line1), target, out var tDecl, out _, out var tNs);
+                // скриптовые: имя разрешается по областям namespace, как в компиляторе;
+                // таблица символов знает типы, сигнатуры и модули вне воркспейса
+                var tRes = Resolve(file, line1, target);
+                if (tRes.Type != null && (tRes.Type.Kind == "enum" || tRes.Type.Kind == "class"))
+                {
+                    AddMemberItems(items, tRes.Type, fromOutside: true);
+                    return items;
+                }
+                var tDecl = tRes.Decl;
+                var tNs = tRes.Ns;
                 if (tDecl != null && (tDecl.Kind == "enum" || tDecl.Kind == "class"))
                 {
                     foreach (var ch in tDecl.Children)
@@ -232,6 +240,7 @@ namespace Dsl.Tooling
                 {
                     // "Mods." — вложенные пространства имён и объявления прямо в нём
                     var seenSeg = new HashSet<string>(StringComparer.Ordinal);
+                    AddNamespaceItems(items, file, tNs, seenSeg);
                     string prefix = tNs + ".";
                     foreach (var fi in Index.Files)
                         foreach (var d in fi.Value.Decls)
@@ -349,6 +358,25 @@ namespace Dsl.Tooling
             // объявления текущего и объемлющих пространств — коротким именем
             string curNs = NamespaceAt(file, line1);
             var seenScript = new HashSet<string>(StringComparer.Ordinal);
+            // сперва семантика: члены объемлющего объявления и имена всех видимых
+            // модулей (включая справочные — игру и зависимости мода)
+            AddScopeItems(items, file, line1, seenScript);
+            if (EnclosingType(file, line1) == null)
+            {
+                // таблицы ещё нет (или файл новый) — свои члены хотя бы по индексу
+                var enclDecl = Index.EnclosingDecl(file, line1);
+                if (enclDecl != null)
+                    foreach (var ch in enclDecl.Children)
+                    {
+                        if (ch.Kind == "event" || ch.Kind == "action" || !seenScript.Add(ch.Name)) continue;
+                        Add(ch.Name,
+                            ch.Kind == "func" ? CompletionKind.Method
+                            : ch.Kind == "const" ? CompletionKind.Constant
+                            : ch.Kind == "member" ? CompletionKind.EnumMember : CompletionKind.Field,
+                            $"{ch.Kind} {ch.Name}", ch.Doc,
+                            insert: ch.Kind == "func" ? $"{ch.Name}($1)$0" : null, snippet: ch.Kind == "func");
+                    }
+            }
             foreach (var fi in Index.Files)
                 foreach (var d in fi.Value.Decls)
                 {
@@ -472,7 +500,8 @@ namespace Dsl.Tooling
                     if (label != null) break;
                 }
             }
-            if (label == null) return null;
+            if (label == null)
+                return owner != "Engine" && owner != "Math" ? SymbolSignature(file, line1, owner, method, commas) : null;
 
             return new SignatureInfo
             {
@@ -501,6 +530,14 @@ namespace Dsl.Tooling
 
             string md = null;
             bool afterEngine = TextUtil.HasPrefix(lineText, wordCol, "Engine.");
+
+            // скриптовые имена — по таблице символов (тип, сигнатура, описание, модуль)
+            if (!afterEngine)
+            {
+                string symMd = SymbolHover(file, line1, lineText, word, wordCol);
+                if (symMd != null)
+                    return versionsMd == null ? symMd : symMd + "\n\n---\n\n" + versionsMd;
+            }
 
             if (afterEngine)
             {
@@ -843,16 +880,16 @@ namespace Dsl.Tooling
                     if (ch.Name == word)
                         return Loc(file, ch.Line, ch.Col, word.Length);
 
-            // 2) глобальные декларации по всем файлам — по областям namespace;
-            // сам namespace ведёт к первому объявлению в нём
-            ResolvePath(NamespaceAt(file, line1), DottedWord(lineText, word, wordCol),
-                out var dDecl, out var dFile, out var dNs);
-            if (dDecl != null) return Loc(dFile, dDecl.Line, dDecl.Col, word.Length);
-            if (dNs != null)
+            // 2) скриптовые имена по областям namespace: индекс воркспейса и
+            // таблица символов (она ведёт и в справочные модули игры/зависимостей)
+            var symLoc = SymbolDefinition(file, line1, lineText, word, wordCol);
+            if (symLoc != null) return symLoc;
+            var dRes = Resolve(file, line1, DottedWord(lineText, word, wordCol));
+            if (dRes.Ns != null)
                 foreach (var kv in Index.Files)
                     foreach (var d in kv.Value.Decls)
                         if (d.Namespace != null
-                            && (d.Namespace == dNs || d.Namespace.StartsWith(dNs + ".", StringComparison.Ordinal)))
+                            && (d.Namespace == dRes.Ns || d.Namespace.StartsWith(dRes.Ns + ".", StringComparison.Ordinal)))
                             return Loc(kv.Key, d.Line, d.Col, word.Length);
 
             // 3) уникальный член где угодно (func класса, событие)
@@ -875,7 +912,7 @@ namespace Dsl.Tooling
         // ===================================================================
 
         /// <summary>Таблицы имён для раскраски по текущему манифесту и индексу.</summary>
-        public SemanticClassifier CreateClassifier() => new SemanticClassifier(Api, Index);
+        public SemanticClassifier CreateClassifier() => new SemanticClassifier(Api, Index, Symbols);
 
         /// <summary>Раскраска всего файла, отсортированная по позиции.</summary>
         public List<ClassifiedSpan> Classify(string file)

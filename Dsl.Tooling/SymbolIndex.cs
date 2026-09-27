@@ -19,6 +19,8 @@ namespace Dsl.Tooling
         public int Col;        // 1-based
         /// <summary>Для func/event/action: "before"/"after"/"replace" или null (обычная версия).</summary>
         public string Mode;
+        /// <summary>«///»-описание над объявлением или членом (null — нет).</summary>
+        public string Doc;
         public readonly List<DeclSymbol> Children = new List<DeclSymbol>();
     }
 
@@ -90,13 +92,14 @@ namespace Dsl.Tooling
                 var src = new SourceText(0, name, text);
                 var bag = new DiagnosticBag(new[] { src });
                 var lexer = new Lexer(text, 0, bag);
-                var parser = new Parser(lexer.Tokenize(), 0, bag);
+                var tokens = lexer.Tokenize();
+                var parser = new Parser(tokens, 0, bag, lexer.DocComments);
                 var file = parser.ParseFile();
 
                 foreach (var d in file.Decls)
                 {
                     if (d == null) continue;
-                    var sym = new DeclSymbol { Name = d.Name, Namespace = d.Namespace, Line = d.Pos.Line, Col = d.Pos.Column };
+                    var sym = new DeclSymbol { Name = d.Name, Namespace = d.Namespace, Line = d.Pos.Line, Col = d.Pos.Column, Doc = d.Doc };
                     List<Member> members = null;
                     switch (d)
                     {
@@ -122,6 +125,7 @@ namespace Dsl.Tooling
                                         Kind = f.IsConst ? "const" : "field",
                                         Line = f.Pos.Line,
                                         Col = f.Pos.Column,
+                                        Doc = f.Doc,
                                     });
                                     break;
                                 case FuncMember fn:
@@ -132,6 +136,7 @@ namespace Dsl.Tooling
                                              : fn.Kind == FuncKind.Action ? "action" : "func",
                                         Line = fn.Pos.Line,
                                         Col = fn.Pos.Column,
+                                        Doc = fn.Doc,
                                         Mode = fn.Mode == MergeMode.Before ? "before"
                                              : fn.Mode == MergeMode.After ? "after"
                                              : fn.Mode == MergeMode.Replace ? "replace" : null,

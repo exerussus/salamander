@@ -92,6 +92,13 @@ namespace Dsl.Compilation
         public IReadOnlyList<ExcludedFile> ExcludedFiles = System.Array.Empty<ExcludedFile>();
 
         public bool Success => Program != null;
+
+        /// <summary>
+        /// Что объявлено в скриптах (для подсказок IDE/LSP): строится, если
+        /// дошло до чекера — то есть и при семантических ошибках, но не при
+        /// синтаксических (тогда null: держите таблицу прошлой компиляции).
+        /// </summary>
+        public ScriptSymbolTable Symbols;
     }
 
     /// <summary>
@@ -174,6 +181,8 @@ namespace Dsl.Compilation
                             fileOwner[f.name] = m.Manifest.Name;
                 }
 
+            ScriptSymbolTable symbols = null; // последнего прохода, дошедшего до чекера
+
             CompilationResult Finish(CompiledProgram program, IReadOnlyList<Diagnostic> items)
             {
                 IReadOnlyList<Diagnostic> all = items;
@@ -190,6 +199,7 @@ namespace Dsl.Compilation
                     Diagnostics = all,
                     Excluded = excluded,
                     ExcludedFiles = excludedFiles,
+                    Symbols = symbols,
                 };
             }
 
@@ -295,8 +305,9 @@ namespace Dsl.Compilation
                         var src = new SourceText(files.Count, name, text);
                         files.Add(src);
 
-                        var tokens = new Lexer(src.Text, src.FileId, diag).Tokenize();
-                        var file = new Parser(tokens, src.FileId, diag).ParseFile();
+                        var lexer = new Lexer(src.Text, src.FileId, diag);
+                        var tokens = lexer.Tokenize();
+                        var file = new Parser(tokens, src.FileId, diag, lexer.DocComments).ParseFile();
                         ast.Files.Add(file);
                     }
                     moduleAsts.Add(ast);
@@ -307,6 +318,11 @@ namespace Dsl.Compilation
                 {
                     var checker = new Checker(host, diag);
                     var sem = checker.Check(moduleAsts);
+
+                    // таблица для инструментов: даже с семантическими ошибками она
+                    // точнее синтаксического индекса (типы, мерж, namespace)
+                    try { symbols = ScriptSymbolTable.Build(host, sem, files, order); }
+                    catch (Exception) { symbols = null; /* подсказки не должны ронять компиляцию */ }
 
                     // ----- байткод -----
                     if (!diag.HasErrors)

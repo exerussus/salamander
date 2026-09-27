@@ -40,14 +40,22 @@ namespace Dsl.Tooling
         private readonly HashSet<string> _constPaths = new HashSet<string>(StringComparer.Ordinal);
         private readonly HashSet<string> _typeNames = new HashSet<string>(EngineDocs.Types, StringComparer.Ordinal);
 
-        public SemanticClassifier(ApiManifest api, WorkspaceIndex index)
+        public SemanticClassifier(ApiManifest api, WorkspaceIndex index, ScriptSymbolTable symbols = null)
         {
+            // таблица символов добавляет имена модулей вне воркспейса (игра, зависимости)
+            if (symbols != null)
+                foreach (var t in symbols.Types)
+                {
+                    if (t.IsArchetype) { _kindNames.Add(t.Kind); continue; }
+                    if (t.Namespace == null) _declNames.Add(t.Name);
+                    else AddNamespaced(t.Name, t.ShortName);
+                }
             if (index != null)
                 foreach (var fi in index.Files)
                     foreach (var d in fi.Value.Decls)
                     {
                         if (d.Namespace == null) _declNames.Add(d.Name);
-                        else AddNamespaced(d);
+                        else AddNamespaced(d.Name, d.ShortName);
                         if (d.Kind != "class" && d.Kind != "trigger" && d.Kind != "listener" && d.Kind != "enum")
                             _kindNames.Add(d.Kind); // слова-виды архетипов (spell/item/...)
                     }
@@ -89,10 +97,10 @@ namespace Dsl.Tooling
         /// пути кладутся со всеми хвостами, чтобы относительная запись
         /// ("Buffs.Cfg" изнутри Mods) красилась так же, как полная.
         /// </summary>
-        private void AddNamespaced(DeclSymbol d)
+        private void AddNamespaced(string fullName, string shortName)
         {
-            _declNames.Add(d.ShortName);
-            var segs = d.Name.Split('.');
+            _declNames.Add(shortName);
+            var segs = fullName.Split('.');
             for (int i = 0; i < segs.Length - 1; i++) _nsNames.Add(segs[i]);
             for (int from = 0; from < segs.Length - 1; from++)
             {

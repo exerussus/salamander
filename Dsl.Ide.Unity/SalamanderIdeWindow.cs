@@ -167,7 +167,7 @@ namespace Dsl.Ide
             if (_bootstrap == null) _bootstrap = FindAnyObjectByType<ScriptHostBootstrap>();
             if (_bootstrap == null) // (в т.ч. «поддельный» null уничтоженного объекта)
             {
-                if (_apply != null) { _apply.Dispose(); _apply = null; _view.SetApplyTarget(null); }
+                if (_apply != null) { _apply.Dispose(); _apply = null; _view.SetApplyTarget(null); _view.SetReferenceModules(null); }
                 return;
             }
             if (ReferenceEquals(_bound, _bootstrap) && _apply != null) return;
@@ -176,6 +176,10 @@ namespace Dsl.Ide
             _apply?.Dispose();
             _apply = new BootstrapApplyTarget(_bootstrap, () => _view?.Workspace, (k, m) => _view?.Log(k, m));
             _view.SetApplyTarget(_apply);
+            // модули игры — справочные: воркспейс мода видит их классы в подсказках,
+            // а ссылки на них не дают ложных «зависимость не загружена»
+            var boot = _bootstrap;
+            _view.SetReferenceModules(() => boot != null ? boot.CollectModules() : null);
             _bound = _bootstrap;
             _boundKnown = true;
             if (changed) Rebind();

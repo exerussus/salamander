@@ -17,6 +17,12 @@ namespace Dsl.Ide
         public IScriptWorkspace Workspace;
         public IApiSource Api;
         public IIdeApplyTarget ApplyTarget;
+        /// <summary>
+        /// Справочные модули: то, что видит игра, но чего нет в воркспейсе (базовые
+        /// скрипты, зависимости мода). Компилируются вместе с воркспейсом ради
+        /// ссылок и подсказок; их ошибки не показываются. null — только воркспейс.
+        /// </summary>
+        public Func<List<ModuleSourceSet>> ReferenceModules;
         /// <summary>USS IDE; null — из Resources (SalamanderIde/SalIde).</summary>
         public StyleSheet StyleSheet;
         /// <summary>Моноширинный шрифт кода; null — системный (на WebGL/мобильных задайте обязательно).</summary>
@@ -120,6 +126,7 @@ namespace Dsl.Ide
             _workspace = options.Workspace ?? new MemoryWorkspace();
             _api = options.Api ?? new FixedApiSource(ApiModel.Empty);
             _apply = options.ApplyTarget;
+            _refsProvider = options.ReferenceModules;
 
             AddToClassList("sal-ide");
             var uss = options.StyleSheet != null ? options.StyleSheet : Resources.Load<StyleSheet>("SalamanderIde/SalIde");
@@ -267,6 +274,12 @@ namespace Dsl.Ide
 
             _ls.TextProvider = GetText;
             _ls.Api = _api.Current?.Manifest;   // источники грузятся в своих конструкторах — Poll уже ничего не вернёт
+            // видимость имён — по модулю файла; определение в справочном модуле
+            // получает ключ "ref:<логическое имя>" (в воркспейсе его не открыть)
+            _ls.ModuleOfFile = key => ReferenceSet.ModuleOfLogical(
+                key != null && key.StartsWith(RefPrefix, StringComparison.Ordinal) ? key.Substring(RefPrefix.Length) : LogicalOf(key));
+            _ls.FileOfLogical = logical =>
+                _snapshot.LogicalToPath.TryGetValue(logical, out var docKey) ? docKey : RefPrefix + logical;
 
             BuildFilters();
             ShowSidebarTab(_session.SidebarTab ?? "files");
@@ -311,6 +324,14 @@ namespace Dsl.Ide
         {
             _api = api ?? new FixedApiSource(ApiModel.Empty);
             OnApiChanged();
+        }
+
+        /// <summary>Сменить источник справочных модулей (null — только воркспейс) и перекомпилировать.</summary>
+        public void SetReferenceModules(Func<List<ModuleSourceSet>> provider)
+        {
+            _refsProvider = provider;
+            LoadReferences();
+            RequestCompile(immediate: true);
         }
 
         public void SetApplyTarget(IIdeApplyTarget target)
@@ -698,10 +719,30 @@ namespace Dsl.Ide
             }
             // логические имена открытых документов — по новому снимку
             foreach (var d in _docs) d.Logical = LogicalOf(d.Key);
+            LoadReferences();
             RebuildIndex();
             RefreshExplorer();
             RequestCompile(immediate: true);
             if (announce) SetStatus($"Модули перечитаны: {_snapshot.Modules.Count}.", IdeStatusKind.Info);
+        }
+
+        private const string RefPrefix = "ref:";
+        private Func<List<ModuleSourceSet>> _refsProvider;
+        private List<ModuleSourceSet> _refModules = new List<ModuleSourceSet>();
+
+        /// <summary>
+        /// Снимок справочных модулей: берётся при перечитывании воркспейса, а не
+        /// на каждую компиляцию — источник (папка игры) читает диск. Компиляция в
+        /// фоне только читает этот список.
+        /// </summary>
+        private void LoadReferences()
+        {
+            try { _refModules = _refsProvider?.Invoke() ?? new List<ModuleSourceSet>(); }
+            catch (Exception e)
+            {
+                _refModules = new List<ModuleSourceSet>();
+                _host.Log(IdeLogLevel.Warning, "workspace", "справочные модули игры не прочитались — подсказки только по воркспейсу", e);
+            }
         }
 
         private void RebuildIndex()
@@ -877,6 +918,8 @@ namespace Dsl.Ide
                 if (d.Logical != null) continue;
                 AddLooseDocument(d, modules, job);
             }
+            // справочные модули — только нужные воркспейсу (по зависимостям)
+            job.References = ReferenceSet.Append(modules, _refModules);
             job.Modules = modules;
             return job;
         }
@@ -952,8 +995,10 @@ namespace Dsl.Ide
             var result = job.Result;
             var byKey = new Dictionary<string, List<Diagnostic>>(StringComparer.OrdinalIgnoreCase);
             var items = new List<ProblemItem>();
+            _ls.UpdateSymbols(result); // семантика подсказок, в том числе по модулям игры
             foreach (var d in result.Diagnostics)
             {
+                if (job.References != null && job.References.Contains(d.File)) continue; // ошибки чужих модулей — не наши
                 string key = d.File != null && job.LogicalToKey.TryGetValue(d.File, out var k) ? k : null;
                 if (key != null)
                 {
@@ -1015,6 +1060,12 @@ namespace Dsl.Ide
             _ls.Index.Update(_active.Key, _active.Text);
             var loc = _ls.Definition(_active.Key, line1, col1);
             if (loc == null) { SetStatus("Определение не найдено.", IdeStatusKind.Info); return false; }
+            if (loc.File != null && loc.File.StartsWith(RefPrefix, StringComparison.Ordinal))
+            {
+                // справочный модуль в воркспейс не входит — говорим, где искать
+                SetStatus($"Определение — в модуле игры: {loc.File.Substring(RefPrefix.Length)}:{loc.Line}.", IdeStatusKind.Info);
+                return true;
+            }
             if (string.Equals(loc.File, _active.Key, StringComparison.OrdinalIgnoreCase))
                 _editor.GoTo(loc.Line, loc.Col);
             else

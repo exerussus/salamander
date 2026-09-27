@@ -144,6 +144,10 @@ namespace Dsl.Tools.Lsp
         private string _cfgApiManifest;   // salamander.apiManifest
         private string _cfgModulesRoot;   // salamander.modulesRoot
         private string _cfgBuildFile;     // salamander.buildFile
+        // salamander.referencePaths: папки со справочными модулями (игра, зависимости
+        // мода) — компилируются вместе с воркспейсом ради ссылок и подсказок,
+        // их ошибки не публикуются
+        private List<string> _cfgReferencePaths = new List<string>();
         private string _resolvedApiPath;  // кэш найденного манифеста (обход не на каждый рефреш)
 
         private void ApplySettings(JObject settings)
@@ -163,6 +167,20 @@ namespace Dsl.Tools.Lsp
             _cfgModulesRoot = Get("modulesRoot");
             _cfgBuildFile = Get("buildFile");
             _resolvedApiPath = null;
+
+            // список: массив строк или одна строка через ';'
+            _cfgReferencePaths = new List<string>();
+            var refs = settings["referencePaths"] ?? settings["salamander.referencePaths"] ?? s?["referencePaths"];
+            if (refs is JArray arr)
+            {
+                foreach (var t in arr)
+                    if (t != null && t.Type == JTokenType.String && !string.IsNullOrWhiteSpace((string)t))
+                        _cfgReferencePaths.Add(((string)t).Trim());
+            }
+            else if (refs != null && refs.Type == JTokenType.String)
+                foreach (var part in ((string)refs).Split(';'))
+                    if (!string.IsNullOrWhiteSpace(part)) _cfgReferencePaths.Add(part.Trim());
+            foreach (var rp in _cfgReferencePaths) Console.Error.WriteLine($"salamander-lsp: referencePath = {rp}");
 
             if (_cfgApiManifest != null) Console.Error.WriteLine($"salamander-lsp: apiManifest = {_cfgApiManifest}");
             if (_cfgModulesRoot != null) Console.Error.WriteLine($"salamander-lsp: modulesRoot = {_cfgModulesRoot}");
@@ -371,6 +389,34 @@ namespace Dsl.Tools.Lsp
             var modules = WorkspaceCompiler.WithOverlays(ws,
                 abs => _open.TryGetValue(Path.GetFullPath(abs), out var live) ? live : null);
 
+            // справочные модули (salamander.referencePaths): только те, от которых
+            // воркспейс зависит; их файлы — для ссылок и подсказок, не для ошибок
+            var logicalToPath = new Dictionary<string, string>(ws.LogicalToPath, StringComparer.Ordinal);
+            var refModules = new List<ModuleSourceSet>();
+            foreach (var rp in _cfgReferencePaths)
+            {
+                string dir = ResolveConfigured(rp);
+                if (dir == null || !Directory.Exists(dir))
+                {
+                    Console.Error.WriteLine($"salamander-lsp: папка справочных модулей не найдена: {rp}");
+                    continue;
+                }
+                var rws = WorkspaceLoader.Load(dir);
+                refModules.AddRange(rws.Modules);
+                foreach (var kv in rws.LogicalToPath)
+                    if (!logicalToPath.ContainsKey(kv.Key)) logicalToPath[kv.Key] = kv.Value;
+            }
+            var references = ReferenceSet.Append(modules, refModules);
+
+            var pathToLogical = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var kv in logicalToPath)
+            {
+                try { pathToLogical[Path.GetFullPath(kv.Value)] = kv.Key; }
+                catch { /* недопустимый путь — просто без обратной карты */ }
+            }
+            _ls.ModuleOfFile = key => key != null && pathToLogical.TryGetValue(key, out var lg) ? ReferenceSet.ModuleOfLogical(lg) : null;
+            _ls.FileOfLogical = lg => lg != null && logicalToPath.TryGetValue(lg, out var p2) ? Path.GetFullPath(p2) : null;
+
             // порядок загрузки файлов — для подсказки о версиях члена (слои
             // before/after и replace зависят от него, а индекс обходит папки по пути)
             var fileRank = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
@@ -390,9 +436,11 @@ namespace Dsl.Tools.Lsp
             if (modules.Count > 0)
             {
                 var result = ScriptCompiler.Compile(registry, apiVersion, modules);
+                _ls.UpdateSymbols(result); // семантические подсказки: типы, сигнатуры, справочные модули
                 foreach (var d in result.Diagnostics)
                 {
-                    string abs = ws.LogicalToPath.TryGetValue(d.File, out var a) ? Path.GetFullPath(a) : d.File;
+                    if (references.Contains(d.File)) continue; // ошибки чужих модулей — не наши
+                    string abs = d.File != null && ws.LogicalToPath.TryGetValue(d.File, out var a) ? Path.GetFullPath(a) : d.File;
                     int severity = d.Severity == Severity.Error ? 1
                                  : d.Severity == Severity.Warning ? 2 : 3;
                     int line = Math.Max(1, d.Line);

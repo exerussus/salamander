@@ -63,13 +63,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 // Настройки, которые понимает сервер. Пути — абсолютные либо относительно
 // корня воркспейса; ${workspaceFolder} поддержан для единообразия с задачами
 // VS Code. Дальше их нормализует сам сервер (ModuleLoader.NormalizeUserPath).
-function serverSettings(): Record<string, string> {
+function serverSettings(): Record<string, string | string[]> {
     const cfg = vscode.workspace.getConfiguration('salamander');
-    const out: Record<string, string> = {};
+    const out: Record<string, string | string[]> = {};
     for (const key of ['apiManifest', 'modulesRoot', 'buildFile']) {
         const value = cfg.get<string>(key);
         if (value) out[key] = expand(value);
     }
+    // справочные модули (игра, зависимости мода): только для ссылок и подсказок
+    const refs = cfg.get<string[]>('referencePaths') ?? [];
+    const expanded = refs.filter(r => typeof r === 'string' && r.trim().length > 0).map(expand);
+    if (expanded.length > 0) out['referencePaths'] = expanded;
     return out;
 }
 

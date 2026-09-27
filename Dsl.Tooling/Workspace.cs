@@ -177,6 +177,74 @@ namespace Dsl.Tooling
         }
     }
 
+    /// <summary>
+    /// Справочные модули: то, что видит игра, но чего нет в воркспейсе —
+    /// базовые скрипты, зависимости мода. Их кладут в компиляцию рядом с
+    /// воркспейсом, чтобы ссылки на них не давали ложных «зависимость не
+    /// загружена» и чтобы подсказки знали их классы; сами они только читаются,
+    /// и их диагностики не показываются.
+    /// </summary>
+    public sealed class ReferenceSet
+    {
+        /// <summary>Логические имена файлов справочных модулей, попавших в компиляцию.</summary>
+        public readonly HashSet<string> Files = new HashSet<string>(StringComparer.Ordinal);
+        /// <summary>Имена добавленных модулей.</summary>
+        public readonly List<string> Modules = new List<string>();
+
+        /// <summary>Файл (логическое имя) — из справочного модуля.</summary>
+        public bool Contains(string logical) => logical != null && Files.Contains(logical);
+
+        /// <summary>
+        /// Добавить к модулям воркспейса справочные, которые им нужны: прямые
+        /// зависимости и дальше по цепочке. Модуль воркспейса важнее справочного
+        /// с тем же именем (его и правят). Остальные справочные не добавляются:
+        /// из воркспейса они всё равно не видны, а сломанный посторонний модуль
+        /// не должен ронять проверку мода.
+        /// </summary>
+        public static ReferenceSet Append(List<ModuleSourceSet> modules, IEnumerable<ModuleSourceSet> references)
+        {
+            var result = new ReferenceSet();
+            if (modules == null || references == null) return result;
+
+            var byName = new Dictionary<string, ModuleSourceSet>(StringComparer.Ordinal);
+            foreach (var r in references)
+                if (r?.Manifest?.Name != null && !byName.ContainsKey(r.Manifest.Name)) byName[r.Manifest.Name] = r;
+
+            var present = new HashSet<string>(StringComparer.Ordinal);
+            var queue = new Queue<string>();
+            foreach (var m in modules)
+            {
+                if (m?.Manifest?.Name == null) continue;
+                present.Add(m.Manifest.Name);
+            }
+            foreach (var m in modules)
+                foreach (var dep in m?.Manifest?.Dependencies ?? Array.Empty<string>())
+                    queue.Enqueue(dep);
+
+            while (queue.Count > 0)
+            {
+                string name = queue.Dequeue();
+                if (name == null || present.Contains(name) || !byName.TryGetValue(name, out var set)) continue;
+                present.Add(name);
+                modules.Add(set);
+                result.Modules.Add(name);
+                foreach (var (logical, _) in set.Files)
+                    if (logical != null) result.Files.Add(logical);
+                foreach (var dep in set.Manifest.Dependencies ?? Array.Empty<string>())
+                    queue.Enqueue(dep);
+            }
+            return result;
+        }
+
+        /// <summary>Модуль по логическому имени файла ("мод/путь.sal" → "мод").</summary>
+        public static string ModuleOfLogical(string logical)
+        {
+            if (string.IsNullOrEmpty(logical)) return null;
+            int slash = logical.IndexOf('/');
+            return slash > 0 ? logical.Substring(0, slash) : null;
+        }
+    }
+
     public static class WorkspaceCompiler
     {
         /// <summary>

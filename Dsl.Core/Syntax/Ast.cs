@@ -56,6 +56,9 @@ namespace Dsl.Syntax
 
         /// <summary>Имя как оно написано в объявлении (без пространства имён).</summary>
         public string ShortName => Namespace == null ? Name : Name.Substring(Namespace.Length + 1);
+
+        /// <summary>Описание из «///» над объявлением (строки через \n) или null.</summary>
+        public string Doc;
     }
 
     public sealed class EnumDecl : Decl
@@ -101,6 +104,8 @@ namespace Dsl.Syntax
     public abstract class Member : Node
     {
         public string Name;
+        /// <summary>Описание из «///» над членом (строки через \n) или null.</summary>
+        public string Doc;
     }
 
     public sealed class FieldMember : Member
