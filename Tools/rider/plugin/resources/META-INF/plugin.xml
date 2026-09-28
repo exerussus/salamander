@@ -1,0 +1,43 @@
+<idea-plugin>
+    <!-- id прежний (был плагин только со значком): установка поверх заменяет его, а не ставит второй -->
+    <id>com.exerussus.salamander.icon</id>
+    <name>Salamander</name>
+    <version>2.0.1</version>
+    <vendor>Exerussus</vendor>
+    <description><![CDATA[
+    Support for <b>Salamander</b> scripts (<code>.sal</code>) in JetBrains Rider:
+    <ul>
+      <li>language server (errors, completion, hover, go-to) wired through LSP4IJ, server bundled — no manual setup;</li>
+      <li>Unity projects detected: modules root and API manifest found in <code>Assets/StreamingAssets</code>;</li>
+      <li>TextMate grammar bundled: instant highlighting, comment toggling, bracket matching;</li>
+      <li><code>.sal</code> file association fixed automatically (no more highlighting <code>OFF</code>);</li>
+      <li>New → Salamander File: triggers, listeners, classes, enums and every archetype kind the game declares;</li>
+      <li>live templates (trigger, event, before/after/replace, func, for, wait, spawn…);</li>
+      <li>salamander icon for <code>.sal</code> files.</li>
+    </ul>
+    ]]></description>
+    <idea-version since-build="243"/>
+
+    <depends>com.intellij.modules.platform</depends>
+    <depends optional="true" config-file="salamander-lsp4ij.xml">com.redhat.devtools.lsp4ij</depends>
+    <depends optional="true" config-file="salamander-textmate.xml">org.jetbrains.plugins.textmate</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <fileIconProvider implementation="com.exerussus.salamander.rider.SalamanderFileIconProvider" order="first"/>
+        <postStartupActivity implementation="com.exerussus.salamander.rider.SalamanderStartup"/>
+        <notificationGroup id="Salamander" displayType="BALLOON"/>
+        <liveTemplateContext contextId="SALAMANDER" implementation="com.exerussus.salamander.rider.SalamanderTemplateContext"/>
+        <defaultLiveTemplates file="/liveTemplates/Salamander.xml"/>
+    </extensions>
+
+    <actions>
+        <group id="Salamander.NewFile" class="com.exerussus.salamander.rider.newfile.SalamanderNewGroup"
+               popup="true" text="Salamander File" description="Новый .sal по шаблону: язык и архетипы игры"
+               icon="/icons/salamander.svg">
+            <!-- Rider: Add в проводнике (Solution / Unity / File System) -->
+            <add-to-group group-id="SolutionViewAddGroup" anchor="first"/>
+            <!-- New в обычном Project view и в File → New -->
+            <add-to-group group-id="NewGroup" anchor="first"/>
+        </group>
+    </actions>
+</idea-plugin>

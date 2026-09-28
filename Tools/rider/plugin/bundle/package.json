@@ -1,0 +1,25 @@
+{
+  "name": "salamander",
+  "displayName": "Salamander",
+  "description": "Salamander grammar for the JetBrains TextMate plugin. Grammar and language configuration are copied from Tools/vscode-salamander at build time.",
+  "version": "2.0.1",
+  "publisher": "local",
+  "engines": { "vscode": "^1.85.0" },
+  "contributes": {
+    "languages": [
+      {
+        "id": "salamander",
+        "aliases": ["Salamander", "salamander"],
+        "extensions": [".sal"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "salamander",
+        "scopeName": "source.salamander",
+        "path": "./syntaxes/salamander.tmLanguage.json"
+      }
+    ]
+  }
+}

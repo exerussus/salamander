@@ -1,0 +1,2 @@
+# build.sh запускается в Git Bash: с CRLF он падает на первой же строке
+*.sh text eol=lf

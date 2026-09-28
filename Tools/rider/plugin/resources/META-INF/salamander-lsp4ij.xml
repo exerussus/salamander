@@ -1,0 +1,15 @@
+<idea-plugin>
+    <extensions defaultExtensionNs="com.redhat.devtools.lsp4ij">
+        <server id="salamander" name="Salamander" icon="/icons/salamander.svg"
+                factoryClass="com.exerussus.salamander.rider.lsp.SalamanderServerFactory">
+            <description><![CDATA[
+            Salamander language server (DslLsp): the same compiler the game uses.
+            Errors, completion with API docs, hover, signature help, go-to definition, symbols.
+            ]]></description>
+        </server>
+        <fileNamePatternMapping patterns="*.sal" serverId="salamander" languageId="salamander"/>
+    </extensions>
+    <extensions defaultExtensionNs="com.intellij">
+        <postStartupActivity implementation="com.exerussus.salamander.rider.lsp.SalamanderLspStartup"/>
+    </extensions>
+</idea-plugin>

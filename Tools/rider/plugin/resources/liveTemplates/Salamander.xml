@@ -1,0 +1,101 @@
+<templateSet group="Salamander">
+  <template name="trigger" value="trigger $NAME$&#10;{&#10;    event $ONEVENT$($V3$)&#10;    {&#10;        $END$&#10;    }&#10;}" description="Триггер с обработчиком события (триггер обязан иметь хотя бы один event)" toReformat="false" toShortenFQNames="false">
+    <variable name="NAME" expression="" defaultValue='"Name"' alwaysStopAt="true"/>
+    <variable name="ONEVENT" expression="" defaultValue='"OnEvent"' alwaysStopAt="true"/>
+    <variable name="V3" expression="" defaultValue="" alwaysStopAt="true"/>
+    <context><option name="SALAMANDER" value="true"/></context>
+  </template>
+  <template name="disabled" value="disabled trigger $NAME$&#10;{&#10;    event $ONEVENT$($V3$)&#10;    {&#10;        $END$&#10;    }&#10;}" description="Триггер, стартующий выключенным (Engine.EnableTrigger включит)" toReformat="false" toShortenFQNames="false">
+    <variable name="NAME" expression="" defaultValue='"Name"' alwaysStopAt="true"/>
+    <variable name="ONEVENT" expression="" defaultValue='"OnEvent"' alwaysStopAt="true"/>
+    <variable name="V3" expression="" defaultValue="" alwaysStopAt="true"/>
+    <context><option name="SALAMANDER" value="true"/></context>
+  </template>
+  <template name="class" value="class $NAME$&#10;{&#10;    $END$&#10;}" description="Статический класс: константы, поля, функции" toReformat="false" toShortenFQNames="false">
+    <variable name="NAME" expression="" defaultValue='"Name"' alwaysStopAt="true"/>
+    <context><option name="SALAMANDER" value="true"/></context>
+  </template>
+  <template name="enum" value="enum $NAME$ { $A$, $B$ }" description="Скриптовый енум" toReformat="false" toShortenFQNames="false">
+    <variable name="NAME" expression="" defaultValue='"Name"' alwaysStopAt="true"/>
+    <variable name="A" expression="" defaultValue='"A"' alwaysStopAt="true"/>
+    <variable name="B" expression="" defaultValue='"B"' alwaysStopAt="true"/>
+    <context><option name="SALAMANDER" value="true"/></context>
+  </template>
+  <template name="event" value="event $ONEVENT$($V2$)&#10;{&#10;    $END$&#10;}" description="Обработчик события (сигнатура должна совпадать с хостовой — см. автодополнение после 'event ')" toReformat="false" toShortenFQNames="false">
+    <variable name="ONEVENT" expression="" defaultValue='"OnEvent"' alwaysStopAt="true"/>
+    <variable name="V2" expression="" defaultValue="" alwaysStopAt="true"/>
+    <context><option name="SALAMANDER" value="true"/></context>
+  </template>
+  <template name="before" value="before event $ONEVENT$($V2$)&#10;{&#10;    $END$&#10;}" description="Слой ДО ядра события: ядро выполнится следом в том же файбере; обычное переопределение слой не трогает" toReformat="false" toShortenFQNames="false">
+    <variable name="ONEVENT" expression="" defaultValue='"OnEvent"' alwaysStopAt="true"/>
+    <variable name="V2" expression="" defaultValue="" alwaysStopAt="true"/>
+    <context><option name="SALAMANDER" value="true"/></context>
+  </template>
+  <template name="after" value="after event $ONEVENT$($V2$)&#10;{&#10;    $END$&#10;}" description="Слой ПОСЛЕ ядра события (слои идут в порядке загрузки модулей)" toReformat="false" toShortenFQNames="false">
+    <variable name="ONEVENT" expression="" defaultValue='"OnEvent"' alwaysStopAt="true"/>
+    <variable name="V2" expression="" defaultValue="" alwaysStopAt="true"/>
+    <context><option name="SALAMANDER" value="true"/></context>
+  </template>
+  <template name="replace" value="replace event $ONEVENT$($V2$)&#10;{&#10;    $END$&#10;}" description="Стереть всё, что объявлено раньше (ядро и слои), и стать новым ядром; слои, загруженные позже, лягут поверх" toReformat="false" toShortenFQNames="false">
+    <variable name="ONEVENT" expression="" defaultValue='"OnEvent"' alwaysStopAt="true"/>
+    <variable name="V2" expression="" defaultValue="" alwaysStopAt="true"/>
+    <context><option name="SALAMANDER" value="true"/></context>
+  </template>
+  <template name="action" value="action Do()&#10;{&#10;    $END$&#10;}" description="Точка входа триггера: Engine.ActivateTrigger запускает её отдельным файбером" toReformat="false" toShortenFQNames="false">
+    <context><option name="SALAMANDER" value="true"/></context>
+  </template>
+  <template name="func" value="func $NAME$($V2$) -&gt; $FLOAT$&#10;{&#10;    $END$&#10;}" description="Функция (опустите '-&gt; тип' для void)" toReformat="false" toShortenFQNames="false">
+    <variable name="NAME" expression="" defaultValue='"Name"' alwaysStopAt="true"/>
+    <variable name="V2" expression="" defaultValue="" alwaysStopAt="true"/>
+    <variable name="FLOAT" expression="" defaultValue='"float"' alwaysStopAt="true"/>
+    <context><option name="SALAMANDER" value="true"/></context>
+  </template>
+  <template name="wait" value="wait $V1$;" description="Приостановить файбер на N секунд" toReformat="false" toShortenFQNames="false">
+    <variable name="V1" expression="" defaultValue='"1.0"' alwaysStopAt="true"/>
+    <context><option name="SALAMANDER" value="true"/></context>
+  </template>
+  <template name="waituntil" value="wait until $CONDITION$;" description="Ждать условия (проверка раз в тик)" toReformat="false" toShortenFQNames="false">
+    <variable name="CONDITION" expression="" defaultValue='"condition"' alwaysStopAt="true"/>
+    <context><option name="SALAMANDER" value="true"/></context>
+  </template>
+  <template name="spawn" value="spawn $FUNC$($V2$);" description="Запустить функцию параллельным файбером" toReformat="false" toShortenFQNames="false">
+    <variable name="FUNC" expression="" defaultValue='"Func"' alwaysStopAt="true"/>
+    <variable name="V2" expression="" defaultValue="" alwaysStopAt="true"/>
+    <context><option name="SALAMANDER" value="true"/></context>
+  </template>
+  <template name="for" value="for $I$ in $V2$..$N$&#10;{&#10;    $END$&#10;}" description="Цикл по диапазону (верхняя граница исключается)" toReformat="false" toShortenFQNames="false">
+    <variable name="I" expression="" defaultValue='"i"' alwaysStopAt="true"/>
+    <variable name="V2" expression="" defaultValue='"0"' alwaysStopAt="true"/>
+    <variable name="N" expression="" defaultValue='"n"' alwaysStopAt="true"/>
+    <context><option name="SALAMANDER" value="true"/></context>
+  </template>
+  <template name="foreach" value="for $ITEM$ in $COLLECTION$&#10;{&#10;    $END$&#10;}" description="Цикл по массиву/списку" toReformat="false" toShortenFQNames="false">
+    <variable name="ITEM" expression="" defaultValue='"item"' alwaysStopAt="true"/>
+    <variable name="COLLECTION" expression="" defaultValue='"collection"' alwaysStopAt="true"/>
+    <context><option name="SALAMANDER" value="true"/></context>
+  </template>
+  <template name="if" value="if ($CONDITION$)&#10;{&#10;    $END$&#10;}" description="Условие" toReformat="false" toShortenFQNames="false">
+    <variable name="CONDITION" expression="" defaultValue='"condition"' alwaysStopAt="true"/>
+    <context><option name="SALAMANDER" value="true"/></context>
+  </template>
+  <template name="while" value="while ($CONDITION$)&#10;{&#10;    $END$&#10;}" description="Цикл" toReformat="false" toShortenFQNames="false">
+    <variable name="CONDITION" expression="" defaultValue='"condition"' alwaysStopAt="true"/>
+    <context><option name="SALAMANDER" value="true"/></context>
+  </template>
+  <template name="listener" value="listener $NAME$&#10;{&#10;    event OnSubscribe() { $V2$ }&#10;    event $ONHOSTEVENT$($UNIT$ $U$$V6$)&#10;    {&#10;        $END$&#10;    }&#10;    event OnUnsubscribe() { }&#10;}" description="Подписка на события конкретной сущности: Engine.Attach(Name, entity); субъект — первый параметр события; self и поля — свои у каждой подписки" toReformat="false" toShortenFQNames="false">
+    <variable name="NAME" expression="" defaultValue='"Name"' alwaysStopAt="true"/>
+    <variable name="V2" expression="" defaultValue="" alwaysStopAt="true"/>
+    <variable name="ONHOSTEVENT" expression="" defaultValue='"OnHostEvent"' alwaysStopAt="true"/>
+    <variable name="UNIT" expression="" defaultValue='"Unit"' alwaysStopAt="true"/>
+    <variable name="U" expression="" defaultValue='"u"' alwaysStopAt="true"/>
+    <variable name="V6" expression="" defaultValue="" alwaysStopAt="true"/>
+    <context><option name="SALAMANDER" value="true"/></context>
+  </template>
+  <template name="arch" value="$SPELL$ $ENTITY_ID$&#10;{&#10;    event $ONCAST$($V4$)&#10;    {&#10;        $END$&#10;    }&#10;}" description="Блок-архетип: механика сущности по шаблону вида (виды и события объявляет игра; поздний блок переопределяет ранний по-событийно)" toReformat="false" toShortenFQNames="false">
+    <variable name="SPELL" expression="" defaultValue='"spell"' alwaysStopAt="true"/>
+    <variable name="ENTITY_ID" expression="" defaultValue='"entity_id"' alwaysStopAt="true"/>
+    <variable name="ONCAST" expression="" defaultValue='"OnCast"' alwaysStopAt="true"/>
+    <variable name="V4" expression="" defaultValue="" alwaysStopAt="true"/>
+    <context><option name="SALAMANDER" value="true"/></context>
+  </template>
+</templateSet>

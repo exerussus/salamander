@@ -75,12 +75,57 @@ namespace Dsl.Tooling
         }
 
         /// <summary>
+        /// Build-файл, который экспортирует редактор Unity-хоста для внешних
+        /// инструментов: &lt;проект&gt;/Library/Salamander/salamander-build.json.
+        /// Library — локальная папка редактора: не в гите и не в билде, а
+        /// состав модулей там описан уже РАСКРЫТЫМ (см. <see cref="Load"/>),
+        /// так что LSP и чекер видят пак глазами игры, какой бы формат ни был
+        /// у её module.json.
+        /// </summary>
+        public const string UnityLibraryBuildFile = "Library/Salamander/" + BuildFileName;
+
+        /// <summary>
+        /// Где build-файл, если его не задали явно: &lt;root&gt;/salamander-build.json,
+        /// иначе — вверх от корня модулей до Unity-проекта (папка с Library и
+        /// ProjectSettings) и его <see cref="UnityLibraryBuildFile"/>. null — нет.
+        /// </summary>
+        public static string FindBuildFile(string modulesRoot)
+        {
+            if (string.IsNullOrEmpty(modulesRoot)) return null;
+            try
+            {
+                string atRoot = Path.Combine(modulesRoot, BuildFileName);
+                if (File.Exists(atRoot)) return atRoot;
+
+                var dir = new DirectoryInfo(Path.GetFullPath(modulesRoot));
+                for (int up = 0; dir != null && up <= 8; up++, dir = dir.Parent)
+                {
+                    if (!Directory.Exists(Path.Combine(dir.FullName, "ProjectSettings"))) continue;
+                    string lib = Path.Combine(dir.FullName, "Library", "Salamander", BuildFileName);
+                    return File.Exists(lib) ? lib : null; // нашли Unity-проект — выше не идём
+                }
+            }
+            catch { /* недопустимый путь — build-файла нет */ }
+            return null;
+        }
+
+        /// <summary>
         /// Модули воркспейса. «Ешь то, что дал сборщик»: если есть
-        /// salamander-build.json (упорядоченный список папок модулей) — берём
-        /// РОВНО его; иначе обход папки вглубь (дев-режим без сборщика).
+        /// salamander-build.json — берём РОВНО его; иначе обход папки вглубь
+        /// (дев-режим без сборщика).
+        ///
+        /// Элемент "modules" в build-файле — одно из двух:
+        ///  - строка: папка модуля, её читает <paramref name="reader"/>;
+        ///  - объект: модуль, уже РАСКРЫТЫЙ сборщиком —
+        ///    { "dir": папка, "manifest": { name, version, apiVersion,
+        ///      dependencies, execution }, "files": [ { "logical", "path" } ] }.
+        ///    Файлы берутся ровно эти и в этом порядке; формат module.json хоста
+        ///    инструменту знать не нужно. Пустой "files" — модуль без скриптов
+        ///    намеренно (без W0300).
+        /// Пути — абсолютные либо относительно папки build-файла.
         /// </summary>
         /// <param name="modulesRoot">Корень поиска модулей.</param>
-        /// <param name="buildFile">Явный build-файл; null — &lt;root&gt;/salamander-build.json.</param>
+        /// <param name="buildFile">Явный build-файл; null — <see cref="FindBuildFile"/>.</param>
         /// <param name="reader">Чем читать модули; null — <see cref="DefaultReader"/>.</param>
         public static WorkspaceModules Load(string modulesRoot, string buildFile = null, IModuleReader reader = null)
         {
@@ -89,20 +134,21 @@ namespace Dsl.Tooling
             Action<string, string> onError = (file, message) =>
                 ws.LoadErrors.Add(new KeyValuePair<string, string>(file, message));
 
-            string buildPath = buildFile ?? (modulesRoot == null ? null : Path.Combine(modulesRoot, BuildFileName));
+            string buildPath = buildFile ?? FindBuildFile(modulesRoot);
             if (buildPath != null && File.Exists(buildPath))
             {
                 ws.BuildFile = buildPath;
                 try
                 {
                     var build = JObject.Parse(File.ReadAllText(buildPath));
-                    var dirs = new List<string>();
                     // пути в build-файле — относительно ЕГО папки: так его можно
                     // положить и в корень проекта, и рядом с модулями
                     string baseDir = Path.GetDirectoryName(Path.GetFullPath(buildPath)) ?? modulesRoot;
                     foreach (var t in build["modules"] ?? new JArray())
-                        dirs.Add(Path.GetFullPath(Path.Combine(baseDir, (string)t)));
-                    foreach (var dir in dirs) AddModule(ws, dir, onError, r);
+                    {
+                        if (t is JObject expanded) AddExpanded(ws, expanded, baseDir, buildPath, onError);
+                        else AddModule(ws, Path.GetFullPath(Path.Combine(baseDir, (string)t)), onError, r);
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -165,6 +211,51 @@ namespace Dsl.Tooling
             }
             catch { /* недопустимый путь — вне модуля */ }
             return null;
+        }
+
+        /// <summary>
+        /// Раскрытый сборщиком модуль: манифест как есть, файлы — ровно
+        /// перечисленные. Пропавший файл — ошибка загрузки с его путём, модуль
+        /// остаётся без него (как карантин по файлу, а не по модулю).
+        /// </summary>
+        private static void AddExpanded(WorkspaceModules ws, JObject entry, string baseDir, string buildPath,
+                                        Action<string, string> onError)
+        {
+            var manifest = (entry["manifest"] as JObject)?.ToObject<ModuleManifest>();
+            if (manifest == null || string.IsNullOrEmpty(manifest.Name))
+            {
+                onError(buildPath, "salamander-build.json: у раскрытого модуля нет manifest.name — модуль пропущен.");
+                return;
+            }
+
+            var set = new ModuleSourceSet { Manifest = manifest };
+            foreach (var f in entry["files"] as JArray ?? new JArray())
+            {
+                string logical = (string)f?["logical"];
+                string rel = (string)f?["path"];
+                if (string.IsNullOrEmpty(logical) || string.IsNullOrEmpty(rel))
+                {
+                    onError(buildPath, $"salamander-build.json: у файла модуля '{manifest.Name}' нет logical или path.");
+                    continue;
+                }
+                string path = Path.GetFullPath(Path.Combine(baseDir, rel));
+                string text;
+                try { text = File.ReadAllText(path); }
+                catch (Exception ex)
+                {
+                    onError(path, $"файл модуля '{manifest.Name}' из salamander-build.json не читается — {ex.Message} " +
+                                  "(build-файл устарел? его перевыгружает редактор игры)");
+                    continue;
+                }
+                set.Files.Add((logical, text));
+                ws.LogicalToPath[logical] = path;
+            }
+            set.EmptyIsIntended = set.Files.Count == 0 && entry["files"] is JArray arr && arr.Count == 0;
+
+            ws.Modules.Add(set);
+            string dir = (string)entry["dir"];
+            if (!ws.ModuleDirs.ContainsKey(manifest.Name) && !string.IsNullOrEmpty(dir))
+                ws.ModuleDirs[manifest.Name] = Path.GetFullPath(Path.Combine(baseDir, dir));
         }
 
         private static void AddModule(WorkspaceModules ws, string dir, Action<string, string> onError, IModuleReader reader)
@@ -264,7 +355,7 @@ namespace Dsl.Tooling
         /// <summary>Копия набора; replace(логическое имя) → новый текст или null.</summary>
         public static ModuleSourceSet Copy(ModuleSourceSet set, Func<string, string> replace = null)
         {
-            var copy = new ModuleSourceSet { Manifest = set.Manifest };
+            var copy = new ModuleSourceSet { Manifest = set.Manifest, EmptyIsIntended = set.EmptyIsIntended };
             foreach (var (name, text) in set.Files)
             {
                 string live = replace?.Invoke(name);

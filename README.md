@@ -33,6 +33,7 @@ Dsl.Tests/           [B] NUnit-тесты (editor-only, в билд не вхо�
 Tools/DslCheck/      [C] CLI-чекер (тот же компилятор вне игры; для CI и редактора)
 Tools/vscode-salamander/ [C] расширение VS Code (подсветка, ошибки, автодополнение)
 Tools/sublime-salamander/ [C] пакет Sublime Text 4 (подсветка, сниппеты; LSP через пакет LSP)
+Tools/rider/plugin/  [C] плагин Rider: LSP-сервер внутри, грамматика, шаблоны, New File по архетипам
 Tools/icons/         [C] значок .sal (саламандра): мастер-SVG и генератор PNG для всех редакторов
 Examples/UnityRpg/   [A] пример игровой обвязки + модуль скриптов (StreamingAssets)
 Examples/DemoHost/   [C] чистый C#-хост: dotnet run — полная проводка без Unity
@@ -1005,6 +1006,31 @@ host.Quarantine(QuarantineScope.File);   // то же: registry.Quarantine = Qua
 модулей — `{"modules": ["mods/base", "mods/patch"]}`), берётся РОВНО он; обход
 папки — дев-режим без сборщика.
 
+**Свой формат пака — раскрытым build-файлом.** Если `module.json` игры не в
+апстримном формате (свои ключи, маски), внешние процессы (LSP, чекер) не
+смогут подключить её читатель и увидят паки пустыми. Тогда элемент `modules`
+может быть уже разобранным модулем — сборщик отдаёт манифест и файлы сам:
+
+```json
+{ "modules": [ {
+    "dir": "Assets/StreamingAssets/Core/core.magic",
+    "manifest": { "name": "core.magic", "version": "1.0.0", "apiVersion": 1,
+                  "dependencies": [], "execution": "cooperative" },
+    "files": [ { "logical": "core.magic/content/a.sal", "path": "C:/…/a.sal" } ] } ] }
+```
+
+Файлы берутся ровно эти и в этом порядке; строки и объекты можно смешивать.
+Пустой `"files": []` — пак без скриптов намеренно (без W0300); нет ключа
+`files` — пак пуст подозрительно (W0300). Пути — абсолютные или от папки
+build-файла.
+
+**Где инструменты ищут build-файл сами:** `<корень модулей>/salamander-build.json`,
+а в Unity-проекте — `Library/Salamander/salamander-build.json` (вверх от корня
+модулей до папки с `ProjectSettings`). Library — локальная папка редактора: не
+в гите и не в билде; редактор игры переписывает файл там при каждой правке
+`.sal`/`module.json`, и VS Code, Rider и чекер видят паки глазами игры без
+единой настройки.
+
 ## LSP: одна поддержка для VS Code, Rider, Sublime Text и любого редактора
 
 Языковой сервер (`Tools/DslLsp`) — тот же компилятор, что в игре, живущий
@@ -1066,8 +1092,10 @@ hover, ссылки на них не дают ложного «зависит о
 - Сборка (один раз): `dotnet publish Tools/DslLsp -c Release -o Tools/DslLsp/publish`
 - **VS Code**: расширение — тонкий клиент, находит сервер само (или настройка
   `salamander.server.path`).
-- **Rider / IDE JetBrains**: через плагин LSP4IJ + TextMate-подсветка из нашей
-  же грамматики — пошагово в `Tools/rider/README-Rider.md`.
+- **Rider**: плагин `Tools/rider/plugin` (ставится с диска, нужен LSP4IJ) —
+  сервер внутри, Unity-проект распознаётся сам, грамматика TextMate, шаблоны,
+  «Add → Salamander File» по архетипам игры. Другие IDE JetBrains — ручная
+  настройка LSP4IJ. Всё — в `Tools/rider/README-Rider.md`.
 - **Sublime Text 4**: пакет `Tools/sublime-salamander` (синтаксис и сниппеты
   генерируются из грамматики VS Code) + пакет LSP с клиентом `salamander` —
   пошагово в `Tools/sublime-salamander/README.md`.
