@@ -47,6 +47,18 @@
                     }
                 },
                 {
+                    "comment": "namespace A.B { ... } — путь целиком красится как пространство имён",
+                    "match": "\\b(namespace)\\s+([A-Za-z_]\\w*(?:\\s*\\.\\s*[A-Za-z_]\\w*)*)",
+                    "captures": {
+                        "1": {
+                            "name": "storage.type.namespace.salamander"
+                        },
+                        "2": {
+                            "name": "entity.name.namespace.salamander"
+                        }
+                    }
+                },
+                {
                     "match": "\\b(trigger|class|enum|listener)\\s+([A-Za-z_]\\w*)",
                     "captures": {
                         "1": {
@@ -54,6 +66,15 @@
                         },
                         "2": {
                             "name": "entity.name.type.salamander"
+                        }
+                    }
+                },
+                {
+                    "comment": "Слои мерж-цепочки: before/after/replace — контекстные слова, модификатор только перед event/func/action.",
+                    "match": "\\b(before|after|replace)\\s+(?=(?:event|func|action)\\b)",
+                    "captures": {
+                        "1": {
+                            "name": "storage.modifier.salamander"
                         }
                     }
                 },
@@ -143,6 +164,11 @@
                 {
                     "name": "keyword.other.salamander",
                     "match": "\\b(spawn|new|const|readonly|var|disabled)\\b"
+                },
+                {
+                    "comment": "base(...) — вызов предыдущей версии члена (контекстное слово).",
+                    "name": "keyword.other.base.salamander",
+                    "match": "(?<![.\\w])base(?=\\s*\\()"
                 }
             ]
         },
@@ -152,7 +178,7 @@
         },
         "types": {
             "name": "support.type.primitive.salamander",
-            "match": "\\b(int|float|bool|string|void|Fiber|Subscription|List|Map)\\b"
+            "match": "\\b(int|float|double|bool|string|void|Fiber|Subscription|List|Map)\\b"
         },
         "module-qualifier": {
             "match": "\\b([A-Za-z_]\\w*)(::)",
@@ -200,7 +226,7 @@
         },
         "operators": {
             "name": "keyword.operator.salamander",
-            "match": "->|\\.\\.|==|!=|<=|>=|&&|\\|\\||[+\\-*/%<>=!]"
+            "match": "\\+\\+|--|->|\\.\\.|==|!=|<=|>=|&&|\\|\\||[+\\-*/%]=|[+\\-*/%<>=!]"
         },
         "string": {
             "name": "string.quoted.double.salamander",
@@ -339,7 +365,7 @@
         },
         "archetype-decl": {
             "comment": "Блок-архетип: вид (объявлен хостом) + id. spell fireball { / item \"sword.v2\" {",
-            "match": "^\\s*(?!(?:trigger|class|enum|listener|func|action|event|if|else|while|for|in|break|continue|return|wait|until|spawn|new|const|readonly|var|disabled|true|false|null|int|float|bool|string|void|pass|self)\\b)([A-Za-z_]\\w*)\\s+(\"[^\"]*\"|[A-Za-z_]\\w*)\\s*(?=\\{)",
+            "match": "^\\s*(?!(?:trigger|class|enum|listener|namespace|func|action|event|if|else|while|for|in|break|continue|return|wait|until|spawn|new|const|readonly|var|disabled|true|false|null|int|float|bool|string|void|pass|self)\\b)([A-Za-z_]\\w*)\\s+(\"[^\"]*\"|[A-Za-z_]\\w*)\\s*(?=\\{)",
             "captures": {
                 "1": {
                     "name": "storage.type.archetype.salamander"

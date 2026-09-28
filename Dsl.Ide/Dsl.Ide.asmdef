@@ -1,0 +1,19 @@
+{
+    "name": "Dsl.Ide",
+    "rootNamespace": "Dsl.Ide",
+    "references": [
+        "Dsl.Core",
+        "Dsl.Tooling"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": true,
+    "precompiledReferences": [
+        "Newtonsoft.Json.dll"
+    ],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

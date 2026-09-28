@@ -18,12 +18,20 @@ namespace Dsl.Text
         private int _line;
         private int _col;
 
+        /// <summary>
+        /// Doc-комментарии «/// текст» по номеру строки (1-based) — описание
+        /// объявления или члена под ними: его показывают подсказки IDE. Для кода
+        /// обычный комментарий. null — в файле их нет.
+        /// </summary>
+        public Dictionary<int, string> DocComments { get; private set; }
+
         private static readonly Dictionary<string, TokenKind> Keywords =
             new Dictionary<string, TokenKind>
         {
             { "class", TokenKind.KwClass },
             { "trigger", TokenKind.KwTrigger },
             { "listener", TokenKind.KwListener },
+            { "namespace", TokenKind.KwNamespace },
             { "self", TokenKind.KwSelf },
             { "pass", TokenKind.KwPass },
             { "disabled", TokenKind.KwDisabled },
@@ -114,7 +122,12 @@ namespace Dsl.Text
                 // // однострочный комментарий
                 if (c == '/' && Peek() == '/')
                 {
+                    // «///» (но не «////» — это просто разделитель) — doc-комментарий
+                    bool doc = Peek(2) == '/' && Peek(3) != '/';
+                    int line = _line;
+                    int from = _pos + 3;
                     while (!End && Cur != '\n') Advance();
+                    if (doc) AddDoc(line, from, _pos);
                     continue;
                 }
                 // /* ... */ блочный комментарий
@@ -132,6 +145,14 @@ namespace Dsl.Text
                 }
                 break;
             }
+        }
+
+        private void AddDoc(int line, int from, int to)
+        {
+            if (from > to) from = to;
+            string text = _src.Substring(from, to - from).TrimEnd('\r', ' ', '\t');
+            if (text.StartsWith(" ")) text = text.Substring(1);
+            (DocComments ??= new Dictionary<int, string>())[line] = text;
         }
 
         private Token LexIdentOrKeyword(SourcePos start)
@@ -280,6 +301,11 @@ namespace Dsl.Text
                 case '-' when n == '=': Advance(); Advance(); return Tk(TokenKind.MinusAssign, "-=", start);
                 case '*' when n == '=': Advance(); Advance(); return Tk(TokenKind.StarAssign, "*=", start);
                 case '/' when n == '=': Advance(); Advance(); return Tk(TokenKind.SlashAssign, "/=", start);
+                case '%' when n == '=': Advance(); Advance(); return Tk(TokenKind.PercentAssign, "%=", start);
+                // ++/-- — как в C#: слитно это один токен, поэтому «a--b» больше не
+                // «a - (-b)»; с пробелом («a - -b») всё по-прежнему
+                case '+' when n == '+': Advance(); Advance(); return Tk(TokenKind.PlusPlus, "++", start);
+                case '-' when n == '-': Advance(); Advance(); return Tk(TokenKind.MinusMinus, "--", start);
             }
 
             // односимвольные

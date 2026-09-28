@@ -18,7 +18,10 @@
 
   <ItemGroup>
     <Compile Include="../../Dsl.Core/**/*.cs" />
+    <Compile Include="../../Dsl.Tooling/**/*.cs" />
     <Compile Include="../../Dsl.Tests/**/*.cs" />
+    <!-- IDE завязана на UnityEngine (UI Toolkit) — её тесты идут только в Unity Test Runner -->
+    <Compile Remove="../../Dsl.Tests/IdeTests.cs" />
   </ItemGroup>
 
   <ItemGroup>

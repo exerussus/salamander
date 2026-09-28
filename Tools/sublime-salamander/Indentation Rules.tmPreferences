@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+    <key>scope</key>
+    <string>source.salamander</string>
+    <key>settings</key>
+    <dict>
+        <!-- те же правила, что в language-configuration.json расширения VS Code -->
+        <key>increaseIndentPattern</key>
+        <string>^.*\{[^}"']*$</string>
+        <key>decreaseIndentPattern</key>
+        <string>^\s*\}</string>
+    </dict>
+</dict>
+</plist>

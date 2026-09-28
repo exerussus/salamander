@@ -1,0 +1,167 @@
+%YAML 1.2
+---
+# СГЕНЕРИРОВАНО из Tools/vscode-salamander/syntaxes/salamander.tmLanguage.json
+# скриптом _build/generate.py — руками не править, правки потеряются.
+name: Salamander
+scope: source.salamander
+version: 2
+file_extensions:
+- sal
+contexts:
+  main:
+  - include: comments
+  - include: declarations
+  - include: code
+  comments:
+  - match: //.*$
+    scope: comment.line.double-slash.salamander
+  - match: /\*
+    push:
+    - meta_scope: comment.block.salamander
+    - match: \*/
+      pop: true
+  declarations:
+  - match: \b(disabled)\s+(trigger)\s+([A-Za-z_]\w*)
+    captures:
+      1: storage.modifier.salamander
+      2: storage.type.salamander
+      3: entity.name.type.trigger.salamander
+  - match: \b(namespace)\s+([A-Za-z_]\w*(?:\s*\.\s*[A-Za-z_]\w*)*)
+    captures:
+      1: storage.type.namespace.salamander
+      2: entity.name.namespace.salamander
+  - match: \b(trigger|class|enum|listener)\s+([A-Za-z_]\w*)
+    captures:
+      1: storage.type.salamander
+      2: entity.name.type.salamander
+  - match: \b(before|after|replace)\s+(?=(?:event|func|action)\b)
+    captures:
+      1: storage.modifier.salamander
+  - match: \b(event)\s+([A-Za-z_]\w*)
+    captures:
+      1: storage.type.event.salamander
+      2: entity.name.function.event.salamander
+  - match: \b(func|action)\s+([A-Za-z_]\w*)
+    captures:
+      1: storage.type.function.salamander
+      2: entity.name.function.salamander
+  code:
+  - include: interp_string
+  - include: string
+  - include: keywords
+  - include: archetype_decl
+  - include: self
+  - include: constants
+  - include: types
+  - include: module_qualifier
+  - include: numbers
+  - include: qualified_call
+  - include: enum_access
+  - include: static_field
+  - include: pascal_call
+  - include: call
+  - include: member
+  - include: operators
+  keywords:
+  - match: \b(if|else|while|loop|for|in|break|continue|return|pass|wait|until|yield)\b
+    scope: keyword.control.salamander
+  - match: \b(spawn|new|const|readonly|var|disabled)\b
+    scope: keyword.other.salamander
+  - match: (?<![.\w])base(?=\s*\()
+    scope: keyword.other.base.salamander
+  constants:
+  - match: \b(true|false|null)\b
+    scope: constant.language.salamander
+  types:
+  - match: \b(int|float|double|bool|string|void|Fiber|Subscription|List|Map)\b
+    scope: support.type.primitive.salamander
+  module_qualifier:
+  - match: \b([A-Za-z_]\w*)(::)
+    captures:
+      1: entity.name.namespace.salamander
+      2: punctuation.separator.namespace.salamander
+  numbers:
+  - match: \b\d+\.\d+\b
+    scope: constant.numeric.float.salamander
+  - match: \b\d+\b
+    scope: constant.numeric.integer.salamander
+  call:
+  - match: \b([a-z_]\w*)\s*(?=\()
+    captures:
+      1: entity.name.function.salamander
+  member:
+  - match: (\.)([a-z_]\w*)\b(?!\s*\()
+    captures:
+      1: punctuation.accessor.salamander
+      2: variable.other.property.salamander
+  operators:
+  - match: \+\+|--|->|\.\.|==|!=|<=|>=|&&|\|\||[+\-*/%]=|[+\-*/%<>=!]
+    scope: keyword.operator.salamander
+  string:
+  - match: '"'
+    push:
+    - meta_scope: string.quoted.double.salamander
+    - match: '"'
+      pop: true
+    - match: \\.
+      scope: constant.character.escape.salamander
+  interp_string:
+  - match: \$"
+    push:
+    - meta_scope: string.interpolated.salamander
+    - match: '"'
+      pop: true
+    - match: \\.
+      scope: constant.character.escape.salamander
+    - match: \{
+      push:
+      - meta_scope: meta.interpolation.salamander
+      - match: \}
+        pop: true
+        captures:
+          0: punctuation.section.interpolation.end.salamander
+      - include: keywords
+      - include: self
+      - include: constants
+      - include: numbers
+      - include: qualified_call
+      - include: enum_access
+      - include: static_field
+      - include: pascal_call
+      - include: call
+      - include: member
+      - include: operators
+      captures:
+        0: punctuation.section.interpolation.begin.salamander
+    captures:
+      0: punctuation.definition.string.begin.salamander
+  qualified_call:
+  - match: \b([A-Z]\w*)\s*(\.)\s*([A-Za-z_]\w*)\s*(?=\()
+    captures:
+      1: support.class.salamander
+      2: punctuation.accessor.salamander
+      3: entity.name.function.salamander
+  enum_access:
+  - match: \b([A-Z]\w*)\s*(\.)\s*([A-Z]\w*)\b
+    captures:
+      1: support.class.salamander
+      2: punctuation.accessor.salamander
+      3: constant.other.enum.salamander
+  static_field:
+  - match: \b([A-Z]\w*)\s*(\.)\s*([a-z_]\w*)\b
+    captures:
+      1: support.class.salamander
+      2: punctuation.accessor.salamander
+      3: variable.other.property.salamander
+  pascal_call:
+  - match: \b([A-Z]\w*)\s*(?=\()
+    captures:
+      1: entity.name.function.salamander
+  self:
+  - match: \bself\b
+    scope: variable.language.self.salamander
+  archetype_decl:
+  - match: ^\s*(?!(?:trigger|class|enum|listener|namespace|func|action|event|if|else|while|for|in|break|continue|return|wait|until|spawn|new|const|readonly|var|disabled|true|false|null|int|float|bool|string|void|pass|self)\b)([A-Za-z_]\w*)\s+("[^"]*"|[A-Za-z_]\w*)\s*(?=\{)
+    captures:
+      1: storage.type.archetype.salamander
+      2: entity.name.type.salamander

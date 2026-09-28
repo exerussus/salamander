@@ -25,12 +25,36 @@ namespace Dsl.Syntax
         private int _depth;
         private bool _depthReported;
 
-        public Parser(List<Token> tokens, int fileId, DiagnosticBag diag)
+        public Parser(List<Token> tokens, int fileId, DiagnosticBag diag, Dictionary<int, string> docComments = null)
         {
             _t = tokens;
             _fileId = fileId;
             _diag = diag;
+            _docs = docComments;
         }
+
+        // «///» по строкам (Lexer.DocComments): описание прикрепляется к объявлению
+        // или члену, если идёт сплошным блоком прямо над его первой строкой
+        private readonly Dictionary<int, string> _docs;
+
+        private string DocAbove(int line)
+        {
+            if (_docs == null || _docs.Count == 0) return null;
+            int first = line;
+            while (_docs.ContainsKey(first - 1)) first--;
+            if (first == line) return null;
+            if (first == line - 1) return _docs[first];
+            var sb = new System.Text.StringBuilder();
+            for (int l = first; l < line; l++)
+            {
+                if (sb.Length > 0) sb.Append('\n');
+                sb.Append(_docs[l]);
+            }
+            return sb.ToString();
+        }
+
+        /// <summary>Строка, с которой начинается член или объявление — модификаторы стоят раньше ключевого слова.</summary>
+        private int StartLine(int tokenIndex) => _t[System.Math.Min(tokenIndex, _t.Count - 1)].Pos.Line;
 
         private void DepthError(SourcePos pos)
         {
@@ -70,7 +94,10 @@ namespace Dsl.Syntax
             var file = new ScriptFile { FileId = _fileId, Pos = Cur.Pos };
             while (!Is(TokenKind.Eof))
             {
+                if (Is(TokenKind.KwNamespace)) { ParseNamespace(file.Decls, null); continue; }
+                int declStart = _i;
                 var d = ParseDecl();
+                if (d != null) d.Doc = DocAbove(StartLine(declStart));
                 if (d != null) file.Decls.Add(d);
                 else { if (!Is(TokenKind.Eof)) Advance(); } // защита от зацикливания
             }
@@ -84,6 +111,87 @@ namespace Dsl.Syntax
             if (!Is(TokenKind.Eof))
                 _diag.Error("E0003", "Лишние символы в выражении интерполяции.", Cur.Pos);
             return e;
+        }
+
+        /// <summary>
+        /// namespace A.B { ... } — объявления внутри получают полное имя "A.B.Foo".
+        /// Блок открытый, как в C#: одно пространство имён можно продолжать в
+        /// других файлах и модулях, а блоки с одинаковым полным именем сливаются
+        /// как обычно. Вложенные namespace дописывают свой путь к внешнему.
+        /// Декларации складываются плоско в список файла — дерева нет, путь
+        /// живёт в Decl.Namespace.
+        /// </summary>
+        private void ParseNamespace(List<Decl> into, string outer)
+        {
+            var pos = Advance().Pos; // 'namespace'
+            if (_depth >= MaxNestingDepth) { DepthError(pos); return; }
+
+            string path = ParseNamespacePath();
+            if (path == null)
+            {
+                _diag.Error("E0310", $"Ожидалось имя пространства имён, встречено '{Cur.Text}'.", Cur.Pos);
+                // без имени блок не разобрать осмысленно — но '{' съедим как пространство без имени,
+                // чтобы объявления внутри не посыпались каскадом ошибок
+                if (!Is(TokenKind.LBrace)) return;
+                path = "?";
+            }
+            string full = outer == null ? path : outer + "." + path;
+
+            if (!Is(TokenKind.LBrace))
+            {
+                _diag.Error("E0007", $"Ожидалось '{{' после 'namespace {path}', встречено '{Cur.Text}'.", Cur.Pos);
+                return;
+            }
+            Advance(); // '{'
+
+            _depth++;
+            try
+            {
+                while (!Is(TokenKind.RBrace) && !Is(TokenKind.Eof))
+                {
+                    if (Is(TokenKind.KwNamespace)) { ParseNamespace(into, full); continue; }
+
+                    int declStart = _i;
+                    var d = ParseDecl();
+                    if (d != null) d.Doc = DocAbove(StartLine(declStart));
+                    if (d == null)
+                    {
+                        if (!Is(TokenKind.RBrace) && !Is(TokenKind.Eof)) Advance(); // защита от зацикливания
+                        continue;
+                    }
+                    if (d is ArchetypeDecl ad)
+                    {
+                        // архетип адресуется хостом по (вид, id) из контента игры —
+                        // пространству имён там места нет; блок оставляем глобальным
+                        _diag.Error("E0311",
+                            $"'{ad.Kind} {ad.Name}' нельзя объявлять внутри namespace: хост находит архетипы " +
+                            "по виду и id, пространство имён в этот адрес не входит. Вынесите блок наружу.",
+                            ad.Pos);
+                    }
+                    else
+                    {
+                        d.Namespace = full;
+                        d.Name = full + "." + d.Name;
+                    }
+                    into.Add(d);
+                }
+            }
+            finally { _depth--; }
+
+            Expect(TokenKind.RBrace, "E0009", $"'}}', закрывающая namespace {full}");
+        }
+
+        /// <summary>A или A.B.C; null, если имени нет. Позицию двигает только по успеху.</summary>
+        private string ParseNamespacePath()
+        {
+            if (!Is(TokenKind.Ident)) return null;
+            var sb = new System.Text.StringBuilder(Advance().Text);
+            while (Is(TokenKind.Dot) && Peek().Kind == TokenKind.Ident)
+            {
+                Advance();
+                sb.Append('.').Append(Advance().Text);
+            }
+            return sb.ToString();
         }
 
         private Decl ParseDecl()
@@ -194,7 +302,11 @@ namespace Dsl.Syntax
             {
                 int before = _i;
                 var m = ParseMember();
-                if (m != null) into.Add(m);
+                if (m != null)
+                {
+                    m.Doc = DocAbove(StartLine(before));
+                    into.Add(m);
+                }
                 if (_i != before) continue;
 
                 _diag.Error("E0219",
@@ -214,7 +326,10 @@ namespace Dsl.Syntax
             Advance(); // хотя бы один токен — прогресс обязателен
             while (!Is(TokenKind.Eof) && !Is(TokenKind.RBrace)
                    && !Is(TokenKind.KwConst) && !Is(TokenKind.KwFunc)
-                   && !Is(TokenKind.KwAction) && !Is(TokenKind.KwEvent))
+                   && !Is(TokenKind.KwAction) && !Is(TokenKind.KwEvent)
+                   // слово слоя — тоже начало члена: иначе «after event X» после
+                   // мусора потеряло бы модификатор и стало бы ядром
+                   && !(Is(TokenKind.Ident) && TryMergeMode(Cur.Text, out _) && IsFuncKeyword(Peek().Kind)))
             {
                 if (Match(TokenKind.Semicolon)) return;
                 Advance();
@@ -238,8 +353,61 @@ namespace Dsl.Syntax
                     Advance();
                     return ParseField(readOnly: true);
 
+                // before/after/replace — тоже контекстные: модификатором слово считается
+                // только перед event/func/action, поле или локаль с таким именем живут
+                case TokenKind.Ident when TryMergeMode(Cur.Text, out var mode) && IsFuncKeyword(Peek().Kind):
+                {
+                    Advance();
+                    var kind = Cur.Kind == TokenKind.KwEvent ? FuncKind.Event
+                             : Cur.Kind == TokenKind.KwAction ? FuncKind.Action
+                             : FuncKind.Func;
+                    var fn = ParseFunc(kind);
+                    fn.Mode = mode;
+                    return fn;
+                }
+
+                // «after int x;» / «replace const ...» — слово явно задумано модификатором,
+                // но стоит перед полем. Разбор «тип after, имя int» дал бы невнятное
+                // «ожидалось ';'», поэтому говорим прямо и разбираем член дальше
+                case TokenKind.Ident when TryMergeMode(Cur.Text, out _) && LooksLikeFieldAfterModifier():
+                {
+                    _diag.Error("E0241",
+                        $"'{Cur.Text}' ставится только перед event, func или action. У полей слоёв нет: " +
+                        "поздний блок просто перезаписывает значение.", Cur.Pos);
+                    Advance();
+                    return ParseMember();
+                }
+
                 default: return ParseField();
             }
+        }
+
+        private static bool TryMergeMode(string word, out MergeMode mode)
+        {
+            switch (word)
+            {
+                case "before": mode = MergeMode.Before; return true;
+                case "after": mode = MergeMode.After; return true;
+                case "replace": mode = MergeMode.Replace; return true;
+                default: mode = MergeMode.Core; return false;
+            }
+        }
+
+        private static bool IsFuncKeyword(TokenKind k) =>
+            k == TokenKind.KwEvent || k == TokenKind.KwFunc || k == TokenKind.KwAction;
+
+        /// <summary>
+        /// За словом-модификатором идёт поле: «const ...», «readonly T x» или
+        /// «T x» / «T&lt;..&gt; x» / «T[] x». Обычное поле ТИПА before выглядит как
+        /// «before x ...» — за именем уже не идентификатор, его не трогаем.
+        /// </summary>
+        private bool LooksLikeFieldAfterModifier()
+        {
+            var next = Peek().Kind;
+            if (next == TokenKind.KwConst) return true;
+            if (next != TokenKind.Ident) return false;
+            var after = Peek(2).Kind;
+            return after == TokenKind.Ident || after == TokenKind.Lt || after == TokenKind.LBracket;
         }
 
         private FieldMember ParseConst()
@@ -315,6 +483,7 @@ namespace Dsl.Syntax
         {
             var pos = Cur.Pos;
             var name = Expect(TokenKind.Ident, "E0026", "имя типа").Text;
+            name = ContinueDottedTypeName(name);
 
             TypeSyntax result;
             if (Is(TokenKind.Lt))
@@ -339,6 +508,22 @@ namespace Dsl.Syntax
             return result;
         }
 
+        /// <summary>
+        /// Хвост составного имени типа: "Mods.Buffs.Kind" — енум из namespace.
+        /// Точка без идентификатора за ней не наша (оставляем как есть).
+        /// </summary>
+        private string ContinueDottedTypeName(string head)
+        {
+            if (!(Is(TokenKind.Dot) && Peek().Kind == TokenKind.Ident)) return head;
+            var sb = new System.Text.StringBuilder(head);
+            while (Is(TokenKind.Dot) && Peek().Kind == TokenKind.Ident)
+            {
+                Advance();
+                sb.Append('.').Append(Advance().Text);
+            }
+            return sb.ToString();
+        }
+
         /// <summary>Пытается разобрать тип; при неудаче откатывает позицию.</summary>
         private TypeSyntax TryParseType(out int savedI)
         {
@@ -354,7 +539,7 @@ namespace Dsl.Syntax
             if (!Is(TokenKind.Ident)) return null;
             // тихий разбор без диагностик: временно ловим через ручную проверку
             var pos = Cur.Pos;
-            var name = Advance().Text;
+            var name = ContinueDottedTypeName(Advance().Text);
             TypeSyntax result;
             if (Is(TokenKind.Lt))
             {
@@ -442,8 +627,52 @@ namespace Dsl.Syntax
                     Expect(TokenKind.Semicolon, "E0070", "';'");
                     return new PassStmt { Pos = p };
                 }
+                case TokenKind.PlusPlus:
+                case TokenKind.MinusMinus:
+                {
+                    // префиксная форма «++x;» — стейтмент ровно того же смысла, что «x++;»
+                    var opTok = Advance();
+                    var target = ParsePostfix(ParsePrimary());
+                    return FinishIncDec(target, opTok, opTok.Pos);
+                }
                 default: return ParseExprOrAssign();
             }
+        }
+
+        /// <summary>
+        /// x++ / x-- как стейтмент: десахар в «x += 1» / «x -= 1» — дальше работает
+        /// обычное составное присваивание (readonly, свойства хоста, индексы, int→float).
+        /// Числовую цель проверяет чекер (E0247).
+        /// </summary>
+        private Stmt FinishIncDec(Expr target, Token opTok, SourcePos pos)
+        {
+            if (!(target is IdentExpr || target is MemberExpr || target is IndexExpr || target is QualifiedExpr))
+                _diag.Error("E0248",
+                    $"'{opTok.Text}' применяется к переменной, полю или элементу, а не к выражению.", opTok.Pos);
+            RejectIncDecAfterValue(); // «x++++»
+            Expect(TokenKind.Semicolon, "E0045", "';'");
+            return new AssignStmt
+            {
+                Target = target,
+                Op = opTok.Kind == TokenKind.PlusPlus ? TokenKind.PlusAssign : TokenKind.MinusAssign,
+                Value = new LiteralExpr { LKind = LiteralKind.Int, IntValue = 1, Pos = opTok.Pos },
+                IsIncDec = true,
+                Pos = pos,
+            };
+        }
+
+        /// <summary>
+        /// «y = x++;» / «return x--;»: ++/-- там, где нужно значение. В языке это
+        /// только стейтмент — у него нет значения, и порядок «до/после» не всплывает.
+        /// Сообщаем прямо и пропускаем токен, чтобы разбор шёл дальше.
+        /// </summary>
+        private void RejectIncDecAfterValue()
+        {
+            if (!Is(TokenKind.PlusPlus) && !Is(TokenKind.MinusMinus)) return;
+            _diag.Error("E0248",
+                $"'{Cur.Text}' — отдельный стейтмент, значения у него нет: сначала «x{Cur.Text};», потом используйте x.",
+                Cur.Pos);
+            Advance();
         }
 
         private Stmt ParseVarDecl()
@@ -452,6 +681,7 @@ namespace Dsl.Syntax
             var name = Expect(TokenKind.Ident, "E0032", "имя переменной").Text;
             Expect(TokenKind.Assign, "E0033", "'=' (var требует инициализатор)");
             var init = ParseExpr();
+            RejectIncDecAfterValue();
             Expect(TokenKind.Semicolon, "E0034", "';'");
             return new VarDeclStmt { Name = name, DeclType = null, Init = init, Pos = pos };
         }
@@ -520,6 +750,7 @@ namespace Dsl.Syntax
             var pos = Advance().Pos;
             Expr val = null;
             if (!Is(TokenKind.Semicolon)) val = ParseExpr();
+            RejectIncDecAfterValue();
             Expect(TokenKind.Semicolon, "E0041", "';'");
             return new ReturnStmt { Value = val, Pos = pos };
         }
@@ -552,6 +783,7 @@ namespace Dsl.Syntax
                     var name = Advance().Text;
                     Expr init = null;
                     if (Match(TokenKind.Assign)) init = ParseExpr();
+                    RejectIncDecAfterValue();
                     Expect(TokenKind.Semicolon, "E0044", "';'");
                     return new VarDeclStmt { DeclType = ty, Name = name, Init = init, Pos = pos };
                 }
@@ -567,12 +799,17 @@ namespace Dsl.Syntax
                 case TokenKind.MinusAssign:
                 case TokenKind.StarAssign:
                 case TokenKind.SlashAssign:
+                case TokenKind.PercentAssign:
                 {
                     var op = Advance().Kind;
                     var value = ParseExpr();
+                    RejectIncDecAfterValue();
                     Expect(TokenKind.Semicolon, "E0045", "';'");
                     return new AssignStmt { Target = target, Op = op, Value = value, Pos = pos };
                 }
+                case TokenKind.PlusPlus:
+                case TokenKind.MinusMinus:
+                    return FinishIncDec(target, Advance(), pos);
                 default:
                     Expect(TokenKind.Semicolon, "E0046", "';'");
                     return new ExprStmt { Expr = target, Pos = pos };
@@ -634,6 +871,15 @@ namespace Dsl.Syntax
 
         private Expr ParseUnaryCore()
         {
+            if (Is(TokenKind.PlusPlus) || Is(TokenKind.MinusMinus))
+            {
+                // «y = ++x;» — в выражении ++/-- нет (стейтмент-форма разбирается в ParseStmtCore)
+                _diag.Error("E0248",
+                    $"'{Cur.Text}' — отдельный стейтмент, значения у него нет: сначала «{Cur.Text}x;», потом используйте x.",
+                    Cur.Pos);
+                Advance();
+                return ParseUnary();
+            }
             if (Is(TokenKind.Not) || Is(TokenKind.Minus))
             {
                 var op = Advance();
