@@ -1,0 +1,138 @@
+{
+    "scope": "source.salamander",
+    "completions": [
+        {
+            "trigger": "trigger",
+            "annotation": "trigger",
+            "contents": "trigger ${1:Name}\n{\n\tevent ${2:OnEvent}($3)\n\t{\n\t\t$0\n\t}\n}",
+            "kind": "snippet",
+            "details": "Триггер с обработчиком события (триггер обязан иметь хотя бы один event)"
+        },
+        {
+            "trigger": "disabled",
+            "annotation": "disabled trigger",
+            "contents": "disabled trigger ${1:Name}\n{\n\tevent ${2:OnEvent}($3)\n\t{\n\t\t$0\n\t}\n}",
+            "kind": "snippet",
+            "details": "Триггер, стартующий выключенным (Engine.EnableTrigger включит)"
+        },
+        {
+            "trigger": "class",
+            "annotation": "class",
+            "contents": "class ${1:Name}\n{\n\t$0\n}",
+            "kind": "snippet",
+            "details": "Статический класс: константы, поля, функции"
+        },
+        {
+            "trigger": "enum",
+            "annotation": "enum",
+            "contents": "enum ${1:Name} { ${2:A}, ${3:B} }",
+            "kind": "snippet",
+            "details": "Скриптовый енум"
+        },
+        {
+            "trigger": "event",
+            "annotation": "event",
+            "contents": "event ${1:OnEvent}($2)\n{\n\t$0\n}",
+            "kind": "snippet",
+            "details": "Обработчик события (сигнатура должна совпадать с хостовой — см. автодополнение после 'event ')"
+        },
+        {
+            "trigger": "before",
+            "annotation": "before event",
+            "contents": "before event ${1:OnEvent}($2)\n{\n\t$0\n}",
+            "kind": "snippet",
+            "details": "Слой ДО ядра события: ядро выполнится следом в том же файбере; обычное переопределение слой не трогает"
+        },
+        {
+            "trigger": "after",
+            "annotation": "after event",
+            "contents": "after event ${1:OnEvent}($2)\n{\n\t$0\n}",
+            "kind": "snippet",
+            "details": "Слой ПОСЛЕ ядра события (слои идут в порядке загрузки модулей)"
+        },
+        {
+            "trigger": "replace",
+            "annotation": "replace event",
+            "contents": "replace event ${1:OnEvent}($2)\n{\n\t$0\n}",
+            "kind": "snippet",
+            "details": "Стереть всё, что объявлено раньше (ядро и слои), и стать новым ядром; слои, загруженные позже, лягут поверх"
+        },
+        {
+            "trigger": "action",
+            "annotation": "action Do",
+            "contents": "action Do()\n{\n\t$0\n}",
+            "kind": "snippet",
+            "details": "Точка входа триггера: Engine.ActivateTrigger запускает её отдельным файбером"
+        },
+        {
+            "trigger": "func",
+            "annotation": "func",
+            "contents": "func ${1:Name}($2)${3: -> ${4:float}}\n{\n\t$0\n}",
+            "kind": "snippet",
+            "details": "Функция (опустите '-> тип' для void)"
+        },
+        {
+            "trigger": "wait",
+            "annotation": "wait",
+            "contents": "wait ${1:1.0};",
+            "kind": "snippet",
+            "details": "Приостановить файбер на N секунд"
+        },
+        {
+            "trigger": "waituntil",
+            "annotation": "wait until",
+            "contents": "wait until ${1:condition};",
+            "kind": "snippet",
+            "details": "Ждать условия (проверка раз в тик)"
+        },
+        {
+            "trigger": "spawn",
+            "annotation": "spawn",
+            "contents": "spawn ${1:Func}($2);",
+            "kind": "snippet",
+            "details": "Запустить функцию параллельным файбером"
+        },
+        {
+            "trigger": "for",
+            "annotation": "for range",
+            "contents": "for ${1:i} in ${2:0}..${3:n}\n{\n\t$0\n}",
+            "kind": "snippet",
+            "details": "Цикл по диапазону (верхняя граница исключается)"
+        },
+        {
+            "trigger": "foreach",
+            "annotation": "for each",
+            "contents": "for ${1:item} in ${2:collection}\n{\n\t$0\n}",
+            "kind": "snippet",
+            "details": "Цикл по массиву/списку"
+        },
+        {
+            "trigger": "if",
+            "annotation": "if",
+            "contents": "if (${1:condition})\n{\n\t$0\n}",
+            "kind": "snippet",
+            "details": "Условие"
+        },
+        {
+            "trigger": "while",
+            "annotation": "while",
+            "contents": "while (${1:condition})\n{\n\t$0\n}",
+            "kind": "snippet",
+            "details": "Цикл"
+        },
+        {
+            "trigger": "listener",
+            "annotation": "listener",
+            "contents": "listener ${1:Name}\n{\n\tevent OnSubscribe() { $2 }\n\tevent ${3:OnHostEvent}(${4:Unit} ${5:u}$6)\n\t{\n\t\t$0\n\t}\n\tevent OnUnsubscribe() { }\n}",
+            "kind": "snippet",
+            "details": "Подписка на события конкретной сущности: Engine.Attach(Name, entity); субъект — первый параметр события; self и поля — свои у каждой подписки"
+        },
+        {
+            "trigger": "arch",
+            "annotation": "archetype",
+            "contents": "${1:spell} ${2:entity_id}\n{\n\tevent ${3:OnCast}($4)\n\t{\n\t\t$0\n\t}\n}",
+            "kind": "snippet",
+            "details": "Блок-архетип: механика сущности по шаблону вида (виды и события объявляет игра; поздний блок переопределяет ранний по-событийно)"
+        }
+    ]
+}

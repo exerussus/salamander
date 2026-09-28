@@ -32,6 +32,8 @@ Dsl.Ide.Unity/       [A, по желанию] мост IDE к ScriptHostBootstra
 Dsl.Tests/           [B] NUnit-тесты (editor-only, в билд не входят)
 Tools/DslCheck/      [C] CLI-чекер (тот же компилятор вне игры; для CI и редактора)
 Tools/vscode-salamander/ [C] расширение VS Code (подсветка, ошибки, автодополнение)
+Tools/sublime-salamander/ [C] пакет Sublime Text 4 (подсветка, сниппеты; LSP через пакет LSP)
+Tools/icons/         [C] значок .sal (саламандра): мастер-SVG и генератор PNG для всех редакторов
 Examples/UnityRpg/   [A] пример игровой обвязки + модуль скриптов (StreamingAssets)
 Examples/DemoHost/   [C] чистый C#-хост: dotnet run — полная проводка без Unity
 Examples/mymod/      пример модуля (манифест + скрипты)
@@ -1003,7 +1005,7 @@ host.Quarantine(QuarantineScope.File);   // то же: registry.Quarantine = Qua
 модулей — `{"modules": ["mods/base", "mods/patch"]}`), берётся РОВНО он; обход
 папки — дев-режим без сборщика.
 
-## LSP: одна поддержка для VS Code, Rider и любого редактора
+## LSP: одна поддержка для VS Code, Rider, Sublime Text и любого редактора
 
 Языковой сервер (`Tools/DslLsp`) — тот же компилятор, что в игре, живущий
 процессом и отвечающий редакторам по LSP: диагностика на лету, автодополнение
@@ -1066,6 +1068,9 @@ hover, ссылки на них не дают ложного «зависит о
   `salamander.server.path`).
 - **Rider / IDE JetBrains**: через плагин LSP4IJ + TextMate-подсветка из нашей
   же грамматики — пошагово в `Tools/rider/README-Rider.md`.
+- **Sublime Text 4**: пакет `Tools/sublime-salamander` (синтаксис и сниппеты
+  генерируются из грамматики VS Code) + пакет LSP с клиентом `salamander` —
+  пошагово в `Tools/sublime-salamander/README.md`.
 
 ## Поддержка VS Code: подсветка, ошибки, автодополнение
 
@@ -1189,7 +1194,7 @@ hover, ссылки на них не дают ложного «зависит о
 - **Безопасность рантайма**: протухающие хэндлы (`Engine.IsValid`), ошибка
   убивает файбер, а не движок; в горячих структурах нет managed-ссылок —
   GC-давления нет.
-- **Инструменты**: LSP-сервер (VS Code, Rider через LSP4IJ, любой
-  LSP-клиент — диагностика, автодополнение, hover, go-to, символы), CLI-чекер
+- **Инструменты**: LSP-сервер (VS Code, Rider через LSP4IJ, Sublime Text
+  через LSP, любой LSP-клиент — диагностика, автодополнение, hover, go-to, символы), CLI-чекер
   DslCheck, TextMate-грамматика и сниппеты, `.sal`-импортер Unity, модкит.
 - **Диагностика** компилятора на русском с кодами E0xxx.

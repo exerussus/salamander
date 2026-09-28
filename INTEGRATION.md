@@ -37,7 +37,8 @@
    `Dsl.Unity/Editor/` содержит `SalamanderImporter` (asmdef `Dsl.Unity.Editor`,
    editor-only): он импортирует `.sal` как `TextAsset`. Без него `.sal` нельзя
    перетащить в `_embeddedModules` сцены или загрузить как ассет. В плеер-билд
-   импортёр не входит.
+   импортёр не входит. Он же ставит `.sal` значок саламандры в окне Project
+   (`SalamanderIcon.cs`, картинка вшита в код — копировать отдельно не нужно).
 3. Напишите свой хост — наследник `ScriptHostBootstrap`, зарегистрируйте API
    игры в `ConfigureHost` через fluent `HostBuilder` (полный образец —
    `Examples/UnityRpg/RpgSimulation.cs`). Важное правило: `ConfigureHost`

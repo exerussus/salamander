@@ -65,15 +65,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 // VS Code. Дальше их нормализует сам сервер (ModuleLoader.NormalizeUserPath).
 function serverSettings(): Record<string, string | string[]> {
     const cfg = vscode.workspace.getConfiguration('salamander');
+    // Ключи шлём ВСЕГДА, пустые — пустой строкой/массивом: сервер понимает это
+    // как «не задано». Сообщение совсем без наших ключей он игнорирует (так
+    // шлют клиенты, у которых настроек нет), и стёртая здесь настройка иначе
+    // осталась бы жить в сервере до перезапуска.
     const out: Record<string, string | string[]> = {};
     for (const key of ['apiManifest', 'modulesRoot', 'buildFile']) {
         const value = cfg.get<string>(key);
-        if (value) out[key] = expand(value);
+        out[key] = value ? expand(value) : '';
     }
     // справочные модули (игра, зависимости мода): только для ссылок и подсказок
     const refs = cfg.get<string[]>('referencePaths') ?? [];
-    const expanded = refs.filter(r => typeof r === 'string' && r.trim().length > 0).map(expand);
-    if (expanded.length > 0) out['referencePaths'] = expanded;
+    out['referencePaths'] = refs.filter(r => typeof r === 'string' && r.trim().length > 0).map(expand);
     return out;
 }
 

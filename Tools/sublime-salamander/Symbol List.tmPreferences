@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+    <!--
+        Встроенный Goto Symbol (Ctrl+R) без сервера: триггеры, классы, енумы,
+        листенеры, архетипы, функции и обработчики событий. С сервером точнее
+        LSP: Goto Symbol — он знает вложенность и пространства имён.
+    -->
+    <key>scope</key>
+    <string>source.salamander entity.name.type, source.salamander entity.name.function, source.salamander entity.name.namespace</string>
+    <key>settings</key>
+    <dict>
+        <key>showInSymbolList</key>
+        <integer>1</integer>
+        <key>showInIndexedSymbolList</key>
+        <integer>1</integer>
+    </dict>
+</dict>
+</plist>

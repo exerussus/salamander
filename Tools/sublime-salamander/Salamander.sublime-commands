@@ -1,0 +1,19 @@
+[
+    {
+        "caption": "Preferences: Salamander — настройки LSP-клиента",
+        "command": "edit_settings",
+        "args": {
+            "base_file": "${packages}/Salamander/LSP-salamander-example.sublime-settings",
+            "user_file": "${packages}/User/LSP.sublime-settings",
+            "default": "{\n\t$0\n}\n"
+        }
+    },
+    {
+        "caption": "Preferences: Salamander — настройки вида (.sal)",
+        "command": "edit_settings",
+        "args": {
+            "base_file": "${packages}/Salamander/Salamander.sublime-settings",
+            "default": "{\n\t$0\n}\n"
+        }
+    }
+]

@@ -1,0 +1,25 @@
+// Шаблон проекта Sublime для папки с модами или Unity-проекта.
+// Скопируйте рядом с модулями как <имя>.sublime-project и откройте через
+// Project → Open Project. Настройки из "settings" → "LSP" → "salamander"
+// ПЕРЕКРЫВАЮТ глобальный клиент из LSP.sublime-settings только для этого
+// проекта — удобно, когда у игры и у мода разные манифесты и справочные модули.
+{
+    "folders": [
+        { "path": "." }
+    ],
+    "settings": {
+        "LSP": {
+            "salamander": {
+                "enabled": true,
+                "initialization_options": {
+                    // Unity-проект: где лежат модули и манифест
+                    // "salamander.modulesRoot": "Assets/StreamingAssets/Core",
+                    // "salamander.apiManifest": "Assets/StreamingAssets/Core/salamander-api.json",
+
+                    // мод: модули игры, от которых он зависит (только для подсказок)
+                    // "salamander.referencePaths": ["C:/Games/MyGame/Assets/StreamingAssets/Scripts"]
+                }
+            }
+        }
+    }
+}

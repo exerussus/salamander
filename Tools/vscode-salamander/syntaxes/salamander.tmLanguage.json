@@ -178,7 +178,7 @@
         },
         "types": {
             "name": "support.type.primitive.salamander",
-            "match": "\\b(int|float|bool|string|void|Fiber|Subscription|List|Map)\\b"
+            "match": "\\b(int|float|double|bool|string|void|Fiber|Subscription|List|Map)\\b"
         },
         "module-qualifier": {
             "match": "\\b([A-Za-z_]\\w*)(::)",

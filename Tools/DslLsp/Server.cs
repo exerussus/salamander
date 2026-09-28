@@ -157,6 +157,17 @@ namespace Dsl.Tools.Lsp
             // ({"salamander": {"apiManifest": ...}}) — клиенты шлют по-разному
             var s = settings["salamander"] as JObject;
 
+            // Сообщение без единого нашего ключа — не «сбросить всё», а «мне нечего
+            // сказать». Клиенты шлют didChangeConfiguration и тогда, когда настроек
+            // у сервера нет (Sublime LSP — с пустым объектом, если настройки заданы
+            // через initialization_options): без этой проверки такое сообщение
+            // молча стирало пути из initialize, и сервер уходил искать модули в
+            // корне воркспейса.
+            bool Has(string key) =>
+                settings[key] != null || settings["salamander." + key] != null || s?[key] != null;
+            if (!Has("apiManifest") && !Has("modulesRoot") && !Has("buildFile") && !Has("referencePaths"))
+                return;
+
             string Get(string key)
             {
                 var v = (string)(settings[key] ?? settings["salamander." + key] ?? s?[key]);

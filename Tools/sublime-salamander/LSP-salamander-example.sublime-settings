@@ -1,0 +1,47 @@
+// ===========================================================================
+// ПРИМЕР клиента Salamander для пакета LSP. Сам по себе этот файл ничего не
+// включает — скопируйте блок "clients" (и "semantic_highlighting") в правую
+// панель: это ваш Packages/User/LSP.sublime-settings.
+//
+// Если "clients" там уже есть — добавьте в него только ключ "salamander".
+// ===========================================================================
+{
+    // семантическая подсветка с сервера: API игры, события, элементы енумов,
+    // пространства имён — то, чего не знает грамматика. Настройка глобальная
+    // для пакета LSP, по умолчанию выключена.
+    "semantic_highlighting": true,
+
+    "clients": {
+        "salamander": {
+            "enabled": true,
+
+            // Путь к DslLsp.dll — полный. Сборка сервера (один раз, из корня
+            // репозитория): dotnet publish Tools/DslLsp -c Release -o Tools/DslLsp/publish
+            // Слэши прямые (или двойные обратные) — это JSON. Пробелы в пути
+            // безопасны: элементы массива уходят процессу как отдельные
+            // аргументы, кавычки не нужны.
+            "command": ["dotnet", "C:/Exerussus/Programs/SalamanderDSL/Tools/DslLsp/publish/DslLsp.dll"],
+
+            // ...или, если сервер лежит в открытой папке, относительно неё:
+            // "command": ["dotnet", "${folder}/Tools/DslLsp/publish/DslLsp.dll"],
+
+            "selector": "source.salamander",
+
+            // Уходит в initialize. Всё необязательно: без настроек сервер ищет
+            // модули (module.json) и salamander-api.json под корнем открытой
+            // папки. Пути — абсолютные либо относительно этого корня.
+            "initialization_options": {
+                // "salamander.modulesRoot": "Assets/StreamingAssets/Core",
+                // "salamander.apiManifest": "Assets/StreamingAssets/Core/salamander-api.json",
+                // "salamander.buildFile": "salamander-build.json",
+                // "salamander.referencePaths": ["C:/Games/MyGame/Assets/StreamingAssets/Scripts"]
+            },
+
+            // Отслеживание файлов на диске (нужен пакет LSP-file-watcher-chokidar):
+            // пере-экспортированный манифест подхватится без перезапуска сервера.
+            "file_watcher": {
+                "patterns": ["**/salamander-api.json", "**/module.json"]
+            }
+        }
+    }
+}
