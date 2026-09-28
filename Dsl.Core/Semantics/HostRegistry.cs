@@ -10,6 +10,18 @@ namespace Dsl.Semantics
         public readonly Dictionary<string, int> Members = new Dictionary<string, int>();
         public string[] Names;
         public string Summary;
+
+        /// <summary>
+        /// Пояснения к элементам, параллельно Names (значение элемента = индекс).
+        /// null-массив — пояснений нет вовсе, null внутри — нет у этого элемента.
+        /// Именно здесь живут ЕДИНИЦЫ («м/с», «множитель», «в тиках»): summary
+        /// всего енума одну строку на три десятка элементов не вмещает, и при
+        /// наведении на элемент его никто не видит.
+        /// </summary>
+        public string[] Docs;
+
+        public string DocOf(int value)
+            => Docs != null && (uint)value < (uint)Docs.Length ? Docs[value] : null;
     }
 
     public sealed class HostPropInfo
@@ -28,6 +40,15 @@ namespace Dsl.Semantics
         public string Summary;
         public readonly Dictionary<string, HostPropInfo> Props = new Dictionary<string, HostPropInfo>();
         public bool TryGetProp(string n, out HostPropInfo p) => Props.TryGetValue(n, out p);
+
+        /// <summary>
+        /// Методы самого объекта: <c>basket.AddPerk("x")</c>. Params здесь —
+        /// то, что видит скрипт, БЕЗ приёмника: приёмник уходит нулевым
+        /// аргументом хостовой функции, поэтому байткод у basket.AddPerk(x)
+        /// и у Api.Npc.Perk(basket, x) совпадает побайтово.
+        /// </summary>
+        public readonly Dictionary<string, HostMethodInfo> Methods = new Dictionary<string, HostMethodInfo>();
+        public bool TryGetMethod(string n, out HostMethodInfo m) => Methods.TryGetValue(n, out m);
     }
 
     public sealed class HostMethodInfo
@@ -122,6 +143,16 @@ namespace Dsl.Semantics
         /// <summary>Ожидаемые константы (опционально): непусто — чекер сверяет поля блоков.</summary>
         public readonly List<ArchetypeConstInfo> Consts = new List<ArchetypeConstInfo>();
         public readonly Dictionary<string, ArchetypeConstInfo> ConstByName = new Dictionary<string, ArchetypeConstInfo>();
+
+        /// <summary>
+        /// Сущность вида может не реализовать ни одного события (E0199 снимается).
+        /// Нужно, когда поведение по умолчанию живёт в хосте, а блок — только данные.
+        /// У вида БЕЗ объявленных событий это верно само собой, флаг для него не нужен.
+        /// </summary>
+        public bool EventsOptional;
+
+        /// <summary>Требовать ли от сущности хотя бы одно событие.</summary>
+        public bool RequiresEvent => !EventsOptional && Events.Count > 0;
     }
 
     /// <summary>Поле структуры: имя, тип, значение по умолчанию (если в new его не задали).</summary>
@@ -166,6 +197,26 @@ namespace Dsl.Semantics
     }
 
     /// <summary>
+    /// Гранулярность карантина при сборке в игре
+    /// (<c>ScriptCompiler.Compile(..., quarantineBrokenModules: true)</c>): чем платит
+    /// ошибка в ИСХОДНИКЕ. Беды без файла (манифест без имени или дубль, apiVersion,
+    /// пропавшая зависимость, цикл, sync→coop) исключают модуль с зависимыми всегда.
+    /// Без карантина (инструменты, LSP, DslCheck) опция ни на что не влияет.
+    /// </summary>
+    public enum QuarantineScope
+    {
+        /// <summary>Ошибка в исходнике исключает модуль вместе с зависимыми.</summary>
+        Module = 0,
+
+        /// <summary>
+        /// Ошибка в исходнике исключает только этот файл; модуль и его зависимые
+        /// собираются дальше. Файл, сломавшийся без выкинутого, выпадает следующим
+        /// проходом — и так, пока сборка не сойдётся.
+        /// </summary>
+        File = 1,
+    }
+
+    /// <summary>
     /// Единая точка регистрации всего, что хост открывает скриптам. Заполняется
     /// один раз на старте (не горячий путь). Хранит и сигнатуры (для чекера),
     /// и делегаты (для VM). "Engine" здесь НЕ регистрируется — это встроенный
@@ -186,6 +237,15 @@ namespace Dsl.Semantics
         public int EnumCount => _enums.Count;
         public int EventCount => _eventList.Count;
 
+        /// <summary>
+        /// Чем платит ошибка в исходнике, когда игра собирает с карантином.
+        /// Это свойство хоста — как у него разложен контент, — а не конкретного
+        /// вызова: при «один файл — одна сущность» опечатка в одном файле не должна
+        /// снимать весь пак и всех, кто от него зависит. Включает ли сборка карантин
+        /// вообще, по-прежнему решает вызывающий. В API-манифест не выгружается.
+        /// </summary>
+        public QuarantineScope Quarantine { get; set; } = QuarantineScope.Module;
+
         // ===== регистрация (вызывает хост) ==================================
 
         public int DefineEnum(string name, params string[] members)
@@ -199,6 +259,14 @@ namespace Dsl.Semantics
         // Плюс id скриптовых енумов считаются как EnumCount + n, так что сдвиг
         // ломал и их. Поэтому дубль теперь — явная ошибка регистрации.
         public int DefineEnum(string name, string summary, string[] members)
+            => DefineEnum(name, summary, members, null);
+
+        /// <summary>
+        /// <paramref name="docs"/> — пояснения к элементам ПАРАЛЛЕЛЬНЫМ массивом
+        /// (значение элемента = индекс), null внутри разрешён. Отдельный массив,
+        /// а не пары: Names уже так устроен, и порядок задаёт сам енум.
+        /// </summary>
+        public int DefineEnum(string name, string summary, string[] members, string[] docs)
         {
             if (_enums.ContainsKey(name))
                 throw new System.InvalidOperationException(
@@ -206,10 +274,41 @@ namespace Dsl.Semantics
             if (_classes.ContainsKey(name) || _structByName.ContainsKey(name))
                 throw new System.InvalidOperationException(
                     $"Имя '{name}' уже занято классом или структурой хоста.");
-            var info = new HostEnumInfo { Id = _enums.Count, Name = name, Names = members, Summary = summary };
+            if (docs != null && docs.Length != members.Length)
+                throw new System.ArgumentException(
+                    $"Енум '{name}': пояснений {docs.Length}, а элементов {members.Length}. " +
+                    "Массив пояснений идёт параллельно элементам — оставляйте null там, где пояснения нет.");
+
+            var info = new HostEnumInfo
+            {
+                Id = _enums.Count, Name = name, Names = members, Summary = summary, Docs = docs,
+            };
             for (int i = 0; i < members.Length; i++) info.Members[members[i]] = i;
             _enums[name] = info;
             return info.Id;
+        }
+
+        /// <summary>
+        /// Пояснение к одному элементу — путь для fluent-обёртки, где элементы
+        /// описываются по одному уже после регистрации типа. Повторное описание
+        /// того же элемента — ошибка: молча затирать пояснение неоткуда узнать.
+        /// </summary>
+        public void SetEnumMemberDoc(int enumId, int value, string doc)
+        {
+            HostEnumInfo info = null;
+            foreach (var e in _enums.Values) if (e.Id == enumId) { info = e; break; }
+            if (info == null)
+                throw new System.InvalidOperationException($"Енум #{enumId} не зарегистрирован.");
+            if ((uint)value >= (uint)info.Names.Length)
+                throw new System.ArgumentException(
+                    $"У енума '{info.Name}' нет элемента со значением {value} " +
+                    $"(элементов: {info.Names.Length}).");
+
+            info.Docs ??= new string[info.Names.Length];
+            if (info.Docs[value] != null)
+                throw new System.InvalidOperationException(
+                    $"Элемент '{info.Name}.{info.Names[value]}' уже описан.");
+            info.Docs[value] = doc;
         }
 
         public int DefineClass(string name) => DefineClass(name, null);
@@ -234,6 +333,10 @@ namespace Dsl.Semantics
         {
             if (!_classes.TryGetValue(className, out var cls))
                 throw new System.InvalidOperationException($"Класс хоста '{className}' не зарегистрирован.");
+            if (cls.Methods.ContainsKey(propName))
+                throw new System.InvalidOperationException(
+                    $"У класса '{className}' уже есть метод '{propName}': имя одно на всех, " +
+                    "свойством и методом одновременно оно быть не может.");
             int id = _getters.Count;
             _getters.Add(getter);
             _setters.Add(setter); // может быть null для read-only
@@ -241,11 +344,56 @@ namespace Dsl.Semantics
             return id;
         }
 
+        /// <summary>
+        /// Метод самого объекта: <c>basket.AddPerk("x")</c>. <paramref name="paramTypes"/> —
+        /// то, что видит скрипт, БЕЗ приёмника; приёмник компилятор кладёт на стек
+        /// нулевым аргументом, поэтому хостовая функция принимает его первым.
+        ///
+        /// Объявляйте метод у класса там, где объект и ЕСТЬ интерфейс (корзина,
+        /// билдер, который передают в событие). Для сущности-данных лучше
+        /// API-класс: иначе половина API ищется через переменную нужного типа,
+        /// а половина — в списке API.
+        /// </summary>
+        public int DefineClassMethod(string className, string method, TypeRef[] paramTypes, TypeRef ret,
+                                     HostFunction fn, string summary = null,
+                                     string[] paramNames = null, string[] paramDocs = null)
+        {
+            if (!_classes.TryGetValue(className, out var cls))
+                throw new System.InvalidOperationException($"Класс хоста '{className}' не зарегистрирован.");
+            if (cls.Methods.ContainsKey(method))
+                throw new System.InvalidOperationException(
+                    $"Метод '{method}' уже зарегистрирован у класса '{className}'. " +
+                    "Перегрузок в языке нет — дайте методам разные имена.");
+            if (cls.Props.ContainsKey(method))
+                throw new System.InvalidOperationException(
+                    $"У класса '{className}' уже есть свойство '{method}': имя одно на всех, " +
+                    "свойством и методом одновременно оно быть не может.");
+
+            int id = _functions.Count;
+            _functions.Add(fn);
+            cls.Methods[method] = new HostMethodInfo
+            {
+                HostFnId = id,
+                Name = method,
+                Params = paramTypes ?? System.Array.Empty<TypeRef>(),
+                Ret = ret ?? TypeRef.Void,
+                Summary = summary,
+                ParamNames = paramNames,
+                ParamDocs = paramDocs,
+            };
+            return id;
+        }
+
         // Составные имена API ("Api.Weapon"): точка — часть ИМЕНИ, а не оператор.
         // Хранилище было готово (ключ — произвольная строка), добавляется только
         // множество префиксов: чекеру нужно опознать «Api» как узел пространства
         // имён, даже если под таким именем API не зарегистрирован.
-        private readonly HashSet<string> _apiNamespaces = new HashSet<string>(System.StringComparer.Ordinal);
+        // Узлы составных имён: "Api" и "Api.Weapon" для "Api.Weapon.Melee".
+        // Значение — описание узла (null, пока не задано): узел это первое, что
+        // человек набирает, и до сих пор он был единственным местом в объявлениях
+        // хоста без текста вообще.
+        private readonly Dictionary<string, string> _apiNamespaces =
+            new Dictionary<string, string>(System.StringComparer.Ordinal);
 
         public HostApiInfo DefineApiClass(string name)
         {
@@ -254,9 +402,13 @@ namespace Dsl.Semantics
                 ValidateApiName(name);
                 api = new HostApiInfo { Name = name };
                 _apis[name] = api;
-                // "Api.Weapon.Melee" → узлы "Api" и "Api.Weapon"
+                // "Api.Weapon.Melee" → узлы "Api" и "Api.Weapon". Уже описанный
+                // узел не трогаем: порядок регистрации не должен терять текст
                 for (int i = name.IndexOf('.'); i > 0; i = name.IndexOf('.', i + 1))
-                    _apiNamespaces.Add(name.Substring(0, i));
+                {
+                    string node = name.Substring(0, i);
+                    if (!_apiNamespaces.ContainsKey(node)) _apiNamespaces[node] = null;
+                }
             }
             return api;
         }
@@ -284,7 +436,31 @@ namespace Dsl.Semantics
         /// "Api.Weapon"), но не сам API. Нужно разрешению идентификаторов:
         /// голая голова составного имени не должна читаться как ошибка.
         /// </summary>
-        public bool IsApiNamespace(string name) => _apiNamespaces.Contains(name);
+        public bool IsApiNamespace(string name) => _apiNamespaces.ContainsKey(name);
+
+        /// <summary>Описание узла или null. Узла нет — тоже null.</summary>
+        public string ApiNamespaceSummary(string name)
+            => _apiNamespaces.TryGetValue(name, out var s) ? s : null;
+
+        /// <summary>Все узлы составных имён с описаниями (описание может быть null).</summary>
+        public IEnumerable<KeyValuePair<string, string>> ApiNamespaces => _apiNamespaces;
+
+        /// <summary>
+        /// Описание узла составного имени: <c>DescribeApiNamespace("Api.PartsCatalog", "…")</c>.
+        /// Узел, которого ещё нет, создаётся — как и DescribeApi создаёт API-класс:
+        /// иначе описание пришлось бы писать строго ПОСЛЕ регистрации всех API под
+        /// ним, а это ровно тот порядок, который в ConfigureHost читается хуже всего.
+        ///
+        /// Регистрировать узел пустым API ради summary нельзя: он стал бы
+        /// ApiClassRef, и вместо «допишите имя API и метод» на нём начало бы
+        /// появляться «у него можно только вызвать метод».
+        /// </summary>
+        public void DescribeApiNamespace(string name, string summary)
+        {
+            ValidateApiName(name);
+            if (summary != null || !_apiNamespaces.ContainsKey(name))
+                _apiNamespaces[name] = summary;
+        }
 
         /// <summary>Имена API, начинающиеся с "prefix." — для подсказок и диагностики.</summary>
         public IEnumerable<string> ApiNamesUnder(string prefix)
@@ -491,6 +667,14 @@ namespace Dsl.Semantics
             _archKindByName[name] = k;
             return k.Id;
         }
+
+        /// <summary>
+        /// Разрешить сущностям этого вида не реализовывать ни одного события:
+        /// вид-конфиг (данные без механики) или вид, поведение которого по
+        /// умолчанию живёт в хосте.
+        /// </summary>
+        public void SetArchetypeEventsOptional(int kindId, bool optional = true)
+            => _archKinds[kindId].EventsOptional = optional;
 
         public int DefineArchetypeEvent(int kindId, string name, TypeRef[] paramTypes,
                                         string summary = null, string[] paramNames = null, string[] paramDocs = null)

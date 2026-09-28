@@ -1,0 +1,9 @@
+// Настройки вида для .sal — Sublime применяет их к файлам с синтаксисом Salamander.
+// Переопределять — в Packages/User/Salamander.sublime-settings.
+{
+    "tab_size": 4,
+    "translate_tabs_to_spaces": true,
+    "auto_complete_triggers": [
+        { "selector": "source.salamander", "characters": "." }
+    ]
+}

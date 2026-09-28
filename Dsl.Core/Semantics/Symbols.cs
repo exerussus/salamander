@@ -45,6 +45,72 @@ namespace Dsl.Semantics
         public string DefaultStr;     // string (интернируется компилятором как литерал)
     }
 
+    /// <summary>
+    /// Мерж-цепочка ОДНОГО члена сущности (событие, функция, action Do,
+    /// OnSubscribe/OnUnsubscribe): все его версии из всех блоков в порядке мержа.
+    ///
+    /// Ядро — последняя core/replace-версия, before/after — слои вокруг него,
+    /// replace стирает всё, что объявлено раньше. Версии модулей, отличных от
+    /// модуля-владельца (первого блока сущности), проверяют свой модуль на
+    /// каждом вызове: выключенного модуля как будто нет, и стёртое его replace
+    /// возвращается.
+    ///
+    /// Entry — то, что реально вызывают и поднимают: сама версия-ядро, если
+    /// цепочка тривиальна (всё в модуле-владельце, слоёв нет — ровно как до
+    /// появления слоёв), иначе синтетическая функция, которая проходит слои и
+    /// проверяет модули.
+    /// </summary>
+    public sealed class MemberChain
+    {
+        /// <summary>"f:Имя" — func, "e:Имя" — событие хоста/вида, "a:Do" — action, "s:Имя" — OnSubscribe/OnUnsubscribe.</summary>
+        public string Key;
+        public string Name;
+        /// <summary>Модуль первого блока сущности: его версии гейта не требуют.</summary>
+        public string OwnerModule;
+        /// <summary>Все версии в порядке мержа (после сборки: внутри блока ядро раньше слоёв).</summary>
+        public readonly List<FuncMember> Links = new List<FuncMember>();
+        public FuncMember Entry;
+        /// <summary>Индекс последнего replace модуля-владельца; всё раньше него мертво статически. -1 — нет.</summary>
+        public int Boundary = -1;
+
+        public bool IsHostEvent => Key != null && Key.Length > 0 && Key[0] == 'e';
+
+        /// <summary>
+        /// Версия проверяет свой модуль на каждом вызове, если он не модуль-владелец
+        /// сущности и не модуль вызывающего (раз вызывающий выполняется, его модуль
+        /// включён). Версии владельца включаются и выключаются вместе с сущностью —
+        /// как и до появления слоёв.
+        /// </summary>
+        public bool IsGated(FuncMember link, string callerModule = null)
+        {
+            string m = link.Owner?.Module;
+            return m != OwnerModule && m != callerModule;
+        }
+    }
+
+    /// <summary>Цепочки членов одной сущности: порядок первого появления + поиск по ключу.</summary>
+    public sealed class ChainSet
+    {
+        public readonly List<MemberChain> List = new List<MemberChain>();
+        public readonly Dictionary<string, MemberChain> ByKey = new Dictionary<string, MemberChain>();
+    }
+
+    public enum ChainSynthKind : byte { Entry, BaseSelector }
+
+    /// <summary>
+    /// Синтетическая функция цепочки — что должен собрать компилятор.
+    /// Entry: слои before, первое включённое ядро сверху вниз, слои after.
+    /// BaseSelector: первое включённое ядро ниже версии Below (для base()).
+    /// </summary>
+    public sealed class ChainSynth
+    {
+        public ChainSynthKind Kind;
+        public MemberChain Chain;
+        public int Below;
+        /// <summary>BaseSelector: модуль вызывающей версии — раз она выполняется, он включён.</summary>
+        public string CallerModule;
+    }
+
     public sealed class EnumSymbol : Symbol
     {
         public int Id;
@@ -60,6 +126,7 @@ namespace Dsl.Semantics
         public readonly Dictionary<string, FuncMember> Funcs = new Dictionary<string, FuncMember>();   // победители
         public readonly List<FieldMember> FieldDecls = new List<FieldMember>();  // все объявления полей
         public readonly List<FuncMember> AllFuncDecls = new List<FuncMember>();  // все версии функций
+        public readonly ChainSet Chains = new ChainSet();
     }
 
     public sealed class TriggerSymbol : Symbol
@@ -69,11 +136,12 @@ namespace Dsl.Semantics
         public bool StartDisabled;
         public readonly Dictionary<string, FieldSymbol> Fields = new Dictionary<string, FieldSymbol>();
         public readonly Dictionary<string, FuncMember> Funcs = new Dictionary<string, FuncMember>();
-        public FuncMember Action;                 // безымянное действие Do (или null; поздний блок заменяет)
+        public FuncMember Action;                 // вход цепочки action Do (или null)
         public readonly List<FuncMember> Events = new List<FuncMember>();        // все версии (мерж later-wins)
         public readonly List<TriggerDecl> Decls = new List<TriggerDecl>();
         public readonly List<FieldMember> FieldDecls = new List<FieldMember>();
         public readonly List<FuncMember> AllFuncDecls = new List<FuncMember>();  // funcs + все версии action
+        public readonly ChainSet Chains = new ChainSet();
     }
 
     public sealed class ListenerSymbol : Symbol
@@ -85,11 +153,12 @@ namespace Dsl.Semantics
         public readonly Dictionary<string, FieldSymbol> Fields = new Dictionary<string, FieldSymbol>();
         public readonly Dictionary<string, FuncMember> Funcs = new Dictionary<string, FuncMember>();
         public readonly List<FuncMember> Events = new List<FuncMember>();   // только хостовые
-        public FuncMember OnSubscribe;    // опционально (поздний блок заменяет)
-        public FuncMember OnUnsubscribe;  // опционально (без wait/spawn; поздний блок заменяет)
+        public FuncMember OnSubscribe;    // вход цепочки (опционально)
+        public FuncMember OnUnsubscribe;  // вход цепочки (опционально; без wait/spawn)
         public readonly List<ListenerDecl> Decls = new List<ListenerDecl>();
         public readonly List<FieldMember> FieldDecls = new List<FieldMember>();
         public readonly List<FuncMember> AllFuncDecls = new List<FuncMember>();  // funcs + вытесненные OnSub/OnUnsub
+        public readonly ChainSet Chains = new ChainSet();
     }
 
     /// <summary>
@@ -114,6 +183,7 @@ namespace Dsl.Semantics
         public readonly List<FuncMember> AllFuncDecls = new List<FuncMember>();  // все версии (для проверки/компиляции тел)
         public readonly List<FuncMember> Events = new List<FuncMember>();        // все, в порядке объявления (мерж later-wins)
         public readonly List<FieldMember> FieldDecls = new List<FieldMember>();  // все объявления полей (иниты по порядку)
+        public readonly ChainSet Chains = new ChainSet();
     }
 
     public enum ResolveResult : byte { NotFound, Found, Ambiguous }

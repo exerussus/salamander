@@ -34,6 +34,10 @@ namespace Dsl.Runtime
         private bool[] _moduleEnabled = Array.Empty<bool>();
         private readonly Dictionary<string, int> _moduleIndex = new Dictionary<string, int>();
 
+        /// <summary>Включён ли модуль по индексу программы (гейт версий модов в мерж-цепочках).</summary>
+        internal bool IsModuleEnabledAt(int index) =>
+            (uint)index < (uint)_moduleEnabled.Length && _moduleEnabled[index];
+
         // планировщик
         private readonly Queue<long> _runQueue = new Queue<long>();
         private readonly List<long> _nextTick = new List<long>();
@@ -42,7 +46,7 @@ namespace Dsl.Runtime
         private int _timerCount;
 
         // фаза Raise: буфер аргументов + список обработчиков (реентерабельно за счёт диапазонов)
-        private readonly Variant[] _raiseArgs = new Variant[16];
+        private Variant[] _raiseArgs = new Variant[16];
         private int _raiseArgCount;
         private readonly List<long> _pendingHandlers = new List<long>();
 
@@ -105,6 +109,19 @@ namespace Dsl.Runtime
         /// </summary>
         public long StuckInstructionLimit = 200_000;
 
+        /// <summary>
+        /// Предел ВЛОЖЕННОСТИ запусков файберов. Raise исполняет обработчики
+        /// немедленно, поэтому цепочка «скрипт → хостовый метод → Raise → скрипт → …»
+        /// растит нативный стек C#. MaxCallDepth её не видит (он считает кадры внутри
+        /// одного файбера), бюджет инструкций — тоже (на уровень уходит пара десятков
+        /// инструкций), и раньше такая рекурсия кончалась StackOverflowException,
+        /// которую в .NET поймать нельзя: падал весь процесс. Классический случай —
+        /// обработчик OnDamage, наносящий урон. Сверх предела обработчик НЕ
+        /// запускается, в OnError уходит сообщение.
+        /// </summary>
+        public int MaxNestedRunDepth = 64;
+        private int _runDepth;
+
         /// <summary>Детальная разбивка инструкций по триггерам. В релизе держите
         /// off (горячий путь платит только за общий счётчик тика), в редакторе on.</summary>
         public bool EnableProfiling = false;
@@ -139,7 +156,20 @@ namespace Dsl.Runtime
         private readonly Stack<int> _freeAttachments = new Stack<int>();
         private Stack<Variant[]>[] _attachFieldPools = Array.Empty<Stack<Variant[]>>();
         private readonly Dictionary<long, List<int>> _subsByEntity = new Dictionary<long, List<int>>();
-        private readonly List<int> _subScratch = new List<int>(); // снапшот на время detach/dispatch
+        // Снапшоты списка подписок на время detach/dispatch. ПУЛ, а не одно поле:
+        // OnUnsubscribe может вызвать хост, тот — поднять событие или инвалидировать
+        // другую сущность, и вложенный обход очищал общий список посреди внешнего
+        // foreach → InvalidOperationException улетала в код игры, часть подписок
+        // оставалась висеть, а Entities.Invalidate не выполнялся вовсе.
+        private readonly Stack<List<int>> _subScratchPool = new Stack<List<int>>();
+        private List<int> RentSubScratch(List<int> source)
+        {
+            var l = _subScratchPool.Count > 0 ? _subScratchPool.Pop() : new List<int>();
+            l.Clear();
+            l.AddRange(source);
+            return l;
+        }
+        private void ReturnSubScratch(List<int> l) { l.Clear(); _subScratchPool.Push(l); }
         private int _liveAttachments;
 
         private static long PackEntity(Variant v) => ((long)v.Version << 32) | (uint)v.Index;
@@ -198,10 +228,13 @@ namespace Dsl.Runtime
             Collections.Clear();
 
             Strings = new StringTable();
+            _stringSweepFloor = 0;
+            _collectionSweepFloor = 0;
             _litIds = new int[prog.StringLiterals.Length];
             for (int i = 0; i < prog.StringLiterals.Length; i++)
                 _litIds[i] = Strings.Intern(prog.StringLiterals[i]);
             Strings.FreezeStatics();
+            _hotLitFrom = int.MaxValue; // литералов после заморозки нет (их дописывает только TryHotSwap)
 
             _statics = new Variant[Math.Max(1, prog.StaticCount)];
             _prog = prog;
@@ -299,6 +332,16 @@ namespace Dsl.Runtime
         /// бюджет инструкций и per-tick счётчики — считайте это «началом кадра».</summary>
         public void Tick(float dt)
         {
+            // NaN/Infinity отравляют _time навсегда (NaN + x = NaN): ни один таймер
+            // больше не просыпается. Отрицательный шаг крутит часы назад. Такой dt —
+            // ошибка хоста; тик отрабатывает с нулевым шагом, время не портится.
+            if (float.IsNaN(dt) || float.IsInfinity(dt) || dt < 0f)
+            {
+                OnWarn?.Invoke("Tick: недопустимый шаг времени " +
+                               dt.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                               " — тик выполнен с dt = 0.");
+                dt = 0f;
+            }
             _time += dt;
             _dt = dt;
 
@@ -336,10 +379,24 @@ namespace Dsl.Runtime
 
             // сборка идёт МЕЖДУ файберами (конец тика), поэтому корнями гарантированно
             // накрыт весь живой рантайм: _current здесь всегда null
-            bool needSweep = (StringSweepThreshold > 0 && Strings.DynamicCount > StringSweepThreshold)
-                          || (CollectionSweepThreshold > 0 && Collections.LiveCount > CollectionSweepThreshold);
-            if (needSweep) Collect();
+            bool needSweep = (StringSweepThreshold > 0
+                              && Strings.DynamicCount > Math.Max(StringSweepThreshold, _stringSweepFloor))
+                          || (CollectionSweepThreshold > 0
+                              && Collections.LiveCount > Math.Max(CollectionSweepThreshold, _collectionSweepFloor));
+            if (needSweep)
+            {
+                Collect();
+                // Адаптивный порог: если ЖИВОГО после сборки больше порога (игра законно
+                // держит тысячи коллекций — каждая структура это массив), следующая сборка
+                // — когда объём удвоится, а не на каждом кадре. Пока живого меньше порога,
+                // пол ниже порога и ни на что не влияет — поведение прежнее.
+                _stringSweepFloor = Strings.DynamicCount * 2;
+                _collectionSweepFloor = Collections.LiveCount * 2;
+            }
         }
+
+        private int _stringSweepFloor;
+        private int _collectionSweepFloor;
 
         /// <summary>Начать поднятие события: пишите аргументы и вызовите Commit.</summary>
         public RaiseScope Raise(int eventId)
@@ -351,7 +408,14 @@ namespace Dsl.Runtime
         // низкоуровневый путь для типизированных EventRef (Dsl.Hosting):
         // та же механика, что RaiseScope, но без промежуточной структуры
         internal void RaiseBegin() => _raiseArgCount = 0;
-        internal void RaiseAdd(Variant v) => _raiseArgs[_raiseArgCount++] = v;
+        internal void RaiseAdd(Variant v)
+        {
+            // буфер растёт: раньше 17-й аргумент давал IndexOutOfRangeException в код игры.
+            // Уже созданные файберы держат КОПИИ аргументов, смена массива им не мешает.
+            if (_raiseArgCount >= _raiseArgs.Length)
+                Array.Resize(ref _raiseArgs, _raiseArgs.Length * 2);
+            _raiseArgs[_raiseArgCount++] = v;
+        }
         internal void RaiseCommit(int eventId) => CommitRaise(eventId);
 
         // ===================================================================
@@ -717,13 +781,13 @@ namespace Dsl.Runtime
                 _eventId = eventId;
             }
 
-            public RaiseScope AddInt(int v) { _e._raiseArgs[_e._raiseArgCount++] = Variant.Int(v); return this; }
-            public RaiseScope AddFloat(float v) { _e._raiseArgs[_e._raiseArgCount++] = Variant.Float(v); return this; }
-            public RaiseScope AddBool(bool v) { _e._raiseArgs[_e._raiseArgCount++] = Variant.Bool(v); return this; }
-            public RaiseScope AddStr(string v) { _e._raiseArgs[_e._raiseArgCount++] = v == null ? Variant.Nil : Variant.Str(_e.Strings.Intern(v)); return this; }
-            public RaiseScope AddEntity(object o) { _e._raiseArgs[_e._raiseArgCount++] = _e.Entities.Register(o); return this; }
-            public RaiseScope AddEnum(int enumTypeId, int value) { _e._raiseArgs[_e._raiseArgCount++] = Variant.Enum(enumTypeId, value); return this; }
-            public RaiseScope AddVariant(Variant v) { _e._raiseArgs[_e._raiseArgCount++] = v; return this; }
+            public RaiseScope AddInt(int v) { _e.RaiseAdd(Variant.Int(v)); return this; }
+            public RaiseScope AddFloat(float v) { _e.RaiseAdd(Variant.Float(v)); return this; }
+            public RaiseScope AddBool(bool v) { _e.RaiseAdd(Variant.Bool(v)); return this; }
+            public RaiseScope AddStr(string v) { _e.RaiseAdd(v == null ? Variant.Nil : Variant.Str(_e.Strings.Intern(v))); return this; }
+            public RaiseScope AddEntity(object o) { _e.RaiseAdd(_e.Entities.Register(o)); return this; }
+            public RaiseScope AddEnum(int enumTypeId, int value) { _e.RaiseAdd(Variant.Enum(enumTypeId, value)); return this; }
+            public RaiseScope AddVariant(Variant v) { _e.RaiseAdd(v); return this; }
 
             /// <summary>Запустить обработчики немедленно (до их первой приостановки).</summary>
             public void Commit() => _e.CommitRaise(_eventId);
@@ -769,21 +833,24 @@ namespace Dsl.Runtime
                 && _raiseArgCount > 0 && _raiseArgs[0].Type == VariantType.Entity
                 && _subsByEntity.TryGetValue(PackEntity(_raiseArgs[0]), out var subs))
             {
-                _subScratch.Clear();
-                _subScratch.AddRange(subs);
-                foreach (var idx in _subScratch)
+                var snap = RentSubScratch(subs);
+                try
                 {
-                    var att = _attachments[idx];
-                    if (!att.Active || att.Finalizing) continue;
-                    var linfo = _prog.Listeners[att.ListenerId];
-                    if (!_moduleEnabled[linfo.ModuleIndex]) continue;
-                    int func = _prog.ListenerHandlerFunc[att.ListenerId][eventId];
-                    if (func < 0) continue;
+                    for (int si = 0; si < snap.Count; si++)
+                    {
+                        var att = _attachments[snap[si]];
+                        if (!att.Active || att.Finalizing) continue;
+                        var linfo = _prog.Listeners[att.ListenerId];
+                        if (!_moduleEnabled[linfo.ModuleIndex]) continue;
+                        int func = _prog.ListenerHandlerFunc[att.ListenerId][eventId];
+                        if (func < 0) continue;
 
-                    var lf = CreateAttachedFiber(func, att, _raiseArgs, 0, _raiseArgCount);
-                    _pendingHandlers.Add(FiberPool.Pack(lf));
-                    _tick.HandlerInvocationsThisTick++;
+                        var lf = CreateAttachedFiber(func, att, _raiseArgs, 0, _raiseArgCount);
+                        _pendingHandlers.Add(FiberPool.Pack(lf));
+                        _tick.HandlerInvocationsThisTick++;
+                    }
                 }
+                finally { ReturnSubScratch(snap); }
             }
 
             int end = _pendingHandlers.Count;
@@ -826,6 +893,13 @@ namespace Dsl.Runtime
                 return;
             }
 
+            // рекурсия через хост: дальше — переполнение нативного стека и смерть процесса
+            if (_runDepth >= MaxNestedRunDepth)
+            {
+                RefuseNestedRun(f);
+                return;
+            }
+
             int cap = (int)Math.Min(MaxInstructionsPerFiberRun, _tickInstrLeft);
 
             // Raise может прийти из хостового метода ПОСРЕДИ исполнения другого
@@ -834,8 +908,10 @@ namespace Dsl.Runtime
             var prev = _current;
             _current = f;
             f.State = FiberState.Running;
-            var r = _vm.Run(f, cap);
-            _current = prev;
+            RunResult r;
+            _runDepth++;
+            try { r = _vm.Run(f, cap); }
+            finally { _runDepth--; _current = prev; }
 
             int executed = _vm.LastInstructionCount;
             _tickInstrLeft -= executed;
@@ -884,6 +960,28 @@ namespace Dsl.Runtime
                     HandleOutOfBudget(f);
                     break;
             }
+        }
+
+        private void RefuseNestedRun(Fiber f)
+        {
+            string name = "?";
+            if (f.FrameCount > 0 && _prog != null)
+            {
+                int fn = f.Frames[0].Func;
+                if ((uint)fn < (uint)_prog.Functions.Length) name = _prog.Functions[fn].Name;
+            }
+            if ((uint)f.TriggerId < (uint)_trigStats.Length)
+            {
+                _trigStats[f.TriggerId].ErrorCount++;
+                _trigStats[f.TriggerId].LastError = "отклонён: рекурсия событий через хост";
+            }
+            _tick.FibersErroredThisTick++;
+            _fibers.Return(f);
+            OnError?.Invoke(
+                $"Обработчик '{name}' не запущен: вложенность запусков достигла {MaxNestedRunDepth}. " +
+                "Похоже на рекурсию событий: обработчик вызывает метод игры, который снова поднимает " +
+                "событие, ведущее в этот же обработчик (например, OnDamage наносит урон). " +
+                "Разорвите цикл флагом-стражем или отложите действие через spawn/wait.");
         }
 
         private void RequeueReady(Fiber f)
@@ -985,6 +1083,10 @@ namespace Dsl.Runtime
         {
             var stack = self.Stack;
             Variant Arg(int i) => stack[argBase + i];
+
+            // встроенный Math — чистые функции без состояния движка; его операции
+            // стоят в конце EngineOp, начиная с MathMin
+            if (op >= EngineOp.MathMin) return MathOps.Exec(op, stack, argBase);
 
             switch (op)
             {
@@ -1101,6 +1203,8 @@ namespace Dsl.Runtime
             if (_tick.FibersStartedThisTick >= MaxFibersStartedPerTick)
             {
                 _tick.SpawnsDroppedThisTick++;
+                if (_tick.SpawnsDroppedThisTick == 1) // как у spawn: один раз за тик
+                    OnWarn?.Invoke($"Лимит спавнов за тик ({MaxFibersStartedPerTick}) исчерпан — часть ActivateTrigger проигнорирована.");
                 return Variant.Nil;
             }
             _tick.FibersStartedThisTick++;
@@ -1199,10 +1303,14 @@ namespace Dsl.Runtime
                 var prev = _current;
                 _current = fi;
                 fi.State = FiberState.Running;
-                if (_vm.Run(fi, InitInstructionLimit) == RunResult.OutOfBudget)
-                    OnError?.Invoke($"listener '{info.Name}': инициализация полей подписки не уложилась в " +
-                                    $"{InitInstructionLimit} инструкций и прервана.");
-                _current = prev;
+                _runDepth++;
+                try
+                {
+                    if (_vm.Run(fi, InitInstructionLimit) == RunResult.OutOfBudget)
+                        OnError?.Invoke($"listener '{info.Name}': инициализация полей подписки не уложилась в " +
+                                        $"{InitInstructionLimit} инструкций и прервана.");
+                }
+                finally { _runDepth--; _current = prev; }
                 _fibers.Return(fi);
             }
 
@@ -1220,13 +1328,16 @@ namespace Dsl.Runtime
         {
             if (target.Type != VariantType.Entity) return;
             if (!_subsByEntity.TryGetValue(PackEntity(target), out var list)) return;
-            _subScratch.Clear();
-            _subScratch.AddRange(list); // DetachCore правит список — идём по снапшоту
-            foreach (var idx in _subScratch)
+            var snap = RentSubScratch(list); // DetachCore правит список — идём по снапшоту
+            try
             {
-                var a = _attachments[idx];
-                if (a.Active && a.ListenerId == listenerId) DetachCore(a);
+                for (int si = 0; si < snap.Count; si++)
+                {
+                    var a = _attachments[snap[si]];
+                    if (a.Active && a.ListenerId == listenerId) DetachCore(a);
+                }
             }
+            finally { ReturnSubScratch(snap); }
         }
 
         /// <summary>
@@ -1258,8 +1369,10 @@ namespace Dsl.Runtime
                 var prev = _current;
                 _current = fu;
                 fu.State = FiberState.Running;
-                var r = _vm.Run(fu, MaxInstructionsPerFiberRun);
-                _current = prev;
+                RunResult r;
+                _runDepth++;
+                try { r = _vm.Run(fu, MaxInstructionsPerFiberRun); }
+                finally { _runDepth--; _current = prev; }
                 if (r != RunResult.Completed && r != RunResult.Errored)
                     OnError?.Invoke($"listener '{info.Name}'.OnUnsubscribe должен завершаться немедленно — файбер остановлен.");
                 _fibers.Return(fu);
@@ -1302,18 +1415,29 @@ namespace Dsl.Runtime
         /// </summary>
         public void InvalidateEntity(object o)
         {
-            if (Entities.TryGetHandle(o, out var h)
-                && _subsByEntity.TryGetValue(PackEntity(h), out var list))
+            try
             {
-                _subScratch.Clear();
-                _subScratch.AddRange(list);
-                foreach (var idx in _subScratch)
+                if (Entities.TryGetHandle(o, out var h)
+                    && _subsByEntity.TryGetValue(PackEntity(h), out var list))
                 {
-                    var a = _attachments[idx];
-                    if (a.Active) DetachCore(a);
+                    var snap = RentSubScratch(list);
+                    try
+                    {
+                        for (int si = 0; si < snap.Count; si++)
+                        {
+                            var a = _attachments[snap[si]];
+                            // версия цели: слот подписки мог быть переиспользован вложенным attach
+                            if (a.Active && a.TargetKey == PackEntity(h)) DetachCore(a);
+                        }
+                    }
+                    finally { ReturnSubScratch(snap); }
                 }
             }
-            Entities.Invalidate(o);
+            finally
+            {
+                // что бы ни случилось в OnUnsubscribe — хэндлы мёртвого объекта обязаны протухнуть
+                Entities.Invalidate(o);
+            }
         }
 
         /// <summary>Включить/выключить триггер по имени (для редактора/консоли).</summary>
@@ -1356,6 +1480,7 @@ namespace Dsl.Runtime
             Collections.BeginSweep();
 
             for (int i = 0; i < _statics.Length; i++) MarkValue(_statics[i]);
+            MarkHotLiterals();
 
             for (int i = 0; i < _raiseArgCount && i < _raiseArgs.Length; i++) MarkValue(_raiseArgs[i]);
 

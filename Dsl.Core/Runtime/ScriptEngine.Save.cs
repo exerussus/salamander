@@ -427,13 +427,14 @@ namespace Dsl.Runtime
             if (_current != null)
                 throw new InvalidOperationException("LoadState: нельзя загружаться изнутри исполнения скрипта.");
 
+            double timeBefore = _time; // LoadStateCore перезаписывает часы до того, как может упасть
             try
             {
                 return LoadStateCore(stream, resolver);
             }
             catch (SaveStateException)
             {
-                ResetRuntimeAfterFailedLoad();
+                ResetRuntimeAfterFailedLoad(timeBefore);
                 throw;
             }
             catch (Exception ex)
@@ -443,7 +444,7 @@ namespace Dsl.Runtime
                 // и не подделку. Поэтому любой сбой разбора обязан стать
                 // SaveStateException, а движок — остаться в заведомо пустом,
                 // а не в полуразобранном состоянии.
-                ResetRuntimeAfterFailedLoad();
+                ResetRuntimeAfterFailedLoad(timeBefore);
                 throw new SaveStateException("Сейв повреждён или несовместим: " + ex.Message);
             }
         }
@@ -456,7 +457,7 @@ namespace Dsl.Runtime
             return ro != null && (uint)slot < (uint)ro.Length && ro[slot];
         }
 
-        private void ResetRuntimeAfterFailedLoad()
+        private void ResetRuntimeAfterFailedLoad(double timeBefore)
         {
             KillAllFibers();
             _runQueue.Clear();
@@ -472,6 +473,20 @@ namespace Dsl.Runtime
                 _freeAttachments.Push(i);
             }
             _liveAttachments = 0;
+
+            // «Заведомо пустое» = как сразу после LoadProgram. Без этого статики
+            // оставались наполовину прочитанными и держали хэндлы на коллекции,
+            // только что снесённые Collections.Clear(): после отказа загрузить битый
+            // сейв каждый обработчик, трогающий такое поле, падал с «Список не
+            // существует» до следующего LoadProgram. Часы тоже возвращаем — иначе
+            // в них оставалось время из непрочитанного сейва.
+            _time = timeBefore;
+            for (int i = 0; i < _triggerEnabled.Length; i++)
+                _triggerEnabled[i] = !_prog.Triggers[i].StartDisabled;
+            for (int i = 0; i < _moduleEnabled.Length; i++)
+                _moduleEnabled[i] = true;
+            Array.Clear(_statics, 0, _statics.Length);
+            RunInit();
         }
 
         /// <summary>Счётчик из сейва с проверкой диапазона: без неё крафт даёт OutOfMemory на аллокации.</summary>

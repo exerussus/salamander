@@ -1,0 +1,26 @@
+{
+    "name": "Dsl.Ide.Unity",
+    "rootNamespace": "Dsl.Ide",
+    "references": [
+        "Dsl.Core",
+        "Dsl.Tooling",
+        "Dsl.Ide",
+        "Dsl.Unity",
+        "Unity.InputSystem"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [
+        {
+            "name": "com.unity.inputsystem",
+            "expression": "1.0.0",
+            "define": "SAL_INPUT_SYSTEM"
+        }
+    ],
+    "noEngineReferences": false
+}

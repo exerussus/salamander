@@ -78,6 +78,15 @@ namespace Dsl.Unity
         [Tooltip("Пауза после последнего изменения файла перед перекомпиляцией, сек")]
         [SerializeField] private float _reloadDebounce = 0.3f;
 
+        [Tooltip("Если правка затронула только ТЕЛА функций (метод класса, обработчик архетипа/триггера), " +
+                 "подменять их в живом движке без перезагрузки: поля, подписки и файберы сохраняются. " +
+                 "Иначе (новое поле, член, сигнатура) — обычная перезагрузка со сбросом состояния.")]
+        [SerializeField] private bool _hotSwapBodies = true;
+
+        [Tooltip("Файбер, стоящий внутри изменённой функции (например, в wait): дорабатывает старую " +
+                 "версию или убивается. Новые вызовы в любом случае идут в новую версию.")]
+        [SerializeField] private HotSwapFiberPolicy _hotSwapFiberPolicy = HotSwapFiberPolicy.FinishOnOldCode;
+
         [Header("Инструменты")]
         [Tooltip("В редакторе выгружать salamander-api.json рядом с модулями: его читают CLI-чекер и расширение VS Code")]
         [SerializeField] private bool _exportApiManifest = true;
@@ -93,6 +102,52 @@ namespace Dsl.Unity
 
         public ScriptEngine Engine => _engine;
         public HostRegistry Registry => _registry;
+
+        /// <summary>Версия скриптового API игры (та, с которой компилируются модули).</summary>
+        public int ApiVersion => _apiVersion;
+
+        /// <summary>Папка модулей игры на диске (StreamingAssets/&lt;modsFolder&gt;).</summary>
+        public string ModsDirectory => ModsPath;
+
+        /// <summary>Грузит ли бутстрап коровые модули из папки (а значит, правка файлов там доходит до игры).</summary>
+        public bool LoadsFromModsFolder => _loadFromModsFolder;
+
+        /// <summary>
+        /// Итог каждой компиляции (старт, хот-релоад, явная перезагрузка): IDE в игре
+        /// показывает по нему ошибки и исключённые карантином модули.
+        /// </summary>
+        public event System.Action<CompilationResult> Compiled;
+
+        /// <summary>Движок поднят (RunDsl): Engine и Registry доступны.</summary>
+        public event System.Action Started;
+
+        /// <summary>
+        /// Пауза хот-релоада. Пока true, изменения в папке модулей не перезагружают
+        /// программу: её ставит IDE, когда в движке крутится НЕ то, что лежит на
+        /// диске (набор из памяти на WebGL/мобильных или из чужой папки). Без этого
+        /// первое же событие файловой системы молча откатывало бы применённые правки.
+        /// Снимается, когда IDE снова применяет набор бутстрапа.
+        /// </summary>
+        public bool HotReloadSuspended { get; set; }
+
+        /// <summary>Подменять тела функций без перезагрузки, когда это возможно (см. ScriptEngine.TryHotSwap).</summary>
+        public bool HotSwapBodies { get => _hotSwapBodies; set => _hotSwapBodies = value; }
+
+        /// <summary>Судьба файберов внутри изменённых функций при горячей замене.</summary>
+        public HotSwapFiberPolicy HotSwapFiberPolicy { get => _hotSwapFiberPolicy; set => _hotSwapFiberPolicy = value; }
+
+        /// <summary>
+        /// Итог попытки горячей замены при последней успешной компиляции: Applied —
+        /// подменены только тела; иначе Reason объясняет, почему была полная
+        /// перезагрузка. null — замена не пробовалась (первая загрузка, выключена,
+        /// явная полная перезагрузка).
+        /// </summary>
+        public HotSwapReport LastHotSwap { get; private set; }
+
+        // отпечаток исходников последней компиляции — хот-релоад по вотчеру его
+        // сравнивает и не перезапускает программу, если текст не менялся (ложные
+        // события ФС, повторное событие после явной перезагрузки из IDE)
+        private string _lastSourcesFingerprint;
 
         /// <summary>Модуль, вшитый в сцену: манифест + исходники как TextAsset-ы.</summary>
         [System.Serializable]
@@ -172,6 +227,7 @@ namespace Dsl.Unity
             _engine.OnError += m => Debug.LogError($"[script] {m}");
 
             CompileAndLoad();
+            Started?.Invoke();
 
             // хот-релоад: следим за коровой папкой (если грузим из неё) и/или за
             // путём, назначенным сборщиком. Первый источник, у которого есть путь.
@@ -250,10 +306,23 @@ namespace Dsl.Unity
                 _dirty = true;
                 _dirtyAt = UnityEngine.Time.unscaledTime;
             }
+            // IDE применила свой набор — диск больше не источник истины, перезагрузка откатила бы правки
+            if (_dirty && HotReloadSuspended) _dirty = false;
             if (_dirty && UnityEngine.Time.unscaledTime - _dirtyAt >= _reloadDebounce)
             {
                 _dirty = false;
-                CompileAndLoad(); // при ошибке старая программа продолжает работать
+                try
+                {
+                    ReloadIfSourcesChanged(); // при ошибке старая программа продолжает работать
+                }
+                catch (IOException ex)
+                {
+                    // редактор ещё держит файл открытым на запись — попробуем ещё раз после
+                    // паузы, иначе правка терялась до следующего сохранения
+                    Debug.LogWarning($"[script] Файл занят, перезагрузка отложена: {ex.Message}");
+                    _dirty = true;
+                    _dirtyAt = UnityEngine.Time.unscaledTime;
+                }
             }
 
             if (!_engine.IsLoaded) return;
@@ -321,9 +390,35 @@ namespace Dsl.Unity
         }
 
         /// <summary>Компиляция всех модулей; при успехе — атомарная замена программы.</summary>
-        public void CompileAndLoad()
+        public void CompileAndLoad() => CompileAndLoadFrom(LoadModules());
+
+        /// <summary>
+        /// Модули из всех источников бутстрапа (папка, SourceProvider, вшитые) — то,
+        /// что скомпилировал бы CompileAndLoad. Нужен IDE в игре: она показывает и
+        /// правит ровно этот набор.
+        /// </summary>
+        public List<ModuleSourceSet> CollectModules() => LoadModules();
+
+        /// <summary>
+        /// Компиляция ЗАДАННОГО набора модулей и, при успехе, замена программы.
+        /// Так IDE применяет правки, которые живут только в памяти (WebGL, мобильные,
+        /// вшитые в сцену модули). Возвращает результат (null — движок не поднят).
+        /// </summary>
+        public CompilationResult CompileAndLoadFrom(List<ModuleSourceSet> modules)
+            => CompileAndLoadFrom(modules, allowHotSwap: true);
+
+        /// <summary>Полная перезагрузка со сбросом состояния — даже если правка допускала горячую замену.</summary>
+        public CompilationResult ReloadFull() => CompileAndLoadFrom(LoadModules(), allowHotSwap: false);
+
+        /// <summary>
+        /// То же, что CompileAndLoadFrom(modules), но allowHotSwap = false запрещает
+        /// горячую замену тел: программа перезагружается целиком.
+        /// </summary>
+        public CompilationResult CompileAndLoadFrom(List<ModuleSourceSet> modules, bool allowHotSwap)
         {
-            var modules = LoadModules();
+            if (_engine == null || _registry == null) return null;
+            modules ??= new List<ModuleSourceSet>();
+            _lastSourcesFingerprint = Fingerprint(modules);
             // в игре — карантин: сбойный мод исключается вместе с зависимыми, а не
             // выключает все моды и базовые скрипты разом
             var result = ScriptCompiler.Compile(_registry, _apiVersion, modules, quarantineBrokenModules: true);
@@ -337,16 +432,75 @@ namespace Dsl.Unity
 
             foreach (var ex in result.Excluded)
                 Debug.LogError($"[script] Модуль '{ex.Name}' ИСКЛЮЧЁН из сборки — {ex.Reason}");
+            foreach (var ex in result.ExcludedFiles)
+                Debug.LogError($"[script] Файл '{ex.File}' ИСКЛЮЧЁН из сборки — {ex.Reason}; остальной модуль '{ex.Module}' работает");
 
             if (result.Success)
             {
-                _engine.LoadProgram(result.Program);
-                Debug.Log($"[script] Программа загружена: модулей {result.Program.Modules.Length}, " +
-                          $"триггеров {result.Program.Triggers.Length}, функций {result.Program.Functions.Length}.");
+                LastHotSwap = null;
+                bool swapped = false;
+                if (allowHotSwap && _hotSwapBodies && _engine.HasProgram)
+                {
+                    // правка только тел функций — подменяем их в живом движке;
+                    // иначе причина в лог и обычная перезагрузка
+                    var swap = _engine.TryHotSwap(result.Program, _hotSwapFiberPolicy);
+                    LastHotSwap = swap;
+                    swapped = swap.Applied;
+                    Debug.Log(swap.Applied
+                        ? "[script] " + (swap.NoChanges ? "Код не изменился — программа не тронута." : swap.ToString())
+                        : $"[script] Полная перезагрузка: {swap.Reason}.");
+                }
+                if (!swapped)
+                {
+                    _engine.LoadProgram(result.Program);
+                    Debug.Log($"[script] Программа загружена: модулей {result.Program.Modules.Length}, " +
+                              $"триггеров {result.Program.Triggers.Length}, функций {result.Program.Functions.Length}.");
+                }
             }
             else
             {
                 Debug.LogError("[script] Компиляция не удалась — работает предыдущая версия (если была).");
+            }
+
+            try { Compiled?.Invoke(result); }
+            catch (System.Exception ex) { Debug.LogException(ex); }
+            return result;
+        }
+
+        /// <summary>
+        /// Хот-релоад по вотчеру: перекомпилировать, только если текст модулей
+        /// действительно изменился. Перезагрузка программы убивает файберы и
+        /// сбрасывает состояние, поэтому ложное событие ФС (или повтор после явной
+        /// перезагрузки из IDE) не должно её вызывать.
+        /// </summary>
+        private void ReloadIfSourcesChanged()
+        {
+            var modules = LoadModules();
+            if (_lastSourcesFingerprint != null && Fingerprint(modules) == _lastSourcesFingerprint) return;
+            CompileAndLoadFrom(modules);
+        }
+
+        // стабильный отпечаток набора модулей: имена, манифесты и тексты
+        private static string Fingerprint(List<ModuleSourceSet> modules)
+        {
+            unchecked
+            {
+                ulong h = 14695981039346656037UL;
+                void Mix(string s)
+                {
+                    foreach (char c in s ?? "") { h ^= c; h *= 1099511628211UL; }
+                    h ^= 0xFF; h *= 1099511628211UL;
+                }
+                foreach (var m in modules)
+                {
+                    if (m?.Manifest == null) continue;
+                    Mix(m.Manifest.Name);
+                    Mix(m.Manifest.Execution);
+                    Mix(m.Manifest.ApiVersion.ToString());
+                    foreach (var dep in m.Manifest.Dependencies ?? System.Array.Empty<string>()) Mix(dep);
+                    foreach (var (name, text) in m.Files) { Mix(name); Mix(text); }
+                }
+                return h.ToString("x16");
             }
         }
 
@@ -367,7 +521,7 @@ namespace Dsl.Unity
             _watcher.Changed += OnFsEvent;
             _watcher.Created += OnFsEvent;
             _watcher.Deleted += OnFsEvent;
-            _watcher.Renamed += (_, __) => MarkDirty();
+            _watcher.Renamed += (_, e) => { if (IsScriptFile(e.FullPath) || IsScriptFile(e.OldFullPath)) MarkDirty(); };
             _watcher.EnableRaisingEvents = true;
 #else
             // FileSystemWatcher есть не на всех платформах, а файловая загрузка
@@ -377,7 +531,23 @@ namespace Dsl.Unity
 #endif
         }
 
-        private void OnFsEvent(object sender, FileSystemEventArgs e) => MarkDirty();
+        private void OnFsEvent(object sender, FileSystemEventArgs e)
+        {
+            if (IsScriptFile(e.FullPath)) MarkDirty();
+        }
+
+        // Перезагрузка = LoadProgram = смерть всех файберов и сброс состояния, поэтому
+        // реагируем только на то, что реально входит в программу. Без фильтра её
+        // запускали .meta-файлы Unity, собственный salamander-api.json и
+        // .idea/workspace.xml, который Rider переписывает постоянно.
+        private static bool IsScriptFile(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return true; // не знаем, что изменилось, — перестрахуемся
+            if (path.EndsWith(".sal", System.StringComparison.OrdinalIgnoreCase)) return true;
+            // папка (модуль удалили/переименовали целиком) — расширения нет
+            if (string.IsNullOrEmpty(Path.GetExtension(path))) return true;
+            return string.Equals(Path.GetFileName(path), "module.json", System.StringComparison.OrdinalIgnoreCase);
+        }
 
         private void MarkDirty() => _pendingDirty = true; // никакого Unity API из чужого потока
     }

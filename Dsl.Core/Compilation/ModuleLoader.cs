@@ -118,6 +118,66 @@ namespace Dsl.Compilation
             return result;
         }
 
+        /// <summary>
+        /// Приводит путь, введённый человеком (настройка IDE, аргумент командной
+        /// строки), к виду, который понимает файловая система: снимает кавычки и
+        /// пробелы, разворачивает file:// и срезает ведущий слэш перед буквой
+        /// диска — "\C:\mods" превращается в "C:\mods".
+        ///
+        /// Последнее — не педантизм. Проводник Windows такую запись прощает, а
+        /// Path/File — нет: ведущий слэш означает «корень текущего диска», после
+        /// чего "C:" становится именем папки с двоеточием, которого на диске быть
+        /// не может. File.Exists молча отвечает false, и инструмент сообщает «не
+        /// найдено» про путь, который человек только что открыл в Проводнике —
+        /// со стороны пользователя это неотлаживаемо. Поэтому чиним на входе.
+        ///
+        /// UNC ("\\server\share") не трогаем: там двоеточия нет.
+        /// </summary>
+        public static string NormalizeUserPath(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return value;
+
+            string v = value.Trim().Trim('"');
+
+            if (v.StartsWith("file://", StringComparison.OrdinalIgnoreCase))
+            {
+                try { v = new Uri(v).LocalPath; }
+                catch { /* не разобралось как URI — оставляем текст как есть */ }
+            }
+
+            if (v.Length >= 3 && (v[0] == '/' || v[0] == '\\')
+                && char.IsLetter(v[1]) && v[2] == ':')
+                v = v.Substring(1);
+
+            return v;
+        }
+
+        /// <summary>
+        /// Путь из file-URI, который присылают редакторы. null — это не file-URI.
+        ///
+        /// Uri.LocalPath здесь не годится: VS Code кодирует двоеточие диска
+        /// ("file:///c%3A/Assets/..."), а .NET распознаёт DOS-путь ДО
+        /// раскодирования и такой URI считает POSIX-путём — LocalPath отдаёт
+        /// "/c:/Assets/...". Дальше Path.GetFullPath приклеивает текущий диск, и
+        /// получается "c:\c:\Assets\..." — папки с таким именем не существует.
+        /// Rider/LSP4IJ двоеточие не кодирует, поэтому ломалось только в VS Code.
+        /// </summary>
+        public static string PathFromFileUri(string uri)
+        {
+            if (string.IsNullOrWhiteSpace(uri)) return null;
+
+            Uri u;
+            try { u = new Uri(uri); }
+            catch { return null; }          // untitled:, мусор, относительный путь
+            if (!u.IsFile) return null;
+
+            string path = Uri.UnescapeDataString(u.AbsolutePath);
+            if (!string.IsNullOrEmpty(u.Host))
+                path = "//" + u.Host + path;   // UNC: file://server/share/x
+
+            return NormalizeUserPath(path);
+        }
+
         /// <summary>Глубина обхода по умолчанию для LoadFromTree/EnumerateFiles/FindNearestFile.</summary>
         public const int DefaultScanDepth = 8;
 

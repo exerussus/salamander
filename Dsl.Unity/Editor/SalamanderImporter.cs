@@ -12,16 +12,20 @@ namespace Dsl.Unity.Editor
     ///
     /// Живёт в Editor-only подсборке (Dsl.Unity.Editor): ScriptedImporter —
     /// редакторный тип, в плеер-билд не входит. Версия в атрибуте — при её
-    /// повышении Unity переимпортирует все .sal.
+    /// повышении Unity переимпортирует все .sal (2: значок саламандры).
     /// </summary>
-    [ScriptedImporter(version: 1, ext: "sal")]
+    [ScriptedImporter(version: 2, ext: "sal")]
     public sealed class SalamanderImporter : ScriptedImporter
     {
         public override void OnImportAsset(AssetImportContext ctx)
         {
             string text = File.ReadAllText(ctx.assetPath);
             var asset = new TextAsset(text) { name = Path.GetFileNameWithoutExtension(ctx.assetPath) };
-            ctx.AddObjectToAsset("main", asset);
+            // Значок в окне Project. Текстура — скрытый подобъект ассета: иначе
+            // ссылка на неё не переживёт перезапуск редактора.
+            var icon = SalamanderIcon.Create();
+            ctx.AddObjectToAsset("icon", icon);
+            ctx.AddObjectToAsset("main", asset, icon);
             ctx.SetMainObject(asset);
         }
     }

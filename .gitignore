@@ -5,6 +5,7 @@ out/
 node_modules/
 *.vsix
 modkit/bin/*
+Tools/icons/png/
 !modkit/bin/README.md
 
 # служебное Unity (если репозиторий = проект)

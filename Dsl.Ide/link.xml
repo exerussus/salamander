@@ -1,0 +1,14 @@
+<!--
+  IL2CPP: сессия IDE и DTO манифестов читаются через Newtonsoft (рефлексия) —
+  без этого стриппинг выбрасывает их конструкторы и поля, и сессия/подсказки
+  молча пропадают в билде.
+-->
+<linker>
+  <assembly fullname="Dsl.Core">
+    <namespace fullname="Dsl.Compilation" preserve="all" />
+  </assembly>
+  <assembly fullname="Dsl.Ide">
+    <type fullname="Dsl.Ide.IdeSessionState" preserve="all" />
+    <type fullname="Dsl.Ide.IdeSessionDoc" preserve="all" />
+  </assembly>
+</linker>

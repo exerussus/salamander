@@ -1,0 +1,276 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using Dsl.Compilation;
+using Newtonsoft.Json.Linq;
+
+namespace Dsl.Tooling
+{
+    /// <summary>
+    /// Модули воркспейса, загруженные с диска: наборы исходников в порядке
+    /// загрузки, карта «логическое имя → файл», папки модулей и ошибки загрузки.
+    /// Снимок неизменяем по договорённости: компиляция с правками строит копии
+    /// наборов (<see cref="WorkspaceCompiler.WithOverlays"/>), сам снимок не трогает.
+    /// </summary>
+    public sealed class WorkspaceModules
+    {
+        public readonly List<ModuleSourceSet> Modules = new List<ModuleSourceSet>();
+
+        /// <summary>Логическое имя исходника ("mod/src/x.sal") → абсолютный путь.</summary>
+        public readonly Dictionary<string, string> LogicalToPath = new Dictionary<string, string>();
+
+        /// <summary>Имя модуля → абсолютная папка модуля (с module.json).</summary>
+        public readonly Dictionary<string, string> ModuleDirs = new Dictionary<string, string>(StringComparer.Ordinal);
+
+        /// <summary>Ошибки загрузки: (файл, сообщение) в порядке появления.</summary>
+        public readonly List<KeyValuePair<string, string>> LoadErrors = new List<KeyValuePair<string, string>>();
+
+        /// <summary>Использованный salamander-build.json или null (обход папки).</summary>
+        public string BuildFile;
+
+        /// <summary>Логическое имя по абсолютному пути; null — файл не входит ни в один модуль.</summary>
+        public string LogicalOf(string absPath)
+        {
+            if (string.IsNullOrEmpty(absPath)) return null;
+            string full;
+            try { full = Path.GetFullPath(absPath); }
+            catch { return null; }
+            foreach (var kv in LogicalToPath)
+            {
+                string p;
+                try { p = Path.GetFullPath(kv.Value); }
+                catch { continue; }
+                if (string.Equals(p, full, StringComparison.OrdinalIgnoreCase)) return kv.Key;
+            }
+            return null;
+        }
+    }
+
+    public static class WorkspaceLoader
+    {
+        public const string ApiManifestFileName = "salamander-api.json";
+        public const string BuildFileName = "salamander-build.json";
+
+        /// <summary>
+        /// Чем читать модули, когда читатель не передан явно. Хост со своим
+        /// форматом пака подменяет его один раз на старте (LSP, чекер), и дальше
+        /// все вызовы без параметра работают с этим форматом.
+        /// </summary>
+        public static IModuleReader DefaultReader = ModuleJsonReader.Instance;
+
+        private static IModuleReader Pick(IModuleReader reader) =>
+            reader ?? DefaultReader ?? ModuleJsonReader.Instance;
+
+        /// <summary>
+        /// Где лежит salamander-api.json: в корне, иначе ближайший к корню в
+        /// подпапках (манифест обычно выгружается в StreamingAssets/&lt;modsFolder&gt;).
+        /// null — не найден.
+        /// </summary>
+        public static string FindApiManifest(string root)
+        {
+            if (string.IsNullOrEmpty(root)) return null;
+            string atRoot = Path.Combine(root, ApiManifestFileName);
+            if (File.Exists(atRoot)) return atRoot;
+            return ModuleLoader.FindNearestFile(root, ApiManifestFileName);
+        }
+
+        /// <summary>
+        /// Модули воркспейса. «Ешь то, что дал сборщик»: если есть
+        /// salamander-build.json (упорядоченный список папок модулей) — берём
+        /// РОВНО его; иначе обход папки вглубь (дев-режим без сборщика).
+        /// </summary>
+        /// <param name="modulesRoot">Корень поиска модулей.</param>
+        /// <param name="buildFile">Явный build-файл; null — &lt;root&gt;/salamander-build.json.</param>
+        /// <param name="reader">Чем читать модули; null — <see cref="DefaultReader"/>.</param>
+        public static WorkspaceModules Load(string modulesRoot, string buildFile = null, IModuleReader reader = null)
+        {
+            var r = Pick(reader);
+            var ws = new WorkspaceModules();
+            Action<string, string> onError = (file, message) =>
+                ws.LoadErrors.Add(new KeyValuePair<string, string>(file, message));
+
+            string buildPath = buildFile ?? (modulesRoot == null ? null : Path.Combine(modulesRoot, BuildFileName));
+            if (buildPath != null && File.Exists(buildPath))
+            {
+                ws.BuildFile = buildPath;
+                try
+                {
+                    var build = JObject.Parse(File.ReadAllText(buildPath));
+                    var dirs = new List<string>();
+                    // пути в build-файле — относительно ЕГО папки: так его можно
+                    // положить и в корень проекта, и рядом с модулями
+                    string baseDir = Path.GetDirectoryName(Path.GetFullPath(buildPath)) ?? modulesRoot;
+                    foreach (var t in build["modules"] ?? new JArray())
+                        dirs.Add(Path.GetFullPath(Path.Combine(baseDir, (string)t)));
+                    foreach (var dir in dirs) AddModule(ws, dir, onError, r);
+                }
+                catch (Exception ex)
+                {
+                    onError(buildPath, "salamander-build.json не читается — " + ex.Message);
+                    ws.Modules.Clear();
+                }
+                return ws;
+            }
+
+            // обход ВГЛУБЬ: корень задаёт IDE, и в Unity-проекте модули лежат
+            // в StreamingAssets/..., а не прямыми детьми корня
+            foreach (var dir in FindModuleDirs(modulesRoot, ModuleLoader.DefaultScanDepth, r))
+                AddModule(ws, dir, onError, r);
+            return ws;
+        }
+
+        /// <summary>Папки модулей под корнем — тем же обходом, что ModuleLoader.LoadFromTree.</summary>
+        public static List<string> FindModuleDirs(string rootPath, int maxDepth = ModuleLoader.DefaultScanDepth,
+                                                  IModuleReader reader = null)
+        {
+            var r = Pick(reader);
+            var moduleDirs = new List<string>();
+            if (string.IsNullOrEmpty(rootPath) || !Directory.Exists(rootPath)) return moduleDirs;
+
+            var level = new List<string> { Path.GetFullPath(rootPath) };
+            for (int depth = 0; depth <= maxDepth && level.Count > 0; depth++)
+            {
+                var next = new List<string>();
+                foreach (var dir in level)
+                {
+                    bool isModule;
+                    try { isModule = r.IsModuleDir(dir); }
+                    catch { continue; }
+
+                    if (isModule) { moduleDirs.Add(dir); continue; } // внутрь модуля не идём
+
+                    if (depth == maxDepth) continue;
+                    try
+                    {
+                        foreach (var sub in Directory.GetDirectories(dir))
+                            if (!ModuleLoader.IsIgnoredDirectory(Path.GetFileName(sub))) next.Add(sub);
+                    }
+                    catch { }
+                }
+                level = next;
+            }
+            moduleDirs.Sort(StringComparer.Ordinal);
+            return moduleDirs;
+        }
+
+        /// <summary>Ближайшая вверх папка модуля (не выше maxUp уровней); null — файл вне модуля.</summary>
+        public static string FindModuleDirOf(string filePath, int maxUp = 6, IModuleReader reader = null)
+        {
+            var r = Pick(reader);
+            try
+            {
+                var dir = new DirectoryInfo(Path.GetDirectoryName(Path.GetFullPath(filePath)) ?? "");
+                for (int depth = 0; dir != null && depth <= maxUp; depth++, dir = dir.Parent)
+                    if (r.IsModuleDir(dir.FullName)) return dir.FullName;
+            }
+            catch { /* недопустимый путь — вне модуля */ }
+            return null;
+        }
+
+        private static void AddModule(WorkspaceModules ws, string dir, Action<string, string> onError, IModuleReader reader)
+        {
+            var set = reader.ReadModule(dir, onError, ws.LogicalToPath);
+            if (set == null) return;
+            ws.Modules.Add(set);
+            string name = set.Manifest?.Name ?? Path.GetFileName(dir);
+            if (!ws.ModuleDirs.ContainsKey(name)) ws.ModuleDirs[name] = Path.GetFullPath(dir);
+        }
+    }
+
+    /// <summary>
+    /// Справочные модули: то, что видит игра, но чего нет в воркспейсе —
+    /// базовые скрипты, зависимости мода. Их кладут в компиляцию рядом с
+    /// воркспейсом, чтобы ссылки на них не давали ложных «зависимость не
+    /// загружена» и чтобы подсказки знали их классы; сами они только читаются,
+    /// и их диагностики не показываются.
+    /// </summary>
+    public sealed class ReferenceSet
+    {
+        /// <summary>Логические имена файлов справочных модулей, попавших в компиляцию.</summary>
+        public readonly HashSet<string> Files = new HashSet<string>(StringComparer.Ordinal);
+        /// <summary>Имена добавленных модулей.</summary>
+        public readonly List<string> Modules = new List<string>();
+
+        /// <summary>Файл (логическое имя) — из справочного модуля.</summary>
+        public bool Contains(string logical) => logical != null && Files.Contains(logical);
+
+        /// <summary>
+        /// Добавить к модулям воркспейса справочные, которые им нужны: прямые
+        /// зависимости и дальше по цепочке. Модуль воркспейса важнее справочного
+        /// с тем же именем (его и правят). Остальные справочные не добавляются:
+        /// из воркспейса они всё равно не видны, а сломанный посторонний модуль
+        /// не должен ронять проверку мода.
+        /// </summary>
+        public static ReferenceSet Append(List<ModuleSourceSet> modules, IEnumerable<ModuleSourceSet> references)
+        {
+            var result = new ReferenceSet();
+            if (modules == null || references == null) return result;
+
+            var byName = new Dictionary<string, ModuleSourceSet>(StringComparer.Ordinal);
+            foreach (var r in references)
+                if (r?.Manifest?.Name != null && !byName.ContainsKey(r.Manifest.Name)) byName[r.Manifest.Name] = r;
+
+            var present = new HashSet<string>(StringComparer.Ordinal);
+            var queue = new Queue<string>();
+            foreach (var m in modules)
+            {
+                if (m?.Manifest?.Name == null) continue;
+                present.Add(m.Manifest.Name);
+            }
+            foreach (var m in modules)
+                foreach (var dep in m?.Manifest?.Dependencies ?? Array.Empty<string>())
+                    queue.Enqueue(dep);
+
+            while (queue.Count > 0)
+            {
+                string name = queue.Dequeue();
+                if (name == null || present.Contains(name) || !byName.TryGetValue(name, out var set)) continue;
+                present.Add(name);
+                modules.Add(set);
+                result.Modules.Add(name);
+                foreach (var (logical, _) in set.Files)
+                    if (logical != null) result.Files.Add(logical);
+                foreach (var dep in set.Manifest.Dependencies ?? Array.Empty<string>())
+                    queue.Enqueue(dep);
+            }
+            return result;
+        }
+
+        /// <summary>Модуль по логическому имени файла ("мод/путь.sal" → "мод").</summary>
+        public static string ModuleOfLogical(string logical)
+        {
+            if (string.IsNullOrEmpty(logical)) return null;
+            int slash = logical.IndexOf('/');
+            return slash > 0 ? logical.Substring(0, slash) : null;
+        }
+    }
+
+    public static class WorkspaceCompiler
+    {
+        /// <summary>
+        /// Наборы модулей с наложенными несохранёнными правками: overlay(путь) →
+        /// живой текст или null (брать с диска). Исходный снимок не мутируется —
+        /// его можно переиспользовать между компиляциями и отдавать в другой поток.
+        /// </summary>
+        public static List<ModuleSourceSet> WithOverlays(WorkspaceModules ws, Func<string, string> overlay)
+        {
+            var result = new List<ModuleSourceSet>(ws.Modules.Count);
+            foreach (var set in ws.Modules)
+                result.Add(Copy(set, logical =>
+                    overlay != null && ws.LogicalToPath.TryGetValue(logical, out var abs) ? overlay(abs) : null));
+            return result;
+        }
+
+        /// <summary>Копия набора; replace(логическое имя) → новый текст или null.</summary>
+        public static ModuleSourceSet Copy(ModuleSourceSet set, Func<string, string> replace = null)
+        {
+            var copy = new ModuleSourceSet { Manifest = set.Manifest };
+            foreach (var (name, text) in set.Files)
+            {
+                string live = replace?.Invoke(name);
+                copy.Files.Add((name, live ?? text));
+            }
+            return copy;
+        }
+    }
+}

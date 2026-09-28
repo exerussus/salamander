@@ -44,8 +44,21 @@ namespace Dsl.Syntax
 
     public abstract class Decl : Node
     {
+        /// <summary>
+        /// Полное имя: внутри «namespace A.B { class Foo }» это "A.B.Foo". Именно
+        /// оно — личность сущности: ключ мержа блоков, имя в рантайме и в сейве.
+        /// </summary>
         public string Name;
         public string Module; // заполняется загрузчиком: какому модулю принадлежит
+
+        /// <summary>Пространство имён блока ("A.B") или null — глобальное.</summary>
+        public string Namespace;
+
+        /// <summary>Имя как оно написано в объявлении (без пространства имён).</summary>
+        public string ShortName => Namespace == null ? Name : Name.Substring(Namespace.Length + 1);
+
+        /// <summary>Описание из «///» над объявлением (строки через \n) или null.</summary>
+        public string Doc;
     }
 
     public sealed class EnumDecl : Decl
@@ -91,6 +104,8 @@ namespace Dsl.Syntax
     public abstract class Member : Node
     {
         public string Name;
+        /// <summary>Описание из «///» над членом (строки через \n) или null.</summary>
+        public string Doc;
     }
 
     public sealed class FieldMember : Member
@@ -102,6 +117,7 @@ namespace Dsl.Syntax
         public bool IsReadOnly;
 
         // аннотации семантики:
+        public string DeclModule;      // модуль блока, где объявлено (контекст проверки инициализатора)
         public TypeRef Type;
         public int StaticSlot = -1;    // индекс в таблице статиков (для не-const)
         public Dsl.Runtime.Variant ConstValue; // для const — свёрнутое значение
@@ -109,6 +125,14 @@ namespace Dsl.Syntax
     }
 
     public enum FuncKind : byte { Func, Action, Event }
+
+    /// <summary>
+    /// Как версия члена встаёт в мерж-цепочку сущности. Core — обычное
+    /// объявление: заменяет только ядро, слои остаются. Before/After — слой
+    /// до/после ядра. Replace — стирает всё, что объявлено раньше (ядро и слои),
+    /// и становится новым ядром.
+    /// </summary>
+    public enum MergeMode : byte { Core, Before, After, Replace }
 
     public sealed class Param : Node
     {
@@ -131,6 +155,18 @@ namespace Dsl.Syntax
         public int LocalCount;        // сколько слотов локалей (params + var-ы)
         public Decl Owner;            // класс/триггер-владелец
         public int EventId = -1;      // для Kind==Event: id хостового события
+
+        /// <summary>before/after/replace перед event/func/action; Core — слова нет.</summary>
+        public MergeMode Mode;
+
+        // мерж-цепочки (заполняет чекер):
+        public int BlockOrdinal = -1;      // сквозной номер блока-декларации — порядок мержа
+        public MemberChain Chain;          // цепочка члена, в которую входит эта версия
+        public ChainSynth Synth;           // не null — синтетическая функция (вход цепочки / селектор base)
+        public FuncMember BaseSelector;    // кэш селектора base() этой версии (если нужен гейт)
+
+        /// <summary>Версия-ядро: обычное объявление или replace (не слой).</summary>
+        public bool IsCore => Mode == MergeMode.Core || Mode == MergeMode.Replace;
     }
 
     // ===== стейтменты =======================================================
@@ -157,6 +193,8 @@ namespace Dsl.Syntax
         public Expr Target;    // Ident / Member / Index
         public TokenKind Op;   // Assign / PlusAssign / ...
         public Expr Value;
+        /// <summary>x++ / x-- / ++x / --x: парсер десахарит в «+= 1» / «-= 1», чекер требует числовую цель.</summary>
+        public bool IsIncDec;
     }
 
     public sealed class ExprStmt : Stmt
@@ -266,6 +304,11 @@ namespace Dsl.Syntax
         // голова составного имени API ("Api" при зарегистрированном "Api.Weapon"):
         // само по себе не значение и не API — только узел пути
         ApiNamespaceRef,
+        // встроенный Math (если ни скрипт, ни игра не объявили своё имя Math)
+        MathRef,
+        // скриптовое пространство имён ("Mods" в "Mods.Buffs.Apply()"): узел пути,
+        // само по себе не значение; полный путь лежит в Sym (string)
+        NamespaceRef,
     }
 
     public sealed class IdentExpr : Expr
@@ -274,6 +317,12 @@ namespace Dsl.Syntax
         public IdentKind IdKind;
         public int Slot = -1;   // Local slot / static slot
         public object Sym;      // ссылка на символ (ClassSymbol/TriggerSymbol/...) при необходимости
+
+        /// <summary>
+        /// Узел собран чекером из цепочки «Ns.Sub.Name» и уже разрешён (Name —
+        /// полное имя): повторная проверка не ищет его заново по областям.
+        /// </summary>
+        public bool Folded;
     }
 
     /// <summary>module::Name — квалификация именем модуля.</summary>
@@ -284,6 +333,7 @@ namespace Dsl.Syntax
         public IdentKind IdKind;
         public int Slot = -1;
         public object Sym;
+        public bool Folded;     // см. IdentExpr.Folded: "mod::Ns.Name", собранное чекером
     }
 
     public enum MemberKind : byte
@@ -310,7 +360,9 @@ namespace Dsl.Syntax
         public Expr Index;
     }
 
-    public enum CallKind : byte { Unresolved, ScriptFunc, HostMethod, Engine, Builtin }
+    // HostInstance — метод самого объекта (basket.AddPerk(x)): от HostMethod
+    // отличается только тем, что приёмник эмитится нулевым аргументом.
+    public enum CallKind : byte { Unresolved, ScriptFunc, HostMethod, Engine, Builtin, HostInstance }
 
     public sealed class CallExpr : Expr
     {
@@ -324,6 +376,9 @@ namespace Dsl.Syntax
 
     /// <summary>'pass;' — осознанно пустой стейтмент (в т.ч. чтобы «убить» обработчик при переопределении).</summary>
     public sealed class PassStmt : Stmt { }
+
+    // base(...) отдельного узла не имеет: это обычный CallExpr с IdentExpr "base",
+    // чекер привязывает его к предыдущей версии члена (CallKind.ScriptFunc)
 
     /// <summary>'self' — сущность, к которой привязана текущая подписка listener.</summary>
     public sealed class SelfExpr : Expr { }

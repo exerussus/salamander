@@ -203,5 +203,90 @@ namespace Dsl.Tests
             Assert.AreEqual(1, _errors.Count, string.Join("\n", _errors));
             StringAssert.Contains("broken", _errors[0]);
         }
+
+        // --- NormalizeUserPath: пути, которые вводит человек ----------------
+        // Ведущий слэш перед буквой диска ("\C:\mods") Проводник Windows
+        // открывает, а File.Exists молча отвечает false: "C:" становится
+        // именем папки с двоеточием, чего на диске быть не может. Инструмент
+        // при этом сообщает «не найдено» про путь, который человек только что
+        // открыл в Проводнике, — отлаживать это со стороны пользователя нечем.
+
+        [Test]
+        public void NormalizeUserPath_StripsLeadingSlashBeforeDriveLetter()
+        {
+            Assert.AreEqual(@"C:\mods", ModuleLoader.NormalizeUserPath(@"\C:\mods"));
+            Assert.AreEqual("c:/mods", ModuleLoader.NormalizeUserPath("/c:/mods"));
+        }
+
+        [Test]
+        public void NormalizeUserPath_KeepsEverythingElseIntact()
+        {
+            Assert.AreEqual(@"C:\mods", ModuleLoader.NormalizeUserPath(@"C:\mods"));
+            Assert.AreEqual("Assets/StreamingAssets/Core",
+                ModuleLoader.NormalizeUserPath("Assets/StreamingAssets/Core"));
+            // POSIX-корень и UNC не трогаем: двоеточия после слэша там нет
+            Assert.AreEqual("/home/ilya/mods", ModuleLoader.NormalizeUserPath("/home/ilya/mods"));
+            Assert.AreEqual(@"\\server\share\mods", ModuleLoader.NormalizeUserPath(@"\\server\share\mods"));
+        }
+
+        [Test]
+        public void NormalizeUserPath_TrimsQuotesAndSpaces()
+        {
+            Assert.AreEqual(@"C:\mods", ModuleLoader.NormalizeUserPath("  \"C:\\mods\"  "));
+        }
+
+        [Test]
+        public void NormalizeUserPath_UnwrapsFileUri()
+        {
+            var r = ModuleLoader.NormalizeUserPath("file:///c:/mods");
+            StringAssert.DoesNotContain("file:", r);
+            StringAssert.EndsWith("mods", r);
+        }
+
+        // --- PathFromFileUri: URI от редакторов ------------------------------
+        // VS Code присылает "file:///c%3A/...", и Uri.LocalPath на таком URI
+        // отдаёт "/c:/..." — корень воркспейса и ключи открытых буферов уезжали
+        // в несуществующий "c:\c:\...". Сервер при этом не видел ни модулей,
+        // ни того, что человек печатает.
+
+        [Test]
+        public void PathFromFileUri_DecodesEncodedDriveColon()
+        {
+            Assert.AreEqual("c:/Exerussus/Assets",
+                ModuleLoader.PathFromFileUri("file:///c%3A/Exerussus/Assets"));
+            Assert.AreEqual("c:/Exerussus/Assets",
+                ModuleLoader.PathFromFileUri("file:///c:/Exerussus/Assets"));
+        }
+
+        [Test]
+        public void PathFromFileUri_UnescapesTheRestOfThePath()
+        {
+            Assert.AreEqual("c:/my mods/a.sal",
+                ModuleLoader.PathFromFileUri("file:///c%3A/my%20mods/a.sal"));
+        }
+
+        [Test]
+        public void PathFromFileUri_KeepsPosixAndUnc()
+        {
+            Assert.AreEqual("/home/ilya/mods", ModuleLoader.PathFromFileUri("file:///home/ilya/mods"));
+            Assert.AreEqual("//nas/share/mods", ModuleLoader.PathFromFileUri("file://nas/share/mods"));
+        }
+
+        [Test]
+        public void PathFromFileUri_RejectsWhatIsNotAFileUri()
+        {
+            Assert.IsNull(ModuleLoader.PathFromFileUri("untitled:Untitled-1"));
+            Assert.IsNull(ModuleLoader.PathFromFileUri("это не ссылка"));
+            Assert.IsNull(ModuleLoader.PathFromFileUri(null));
+            Assert.IsNull(ModuleLoader.PathFromFileUri("   "));
+        }
+
+        [Test]
+        public void NormalizeUserPath_PassesNullAndBlankThrough()
+        {
+            Assert.IsNull(ModuleLoader.NormalizeUserPath(null));
+            Assert.AreEqual("", ModuleLoader.NormalizeUserPath(""));
+            Assert.AreEqual("   ", ModuleLoader.NormalizeUserPath("   "));
+        }
     }
 }

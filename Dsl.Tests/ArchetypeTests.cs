@@ -324,6 +324,118 @@ namespace Dsl.Tests
             Assert.IsTrue(Has(r5, "E0199"), Dump(r5));
         }
 
+        // ===================================================================
+        // Данные без механики: виды-конфиги
+        // ===================================================================
+        // E0199 требует хотя бы одно событие у МЕРЖ-сущности. Требование снимается
+        // в двух случаях, и первый — не политика, а починка тупика: у вида без
+        // объявленных событий E0199 требовала событие, а E0217 запрещала любое
+        // его имя, так что выхода из ошибки не было вовсе.
+
+        [Test]
+        public void KindWithoutEvents_AllowsDataOnlyEntities()
+        {
+            var attribute = _host.Archetype("attribute", summary: "Описание атрибута.");
+            attribute.Const<string>("title", required: true);
+            attribute.ConstOr<float>("base_value", 1.0f);
+
+            var r = Compile(Mod("game", @"
+                attribute strength { readonly string title = ""Сила""; readonly float base_value = 3.0; }
+                attribute agility  { readonly string title = ""Ловкость""; }"));
+            Assert.IsTrue(r.Success, Dump(r));
+
+            // и это полноценные сущности: хост их видит и читает
+            var engine = Load(r);
+            var ids = new List<string>();
+            engine.GetArchetypeIds("attribute", ids);
+            CollectionAssert.AreEquivalent(new[] { "strength", "agility" }, ids);
+
+            Assert.IsTrue(engine.TryGetArchetypeConst("attribute", "strength", "base_value", out var v));
+            Assert.AreEqual(3f, v.ToF(), 1e-6f);
+            Assert.IsTrue(engine.TryGetArchetypeConst("attribute", "agility", "base_value", out var d));
+            Assert.AreEqual(1f, d.ToF(), 1e-6f, "дефолт вида материализуется и у блока без событий");
+        }
+
+        [Test]
+        public void KindWithEvents_StillRequiresOne()
+        {
+            // дефолт не тронут: у механического вида пустой блок — почти всегда
+            // недописанная механика, и это по-прежнему ошибка
+            var r = Compile(Mod("game", @"spell fireball { int casts = 0; }"));
+            Assert.IsFalse(r.Success);
+            Assert.IsTrue(Has(r, "E0199"), Dump(r));
+        }
+
+        [Test]
+        public void EventsOptional_LiftsTheRequirementForThatKind()
+        {
+            _host.Archetype("spell").EventsOptional();
+
+            var r = Compile(Mod("game", @"spell fireball { readonly int damage = 3; }"));
+            Assert.IsTrue(r.Success, Dump(r));
+
+            var engine = Load(r);
+            Assert.IsTrue(engine.TryGetArchetypeConst("spell", "fireball", "damage", out var v));
+            Assert.AreEqual(3, v.AsInt);
+
+            // событие всё ещё можно реализовать — вид не перестал быть механикой
+            var r2 = Compile(Mod("game", @"
+                spell fireball { readonly int damage = 3; event OnCast(Unit c, float p) { Api.Note(""cast""); } }"));
+            Assert.IsTrue(r2.Success, Dump(r2));
+        }
+
+        [Test]
+        public void EventsOptional_IsPerKind()
+        {
+            var item = _host.Archetype("item");
+            item.Event<Unit>("OnPick");
+            item.EventsOptional();
+
+            var r = Compile(Mod("game", @"
+                item potion { readonly int charges = 3; }
+                spell fireball { int casts = 0; }"));
+
+            Assert.IsFalse(r.Success);
+            StringAssert.Contains("spell fireball", Dump(r), "ослаблен только item");
+            StringAssert.DoesNotContain("item potion", Dump(r));
+        }
+
+        [Test]
+        public void EventsOptional_RoundTripsThroughManifest()
+        {
+            _host.Archetype("spell").EventsOptional();
+            var attribute = _host.Archetype("attribute");
+            attribute.Const<string>("title", required: false);
+
+            string json = ApiManifest.Export(_host.Registry, 1);
+            StringAssert.Contains("\"eventsOptional\": true", json);
+
+            var imported = ApiManifest.Import(json, out _);
+            Assert.IsTrue(imported.TryGetArchetypeKind("spell", out var spell));
+            Assert.IsTrue(spell.EventsOptional);
+            Assert.IsFalse(spell.RequiresEvent);
+
+            // у вида без событий флага в манифесте нет — требование снимается само
+            Assert.IsTrue(imported.TryGetArchetypeKind("attribute", out var attr));
+            Assert.IsFalse(attr.EventsOptional);
+            Assert.IsFalse(attr.RequiresEvent);
+
+            var r = ScriptCompiler.Compile(imported, 1, new List<ModuleSourceSet>
+            {
+                Mod("game", @"
+                    spell fireball { readonly int damage = 3; }
+                    attribute strength { readonly string title = ""Сила""; }"),
+            });
+            Assert.IsTrue(r.Success, Dump(r));
+        }
+
+        [Test]
+        public void Manifest_WithoutTheFlag_LooksAsBefore()
+        {
+            string json = ApiManifest.Export(_host.Registry, 1);
+            StringAssert.DoesNotContain("eventsOptional", json);
+        }
+
         [Test]
         public void WaitInsideArchetype_WorksLikeTrigger()
         {

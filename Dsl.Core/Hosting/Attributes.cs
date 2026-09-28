@@ -74,6 +74,26 @@ namespace Dsl.Hosting
     }
 
     /// <summary>
+    /// Пояснение к элементу енума, помеченного [SalamanderClass]. Ставится на
+    /// само поле енума — то есть живёт там же, где элемент, а не в отдельной
+    /// таблице:
+    /// <code>
+    /// [SalamanderClass("Слоты характеристик.")]
+    /// public enum Slot
+    /// {
+    ///     [SalamanderMember("Скорость передвижения, м/с.")] MoveSpeed,
+    ///     [SalamanderMember("Множитель времён оружия. Меньше — быстрее.")] AttackSpeed,
+    /// }
+    /// </code>
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Field, Inherited = false)]
+    public sealed class SalamanderMemberAttribute : Attribute
+    {
+        public string Doc { get; }
+        public SalamanderMemberAttribute(string doc) => Doc = doc;
+    }
+
+    /// <summary>
     /// Необязательное пояснение к параметру метода. Имя параметра берётся из
     /// сигнатуры — здесь только текст doc.
     /// </summary>

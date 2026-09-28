@@ -55,6 +55,13 @@ namespace Dsl.Semantics
         private readonly List<FieldSymbol> _staticFields = new List<FieldSymbol>();
         private readonly HashSet<string> _classNames = new HashSet<string>();
         private readonly List<string> _moduleNames = new List<string>();
+        private readonly List<ClassSymbol> _classList = new List<ClassSymbol>(); // порядок первого появления
+        private int _declSeq; // сквозной номер блока-декларации: порядок мержа версий членов
+        private readonly Dictionary<string, ModuleAst> _moduleByName = new Dictionary<string, ModuleAst>();
+
+        // пространства имён: полный путь (и каждый его префикс: "A", "A.B") ->
+        // модули, где он объявлен. Видимость — как у символов, через зависимости
+        private readonly Dictionary<string, HashSet<string>> _nsModules = new Dictionary<string, HashSet<string>>();
 
         private static readonly HashSet<string> Reserved = new HashSet<string>
         {
@@ -64,6 +71,7 @@ namespace Dsl.Semantics
 
         // ===== текущий контекст второго прохода =====
         private ModuleAst _module;
+        private string _ns;                 // namespace текущей декларации (null — глобальная)
         private Dictionary<string, FieldSymbol> _ownerFields;
         private Dictionary<string, FuncMember> _ownerFuncs;
         private FuncMember _fn;
@@ -91,10 +99,15 @@ namespace Dsl.Semantics
             foreach (var m in modules)
             {
                 _moduleNames.Add(m.Name);
+                _moduleByName[m.Name] = m;
                 foreach (var f in m.Files)
                     foreach (var d in f.Decls)
                         d.Module = m.Name;
             }
+
+            // до прохода 1: пространства имён. Нужны раньше объявлений — типы
+            // полей и параметров разрешаются уже в проходе 1 ("Mods.Kind k")
+            CollectNamespaces(modules);
 
             // проход 1: объявления
             foreach (var m in modules)
@@ -104,6 +117,13 @@ namespace Dsl.Semantics
                     foreach (var d in f.Decls)
                         CollectDecl(d);
             }
+            _ns = null;
+            CheckNamespaceSymbolClashes(modules);
+
+            // между проходами: мерж-цепочки членов (слои, replace, гейт модулей).
+            // Вызовы в телах вяжутся на вход цепочки, поэтому он нужен до проверки
+            // тел; селекторы base() создаются лениво — во втором проходе
+            BuildAllChains();
 
             // проход 2: тела
             foreach (var m in modules)
@@ -111,14 +131,24 @@ namespace Dsl.Semantics
                 _module = m;
                 foreach (var f in m.Files)
                     foreach (var d in f.Decls)
+                    {
+                        _ns = d.Namespace;
                         CheckDeclBodies(d);
+                    }
             }
+            _ns = null;
 
-            // мерж-сущность обязана иметь хотя бы одно событие; отдельный блок
-            // может быть и чистым патчем полей — проверяем итог, а не блок
+            // Мерж-сущность обязана иметь хотя бы одно событие — но не у всякого
+            // вида. Проверяем ИТОГ мержа, а не блок: отдельный блок бывает чистым
+            // патчем полей. Требование снимается в двух случаях:
+            //  - у вида НЕТ объявленных событий: требовать событие и запрещать
+            //    любое его имя (E0217) — тупик, а не проверка;
+            //  - хост разрешил это явно (EventsOptional): вид-конфиг или вид,
+            //    поведение которого по умолчанию живёт в игре, а блок — данные.
             foreach (var asym in _archetypes)
             {
-                if (asym.Events.Count == 0 && asym.Decls.Count > 0)
+                if (asym.Events.Count == 0 && asym.Decls.Count > 0
+                    && _host.TryGetArchetypeKind(asym.Kind, out var kindInfo) && kindInfo.RequiresEvent)
                     _diag.Error("E0199",
                         $"'{asym.Kind} {asym.Id}' не содержит ни одного события вида (ни в одном из блоков).",
                         asym.Decls[0].Pos);
@@ -158,12 +188,18 @@ namespace Dsl.Semantics
 
         private void CollectDecl(Decl d)
         {
-            if (Reserved.Contains(d.Name))
+            _declSeq++;
+            _ns = d.Namespace;
+            if (Reserved.Contains(d.ShortName))
             {
-                _diag.Error("E0100", $"Имя '{d.Name}' зарезервировано.", d.Pos);
+                _diag.Error("E0100", $"Имя '{d.ShortName}' зарезервировано.", d.Pos);
                 return;
             }
-            if (_host.TryGetClass(d.Name, out _) || _host.TryGetApi(d.Name, out _) || _host.TryGetEnum(d.Name, out _))
+            // внутри namespace полное имя с хостовым не совпадает никогда, а короткое
+            // внутри своего пространства перекрывает хостовое (как в C#) — поэтому
+            // конфликт с хостом возможен только у глобальных объявлений
+            if (d.Namespace == null
+                && (_host.TryGetClass(d.Name, out _) || _host.TryGetApi(d.Name, out _) || _host.TryGetEnum(d.Name, out _)))
             {
                 _diag.Error("E0101", $"Имя '{d.Name}' уже занято хостом (класс/API/енум).", d.Pos);
                 return;
@@ -177,6 +213,262 @@ namespace Dsl.Semantics
                 case ListenerDecl l: CollectListener(l); break;
                 case ArchetypeDecl a: CollectArchetype(a); break;
             }
+        }
+
+        // ===================================================================
+        // Пространства имён
+        // ===================================================================
+
+        /// <summary>
+        /// Регистрирует каждое пространство имён и все его префиксы ("A.B.C" →
+        /// "A", "A.B", "A.B.C") за модулями, где они объявлены. Корень пути не
+        /// может совпадать с именами хоста и встроенными: "Api.Weapon.Cut()" или
+        /// "Engine.Log()" иначе стали бы неоднозначными.
+        /// </summary>
+        private void CollectNamespaces(List<ModuleAst> modules)
+        {
+            var badRoots = new HashSet<string>();
+            foreach (var m in modules)
+                foreach (var f in m.Files)
+                    foreach (var d in f.Decls)
+                    {
+                        if (d.Namespace == null) continue;
+                        // "?" — namespace без имени: E0310 уже выдал парсер, каскад не нужен
+                        if (d.Namespace == "?" || d.Namespace.StartsWith("?.", System.StringComparison.Ordinal)) continue;
+                        string bad = ForbiddenNamespaceSegment(d.Namespace);
+                        if (bad != null)
+                        {
+                            if (badRoots.Add(d.Namespace))
+                                _diag.Error("E0312",
+                                    $"Пространство имён '{d.Namespace}': имя '{bad}' занято " +
+                                    "(встроенное или объявлено игрой).", d.Pos);
+                            continue;
+                        }
+
+                        string path = d.Namespace;
+                        while (true)
+                        {
+                            if (!_nsModules.TryGetValue(path, out var mods))
+                                _nsModules[path] = mods = new HashSet<string>();
+                            mods.Add(m.Name);
+                            int cut = path.LastIndexOf('.');
+                            if (cut < 0) break;
+                            path = path.Substring(0, cut);
+                        }
+                    }
+        }
+
+        /// <summary>
+        /// Первый недопустимый сегмент пути или null. Встроенные имена запрещены
+        /// в любом сегменте (иначе внутри "Mods" вложенный "Mods.Engine" перекрыл
+        /// бы Engine.Log), имена игры — только в корне: вложенный "Mods.Unit"
+        /// никому не мешает, полное имя у него другое.
+        /// </summary>
+        private string ForbiddenNamespaceSegment(string path)
+        {
+            var segs = path.Split('.');
+            for (int i = 0; i < segs.Length; i++)
+            {
+                string seg = segs[i];
+                if (Reserved.Contains(seg) || seg == "Engine" || seg == "Math") return seg;
+                if (i == 0 && (_host.TryGetApi(seg, out _) || _host.IsApiNamespace(seg)
+                               || _host.TryGetClass(seg, out _) || _host.TryGetEnum(seg, out _)
+                               || _host.TryGetStruct(seg, out _)))
+                    return seg;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Символ и пространство имён с одним полным именем ("class Mods" рядом с
+        /// "namespace Mods") сделали бы "Mods.X" двусмысленным — запрещаем.
+        /// </summary>
+        private void CheckNamespaceSymbolClashes(List<ModuleAst> modules)
+        {
+            if (_nsModules.Count == 0) return;
+            var reported = new HashSet<string>();
+            foreach (var m in modules)
+                foreach (var f in m.Files)
+                    foreach (var d in f.Decls)
+                    {
+                        if (d is ArchetypeDecl) continue;
+                        if (_nsModules.ContainsKey(d.Name) && reported.Add(d.Name))
+                            _diag.Error("E0313",
+                                $"'{d.Name}' уже объявлено как пространство имён — у объявления и namespace " +
+                                "не может быть одного полного имени.", d.Pos);
+                    }
+        }
+
+        private static string ParentNamespace(string ns)
+        {
+            int cut = ns.LastIndexOf('.');
+            return cut < 0 ? null : ns.Substring(0, cut);
+        }
+
+        /// <summary>Пространство имён объявлено хотя бы в одном видимом модуле.</summary>
+        private bool IsNamespaceVisible(string path) =>
+            _nsModules.TryGetValue(path, out var mods) && mods.Overlaps(_module.Visible);
+
+        private bool IsNamespaceInModule(string module, string path) =>
+            _nsModules.TryGetValue(path, out var mods) && mods.Contains(module);
+
+        /// <summary>
+        /// Разрешение простого имени по областям, как в C#: сперва текущее
+        /// пространство имён, затем объемлющие — на каждом уровне символ и
+        /// вложенное пространство имён равноправны (их коллизию запрещает E0313).
+        /// Глобальный уровень (includeGlobal) — в самом конце: вызывающий ставит
+        /// между областями namespace и глобальными символами проверку хоста.
+        /// </summary>
+        private ResolveResult ResolveScoped(string name, bool includeGlobal, out Symbol sym, out string nsPath)
+        {
+            sym = null;
+            nsPath = null;
+            for (var ns = _ns; ns != null; ns = ParentNamespace(ns))
+            {
+                string full = ns + "." + name;
+                var r = _globals.ResolveSimple(full, _module.Visible, out sym);
+                if (r != ResolveResult.NotFound) return r;
+                if (IsNamespaceVisible(full)) { nsPath = full; return ResolveResult.Found; }
+            }
+            if (!includeGlobal) return ResolveResult.NotFound;
+            var g = _globals.ResolveSimple(name, _module.Visible, out sym);
+            if (g != ResolveResult.NotFound) return g;
+            if (IsNamespaceVisible(name)) { nsPath = name; return ResolveResult.Found; }
+            return ResolveResult.NotFound;
+        }
+
+        /// <summary>
+        /// Свернуть «Ns.Sub.Name» в один разрешённый узел. Цепочка сворачивается,
+        /// только если её голова — пространство имён (локаль, поле, хост и символ
+        /// с тем же именем важнее — ровно в порядке CheckIdent). Результат:
+        ///  - IdentExpr/QualifiedExpr с полным именем и Folded = true — символ
+        ///    (class/trigger/listener/enum) или более глубокое пространство имён;
+        ///  - null — это не путь по пространствам имён (или он уже кончился на
+        ///    символе: "Ns.Kind.Fire" — тогда цель me.Target заменена на
+        ///    свёрнутый "Ns.Kind", а сам доступ к члену разберёт CheckMember).
+        /// Ошибка внутри пути («в namespace нет X») даёт свёрнутый узел без
+        /// символа с типом Error — дальше каскада нет.
+        /// </summary>
+        private Expr TryFoldNamespaceMember(MemberExpr me)
+        {
+            string nsPath;
+            string module = null;
+            switch (me.Target)
+            {
+                case IdentExpr id:
+                    if (!TryIdentAsNamespace(id, out nsPath)) return null;
+                    break;
+                case QualifiedExpr q:
+                    if (!TryQualifiedAsNamespace(q, out nsPath)) return null;
+                    module = q.Module;
+                    break;
+                case MemberExpr inner:
+                {
+                    var folded = TryFoldNamespaceMember(inner);
+                    if (folded == null) return null;
+                    me.Target = folded;
+                    if (folded is IdentExpr fi && fi.IdKind == IdentKind.NamespaceRef) nsPath = (string)fi.Sym;
+                    else if (folded is QualifiedExpr fq && fq.IdKind == IdentKind.NamespaceRef)
+                    {
+                        nsPath = (string)fq.Sym;
+                        module = fq.Module;
+                    }
+                    else return null; // путь кончился на символе — дальше обычный доступ к члену
+                    break;
+                }
+                default:
+                    return null;
+            }
+
+            string full = nsPath + "." + me.Name;
+            if (module == null)
+            {
+                var id = new IdentExpr { Name = full, Pos = me.Pos, Folded = true };
+                if (IsNamespaceVisible(full))
+                {
+                    id.IdKind = IdentKind.NamespaceRef;
+                    id.Sym = full;
+                    id.Type = TypeRef.Error;
+                    return id;
+                }
+                switch (_globals.ResolveSimple(full, _module.Visible, out var sym))
+                {
+                    case ResolveResult.Found:
+                        AnnotateGlobalIdent(id, sym);
+                        return id;
+                    case ResolveResult.Ambiguous:
+                        _diag.Error("E0155",
+                            $"Имя '{full}' объявлено в нескольких видимых модулях — уточните: module::{full}.",
+                            me.Pos);
+                        break;
+                    default:
+                        _diag.Error("E0314", $"В пространстве имён '{nsPath}' нет '{me.Name}'.", me.Pos);
+                        break;
+                }
+                id.Type = TypeRef.Error;
+                return id;
+            }
+            else
+            {
+                var q = new QualifiedExpr { Module = module, Name = full, Pos = me.Pos, Folded = true };
+                if (IsNamespaceInModule(module, full))
+                {
+                    q.IdKind = IdentKind.NamespaceRef;
+                    q.Sym = full;
+                    q.Type = TypeRef.Error;
+                    return q;
+                }
+                if (_globals.TryResolveQualified(module, full, out var sym))
+                    AnnotateQualified(q, sym);
+                else
+                    _diag.Error("E0314", $"В пространстве имён '{module}::{nsPath}' нет '{me.Name}'.", me.Pos);
+                q.Type = TypeRef.Error;
+                return q;
+            }
+        }
+
+        /// <summary>
+        /// Идентификатор — пространство имён? Тот же порядок, что в CheckIdent:
+        /// локаль, поле, Engine и хост важнее; дальше области по ResolveScoped.
+        /// Без диагностик — промах просто значит «это не путь».
+        /// </summary>
+        private bool TryIdentAsNamespace(IdentExpr id, out string nsPath)
+        {
+            nsPath = null;
+            if (id.Folded)
+            {
+                if (id.IdKind != IdentKind.NamespaceRef) return false;
+                nsPath = (string)id.Sym;
+                return true;
+            }
+            if (_nsModules.Count == 0) return false;
+            if (FindLocal(id.Name) != null) return false;
+            if (_ownerFields != null && _ownerFields.ContainsKey(id.Name)) return false;
+
+            // области namespace — раньше хоста (свои имена перекрывают игровые)
+            if (ResolveScoped(id.Name, false, out var sym, out nsPath) != ResolveResult.NotFound)
+                return sym == null && nsPath != null;
+            if (id.Name == "Engine" || _host.TryGetApi(id.Name, out _) || _host.IsApiNamespace(id.Name)
+                || _host.TryGetEnum(id.Name, out _) || _host.TryGetClass(id.Name, out _))
+                return false;
+            if (ResolveScoped(id.Name, true, out sym, out nsPath) != ResolveResult.Found) return false;
+            return sym == null && nsPath != null;
+        }
+
+        private bool TryQualifiedAsNamespace(QualifiedExpr q, out string nsPath)
+        {
+            nsPath = null;
+            if (q.Folded)
+            {
+                if (q.IdKind != IdentKind.NamespaceRef) return false;
+                nsPath = (string)q.Sym;
+                return true;
+            }
+            if (!_module.Visible.Contains(q.Module)) return false;          // ошибку даст CheckQualified
+            if (_globals.TryResolveQualified(q.Module, q.Name, out _)) return false;
+            if (!IsNamespaceInModule(q.Module, q.Name)) return false;
+            nsPath = q.Name;
+            return true;
         }
 
         private void CollectEnum(EnumDecl e)
@@ -213,6 +505,7 @@ namespace Dsl.Semantics
                 }
                 _clsByName[c.Name] = sym;
                 _classNames.Add(c.Name);
+                _classList.Add(sym);
             }
             sym.Decls.Add(c);
 
@@ -232,7 +525,7 @@ namespace Dsl.Semantics
                         _diag.Error("E0106", "'action' разрешён только внутри trigger.", fn.Pos);
                         break;
                     case FuncMember fn:
-                        CollectMergedFunc(sym.Funcs, sym.AllFuncDecls, fn, c, blockFuncs);
+                        CollectMergedFunc(sym.Funcs, sym.AllFuncDecls, sym.Chains, sym.Module, fn, c, blockFuncs);
                         break;
                 }
             }
@@ -267,7 +560,7 @@ namespace Dsl.Semantics
             var blockFields = new HashSet<string>();
             var blockEvents = new HashSet<string>();
             var blockFuncs = new HashSet<string>();
-            bool blockHasAction = false;
+            var blockActions = new HashSet<string>(); // ядро и слои action — разные места
 
             foreach (var m in t.Members)
             {
@@ -285,20 +578,48 @@ namespace Dsl.Semantics
                         break;
 
                     case FuncMember fn when fn.Kind == FuncKind.Action:
-                        if (blockHasAction)
+                        if (!blockActions.Add(BlockKey(fn, "Do")))
                         {
                             _diag.Error("E0118", $"Триггер '{t.Name}' уже содержит action Do.", fn.Pos);
                             break;
                         }
-                        blockHasAction = true;
                         CollectAction(sym, fn, t);
                         break;
 
                     case FuncMember fn:
-                        CollectMergedFunc(sym.Funcs, sym.AllFuncDecls, fn, t, blockFuncs);
+                        CollectMergedFunc(sym.Funcs, sym.AllFuncDecls, sym.Chains, sym.Module, fn, t, blockFuncs);
                         break;
                 }
             }
+        }
+
+        /// <summary>
+        /// Ключ «того же места» внутри одного блока: ядро и replace — одно место
+        /// (два ядра в блоке — дубль), слои before/after — свои собственные.
+        /// </summary>
+        private static string BlockKey(FuncMember fn, string name = null)
+        {
+            name = name ?? fn.Name;
+            switch (fn.Mode)
+            {
+                case MergeMode.Before: return "before " + name;
+                case MergeMode.After: return "after " + name;
+                default: return name;
+            }
+        }
+
+        /// <summary>Добавить версию члена в его мерж-цепочку (порядок разберёт BuildChain).</summary>
+        private void AddLink(ChainSet set, string key, string ownerModule, FuncMember fn)
+        {
+            fn.BlockOrdinal = _declSeq;
+            if (!set.ByKey.TryGetValue(key, out var ch))
+            {
+                ch = new MemberChain { Key = key, Name = fn.Name, OwnerModule = ownerModule };
+                set.ByKey[key] = ch;
+                set.List.Add(ch);
+            }
+            ch.Links.Add(fn);
+            fn.Chain = ch;
         }
 
         private void CollectArchetype(ArchetypeDecl a)
@@ -358,7 +679,7 @@ namespace Dsl.Semantics
                         break;
 
                     case FuncMember fn:
-                        CollectMergedFunc(sym.Funcs, sym.AllFuncDecls, fn, a, blockFuncs);
+                        CollectMergedFunc(sym.Funcs, sym.AllFuncDecls, sym.Chains, sym.Module, fn, a, blockFuncs);
                         break;
                 }
             }
@@ -494,12 +815,12 @@ namespace Dsl.Semantics
                     fn.Pos);
                 return;
             }
-            if (!blockNames.Add(fn.Name))
+            if (!blockNames.Add(BlockKey(fn)))
             {
                 _diag.Error("E0113", $"Повторное объявление '{fn.Name}' в этом блоке.", fn.Pos);
                 return;
             }
-            // одноимённое событие в ДРУГОМ блоке — переопределение (later-wins в мерже)
+            // одноимённое событие в ДРУГОМ блоке — версия той же цепочки (BuildChain)
             if (ev.Params.Length != fn.Params.Count)
             {
                 _diag.Error("E0200",
@@ -519,6 +840,7 @@ namespace Dsl.Semantics
             fn.FuncIndex = _funcs.Count;
             _funcs.Add(fn);
             sym.Events.Add(fn);
+            AddLink(sym.Chains, "e:" + fn.Name, sym.Module, fn);
         }
 
         private void CollectListener(ListenerDecl l)
@@ -567,7 +889,7 @@ namespace Dsl.Semantics
                         break;
 
                     case FuncMember fn:
-                        CollectMergedFunc(sym.Funcs, sym.AllFuncDecls, fn, l, blockFuncs);
+                        CollectMergedFunc(sym.Funcs, sym.AllFuncDecls, sym.Chains, sym.Module, fn, l, blockFuncs);
                         break;
                 }
             }
@@ -583,6 +905,7 @@ namespace Dsl.Semantics
             }
             var type = ResolveType(f.DeclType);
             f.Type = type;
+            f.DeclModule = _module?.Name; // проход 1 идёт по модулям: это модуль блока
 
             if (sym.Fields.TryGetValue(f.Name, out var existing))
             {
@@ -618,7 +941,7 @@ namespace Dsl.Semantics
 
         private void CollectListenerEvent(ListenerSymbol sym, FuncMember fn, ListenerDecl l, HashSet<string> blockNames)
         {
-            if (!blockNames.Add(fn.Name))
+            if (!blockNames.Add(BlockKey(fn)))
             {
                 _diag.Error("E0113", $"Повторное объявление '{fn.Name}' в этом блоке.", fn.Pos);
                 return;
@@ -635,8 +958,7 @@ namespace Dsl.Semantics
                 fn.FuncIndex = _funcs.Count;
                 _funcs.Add(fn);
                 sym.AllFuncDecls.Add(fn); // вытесненная версия тоже проверяется и компилируется
-                if (fn.Name == "OnSubscribe") sym.OnSubscribe = fn;
-                else sym.OnUnsubscribe = fn; // поздний блок заменяет
+                AddLink(sym.Chains, "s:" + fn.Name, sym.Module, fn); // вход цепочки выставит BuildChains
                 return;
             }
 
@@ -685,6 +1007,7 @@ namespace Dsl.Semantics
             fn.FuncIndex = _funcs.Count;
             _funcs.Add(fn);
             sym.Events.Add(fn);
+            AddLink(sym.Chains, "e:" + fn.Name, sym.Module, fn);
         }
 
         // ===================================================================
@@ -708,6 +1031,7 @@ namespace Dsl.Semantics
             }
             var type = ResolveType(f.DeclType);
             f.Type = type;
+            f.DeclModule = _module?.Name; // проход 1 идёт по модулям: это модуль блока
 
             if (fields.TryGetValue(f.Name, out var existing))
             {
@@ -773,9 +1097,10 @@ namespace Dsl.Semantics
         }
 
         private void CollectMergedFunc(Dictionary<string, FuncMember> funcs, List<FuncMember> all,
+                                       ChainSet chains, string ownerModule,
                                        FuncMember fn, Decl owner, HashSet<string> blockNames)
         {
-            if (!blockNames.Add(fn.Name))
+            if (!blockNames.Add(BlockKey(fn)))
             {
                 _diag.Error("E0113", $"Повторное объявление функции '{fn.Name}'.", fn.Pos);
                 return;
@@ -785,21 +1110,37 @@ namespace Dsl.Semantics
             foreach (var p in fn.Params) p.Type = ResolveType(p.DeclType);
             fn.FuncIndex = _funcs.Count;
             _funcs.Add(fn);
-            funcs[fn.Name] = fn;   // поздний блок заменяет — все вызовы вяжутся на итог
+            // предварительный победитель; окончательный (вход цепочки) выставит
+            // BuildChains до проверки тел — все вызовы вяжутся на итог
+            if (fn.IsCore || !funcs.ContainsKey(fn.Name)) funcs[fn.Name] = fn;
             all.Add(fn);           // вытесненные версии тоже проверяются и компилируются
+            AddLink(chains, "f:" + fn.Name, ownerModule, fn);
         }
 
         private void CheckMergedInits(List<FieldMember> decls)
         {
+            var saved = _module;
             foreach (var fm in decls)
             {
                 if (fm.IsConst || fm.Init == null) continue;
+                // инициализатор из блока мода видит то, что видно МОДУ, а не владельцу
+                _module = ModuleOf(fm.DeclModule, saved);
                 _inInitializer = true;
                 var ti = CheckExpr(ref fm.Init);
                 _inInitializer = false;
                 CoerceAssign(ref fm.Init, fm.Type, ti, fm.Pos, "инициализатор поля");
             }
+            _module = saved;
         }
+
+        /// <summary>
+        /// Модуль, в контексте которого проверяется тело версии: её собственный.
+        /// Тела мерж-сущности проверяются разом на первом блоке, и без этого
+        /// версия мода разрешала бы имена по видимости модуля-владельца (не видя
+        /// своих же классов) и подчинялась бы его режиму исполнения.
+        /// </summary>
+        private ModuleAst ModuleOf(string name, ModuleAst fallback) =>
+            name != null && _moduleByName.TryGetValue(name, out var m) ? m : fallback;
 
 
         /// <summary>const: только литерал или элемент енума (v1).</summary>
@@ -836,6 +1177,12 @@ namespace Dsl.Semantics
                         sym.ConstStr = lit.StrValue; return;
                 }
             }
+            // "const Mods.Kind K = Mods.Kind.Fire": цель свернуть в "Mods.Kind" до разбора
+            if (f.Init is MemberExpr cme && cme.Target is MemberExpr ct)
+            {
+                var folded = TryFoldNamespaceMember(ct);
+                if (folded != null) cme.Target = folded;
+            }
             if (f.Init is MemberExpr me && me.Target is IdentExpr te && f.Type.Kind == TypeKind.Enum)
             {
                 if (TryResolveEnumType(te.Name, out int enumId, out var members)
@@ -852,12 +1199,12 @@ namespace Dsl.Semantics
 
         private void CollectEvent(TriggerSymbol sym, FuncMember fn, TriggerDecl t, HashSet<string> blockNames)
         {
-            if (!blockNames.Add(fn.Name))
+            if (!blockNames.Add(BlockKey(fn)))
             {
                 _diag.Error("E0113", $"Повторное объявление обработчика '{fn.Name}' в этом блоке.", fn.Pos);
                 return;
             }
-            // одноимённый обработчик в ДРУГОМ блоке — переопределение (later-wins в мерже)
+            // одноимённый обработчик в ДРУГОМ блоке — версия той же цепочки (BuildChain)
             fn.Owner = t;
             fn.ReturnType = TypeRef.Void;
             foreach (var p in fn.Params) p.Type = ResolveType(p.DeclType);
@@ -888,6 +1235,7 @@ namespace Dsl.Semantics
             fn.FuncIndex = _funcs.Count;
             _funcs.Add(fn);
             sym.Events.Add(fn);
+            AddLink(sym.Chains, "e:" + fn.Name, sym.Module, fn);
         }
 
         private void CollectAction(TriggerSymbol sym, FuncMember fn, TriggerDecl t)
@@ -904,7 +1252,246 @@ namespace Dsl.Semantics
             fn.FuncIndex = _funcs.Count;
             _funcs.Add(fn);
             sym.AllFuncDecls.Add(fn);   // вытесненные версии тоже компилируются
-            sym.Action = fn;            // поздний блок заменяет
+            AddLink(sym.Chains, "a:Do", sym.Module, fn); // вход цепочки выставит BuildChains
+        }
+
+        // ===================================================================
+        // Мерж-цепочки: порядок версий, слои before/after, replace, гейт модулей
+        // ===================================================================
+
+        private void BuildAllChains()
+        {
+            foreach (var cs in _classList)
+                foreach (var ch in cs.Chains.List)
+                {
+                    BuildChain(ch);
+                    cs.Funcs[ch.Name] = ch.Entry;
+                }
+            foreach (var tr in _triggers)
+                foreach (var ch in tr.Chains.List)
+                {
+                    BuildChain(ch);
+                    if (ch.Key[0] == 'f') tr.Funcs[ch.Name] = ch.Entry;
+                    else if (ch.Key[0] == 'a') tr.Action = ch.Entry;
+                }
+            foreach (var ls in _listeners)
+                foreach (var ch in ls.Chains.List)
+                {
+                    BuildChain(ch);
+                    if (ch.Key[0] == 'f') ls.Funcs[ch.Name] = ch.Entry;
+                    else if (ch.Key == "s:OnSubscribe") ls.OnSubscribe = ch.Entry;
+                    else if (ch.Key == "s:OnUnsubscribe") ls.OnUnsubscribe = ch.Entry;
+                }
+            foreach (var asym in _archetypes)
+                foreach (var ch in asym.Chains.List)
+                {
+                    BuildChain(ch);
+                    if (ch.Key[0] == 'f') asym.Funcs[ch.Name] = ch.Entry;
+                }
+        }
+
+        private static string LinkModule(FuncMember fn) => fn.Owner?.Module;
+
+        private static bool SameSignature(FuncMember a, FuncMember b) =>
+            SameParams(a, b) && a.ReturnType != null && b.ReturnType != null && a.ReturnType.Same(b.ReturnType);
+
+        private static bool SameParams(FuncMember a, FuncMember b)
+        {
+            if (a.Params.Count != b.Params.Count) return false;
+            for (int i = 0; i < a.Params.Count; i++)
+            {
+                var ta = a.Params[i].Type;
+                var tb = b.Params[i].Type;
+                if (ta == null || tb == null || !ta.Same(tb)) return false;
+            }
+            return true;
+        }
+
+        /// <summary>Тип не разрешился — ошибка уже выдана, сверять сигнатуры незачем (каскад).</summary>
+        private static bool HasErrorType(FuncMember fn)
+        {
+            if (fn.ReturnType == null || fn.ReturnType.IsError) return true;
+            foreach (var p in fn.Params) if (p.Type == null || p.Type.IsError) return true;
+            return false;
+        }
+
+        private string SignatureText(FuncMember fn)
+        {
+            var sb = new System.Text.StringBuilder();
+            sb.Append(fn.Name).Append('(');
+            for (int i = 0; i < fn.Params.Count; i++)
+            {
+                if (i > 0) sb.Append(", ");
+                sb.Append(TypeName(fn.Params[i].Type));
+            }
+            sb.Append(')');
+            if (fn.ReturnType != null && fn.ReturnType.Kind != TypeKind.Void)
+                sb.Append(" -> ").Append(TypeName(fn.ReturnType));
+            return sb.ToString();
+        }
+
+        private static string ModeWord(MergeMode m) =>
+            m == MergeMode.Before ? "before" : m == MergeMode.After ? "after" : m == MergeMode.Replace ? "replace" : "";
+
+        private void BuildChain(MemberChain ch)
+        {
+            var links = ch.Links;
+
+            // порядок мержа — порядок блоков (модуль → файл → декларация); внутри
+            // одного блока ядро/replace идёт раньше слоёв, где бы ни стояло в тексте:
+            // replace стирает то, что было ДО блока, а слои блока ложатся поверх
+            for (int i = 1; i < links.Count; i++)
+            {
+                var x = links[i];
+                int j = i - 1;
+                while (j >= 0 && links[j].BlockOrdinal == x.BlockOrdinal && !links[j].IsCore && x.IsCore)
+                {
+                    links[j + 1] = links[j];
+                    j--;
+                }
+                links[j + 1] = x;
+            }
+
+            // граница: последний replace модуля-владельца. Его нельзя выключить
+            // отдельно от сущности, поэтому всё раньше него мертво статически
+            ch.Boundary = -1;
+            for (int i = 0; i < links.Count; i++)
+                if (links[i].Mode == MergeMode.Replace && !ch.IsGated(links[i])) ch.Boundary = i;
+            int start = System.Math.Max(ch.Boundary, 0);
+
+            // эталон сигнатуры — то, что видят вызывающие: последнее ядро
+            FuncMember reference = null;
+            for (int i = links.Count - 1; i >= start && reference == null; i--)
+                if (links[i].IsCore) reference = links[i];
+
+            bool needsChain = false;
+            for (int i = start; i < links.Count; i++)
+                if (!links[i].IsCore || ch.IsGated(links[i])) needsChain = true;
+
+            if (!needsChain)
+            {
+                // тривиальная цепочка: всё в модуле-владельце, слоёв нет — вход
+                // сама последняя версия, байткод ровно как до появления слоёв
+                ch.Entry = links[links.Count - 1];
+                return;
+            }
+
+            bool layersOnlyWithResult = false;
+            if (reference == null)
+            {
+                // ядра нет — одни слои. Для void это законно (мод вешает after на
+                // событие, которое база не реализует), а функции с результатом
+                // нечего вернуть
+                for (int i = start; i < links.Count; i++)
+                {
+                    var l = links[i];
+                    if (l.ReturnType == null || l.ReturnType.Kind == TypeKind.Void || l.ReturnType.IsError) continue;
+                    _diag.Error("E0246",
+                        $"У '{ch.Name}' есть только слои before/after, а основной версии нет — функции с " +
+                        $"результатом {TypeName(l.ReturnType)} нечего вернуть. Объявите её без модификатора.",
+                        l.Pos);
+                    layersOnlyWithResult = true;
+                    break;
+                }
+                reference = links[links.Count - 1];
+            }
+
+            if (ch.Key[0] == 'f' && !layersOnlyWithResult) CheckChainSignatures(ch, start);
+
+            var entry = NewSynthetic(reference, links[0].Owner, new ChainSynth { Kind = ChainSynthKind.Entry, Chain = ch });
+            // скрытая локаль под результат ядра, пока работают слои after
+            if (entry.ReturnType.Kind != TypeKind.Void) entry.LocalCount++;
+            ch.Entry = entry;
+        }
+
+        /// <summary>
+        /// Сигнатуры версий функции. Слои и гейт модулей вызывают каждую версию
+        /// одними и теми же аргументами, поэтому параметры обязаны совпадать (у
+        /// событий их и так задаёт хост). Сверяются только версии, ДОСЯГАЕМЫЕ из
+        /// входа: слои после границы и ядра начиная с последнего ядра владельца —
+        /// выбор ядра на нём обрывается, а ранние ядра зовутся лишь через base()
+        /// (их сверяет BindBaseCall). Так прежняя свобода менять сигнатуру в
+        /// поздней версии своего же модуля не ломается от чужого слоя. Виновата
+        /// версия, разошедшаяся ПОЗЖЕ: при карантине по файлу выпадает мод, а не
+        /// база. Слою результат объявлять не обязательно — он не используется.
+        /// </summary>
+        private void CheckChainSignatures(MemberChain ch, int start)
+        {
+            var links = ch.Links;
+            int coreStart = start;
+            for (int i = links.Count - 1; i >= start; i--)
+                if (links[i].IsCore && !ch.IsGated(links[i])) { coreStart = i; break; }
+
+            bool Reachable(int i) => !links[i].IsCore || i >= coreStart;
+
+            // параметры: образец — самая ранняя досягаемая версия
+            FuncMember paramRef = null, retRef = null;
+            var blamed = new HashSet<FuncMember>();
+            for (int i = start; i < links.Count; i++)
+            {
+                var l = links[i];
+                if (!Reachable(i) || HasErrorType(l)) continue;
+                if (paramRef == null) paramRef = l;
+                else if (!SameParams(l, paramRef)) { ReportSignatureMismatch(l, paramRef); blamed.Add(l); continue; }
+                if (l.IsCore && retRef == null) retRef = l;
+            }
+            if (retRef == null) return;
+
+            // результат: образец — самое раннее досягаемое ядро; слой без результата
+            // допустим, слой с результатом обязан совпасть. Из пары виновата поздняя
+            int retIndex = links.IndexOf(retRef);
+            for (int i = start; i < links.Count; i++)
+            {
+                var l = links[i];
+                if (l == retRef || !Reachable(i) || HasErrorType(l) || blamed.Contains(l)) continue;
+                if (!l.IsCore && l.ReturnType.Kind == TypeKind.Void) continue;
+                if (l.ReturnType.Same(retRef.ReturnType)) continue;
+                var late = i > retIndex ? l : retRef;
+                var early = late == l ? retRef : l;
+                if (blamed.Add(late)) ReportSignatureMismatch(late, early);
+            }
+        }
+
+        // версии, о расхождении которых уже сказано (BindBaseCall не повторяет)
+        private readonly HashSet<FuncMember> _sigReported = new HashSet<FuncMember>();
+
+        private void ReportSignatureMismatch(FuncMember late, FuncMember early)
+        {
+            string word = late.Mode == MergeMode.Before || late.Mode == MergeMode.After
+                ? $"Слой {ModeWord(late.Mode)}"
+                : late.Mode == MergeMode.Replace ? "Версия replace" : "Версия";
+            _sigReported.Add(late);
+            _sigReported.Add(early);
+            _diag.Error("E0242",
+                $"{word} '{SignatureText(late)}' не совпадает по сигнатуре с объявленной раньше '{SignatureText(early)}'. " +
+                "Версии одного члена вызываются одними аргументами — слоями и при выключении модуля.",
+                late.Pos);
+        }
+
+        /// <summary>Синтетическая функция с сигнатурой образца: параметры — свои копии со слотами 0..n-1.</summary>
+        private FuncMember NewSynthetic(FuncMember like, Decl owner, ChainSynth synth)
+        {
+            var fn = new FuncMember
+            {
+                Name = like.Name,
+                Kind = like.Kind,
+                Pos = like.Pos,
+                Owner = owner,
+                ReturnType = like.ReturnType ?? TypeRef.Void,
+                EventId = like.EventId,
+                Mode = MergeMode.Core,
+                Chain = synth.Chain,
+                Synth = synth,
+            };
+            for (int i = 0; i < like.Params.Count; i++)
+            {
+                var p = like.Params[i];
+                fn.Params.Add(new Param { DeclType = p.DeclType, Name = p.Name, Pos = p.Pos, Type = p.Type, Slot = i });
+            }
+            fn.LocalCount = fn.Params.Count;
+            fn.FuncIndex = _funcs.Count;
+            _funcs.Add(fn);
+            return fn;
         }
 
         // ===================================================================
@@ -929,6 +1516,8 @@ namespace Dsl.Semantics
                         case "Fiber": return TypeRef.Fiber;
                         case "Subscription": return TypeRef.Subscription;
                     }
+                    // енум своего namespace перекрывает одноимённый тип игры
+                    if (TryResolveNamespacedEnum(n.Name, out var nsEnum)) return TypeRef.EnumOf(nsEnum.Id);
                     if (_host.TryGetClass(n.Name, out var hc)) return TypeRef.Entity(hc.Id);
                     if (_host.TryGetStruct(n.Name, out var hs)) return TypeRef.StructOf(hs.Id);
                     if (TryResolveEnumType(n.Name, out int eid, out _)) return TypeRef.EnumOf(eid);
@@ -962,6 +1551,13 @@ namespace Dsl.Semantics
         /// <summary>Ищет енум по имени: сперва хостовые, потом скриптовые (по видимости).</summary>
         private bool TryResolveEnumType(string name, out int enumId, out Dictionary<string, int> members)
         {
+            // свои области namespace и составные имена — раньше игровых (как в CheckIdent)
+            if (TryResolveNamespacedEnum(name, out var nes))
+            {
+                enumId = nes.Id;
+                members = nes.Members;
+                return true;
+            }
             if (_host.TryGetEnum(name, out var he))
             {
                 enumId = he.Id;
@@ -978,6 +1574,29 @@ namespace Dsl.Semantics
             enumId = -1;
             members = null;
             return false;
+        }
+
+        /// <summary>
+        /// Енум по имени из текущего пространства имён ("Kind" внутри Mods) или
+        /// по составному имени ("Mods.Kind", "Buffs.Kind" внутри Mods): голова
+        /// разрешается по областям, хвост дописывается к найденному пути.
+        /// </summary>
+        private bool TryResolveNamespacedEnum(string name, out EnumSymbol es)
+        {
+            es = null;
+            if (_nsModules.Count == 0) return false;
+            int dot = name.IndexOf('.');
+            if (dot < 0)
+            {
+                if (_ns == null) return false;
+                return ResolveScoped(name, false, out var s, out _) == ResolveResult.Found
+                       && (es = s as EnumSymbol) != null;
+            }
+            string head = name.Substring(0, dot);
+            if (ResolveScoped(head, true, out _, out var nsPath) != ResolveResult.Found || nsPath == null)
+                return false;
+            return _globals.ResolveSimple(nsPath + name.Substring(dot), _module.Visible, out var s2) == ResolveResult.Found
+                   && (es = s2 as EnumSymbol) != null;
         }
 
         // ===================================================================
@@ -1055,6 +1674,17 @@ namespace Dsl.Semantics
 
 
         private void CheckFuncBody(FuncMember fn)
+        {
+            var savedModule = _module;
+            var savedNs = _ns;
+            _module = ModuleOf(fn.Owner?.Module, savedModule);
+            // у всех блоков сущности одно полное имя — значит, и один namespace
+            if (fn.Owner != null) _ns = fn.Owner.Namespace;
+            try { CheckFuncBodyCore(fn); }
+            finally { _module = savedModule; _ns = savedNs; }
+        }
+
+        private void CheckFuncBodyCore(FuncMember fn)
         {
             _fn = fn;
             _scopes.Clear();
@@ -1395,6 +2025,34 @@ namespace Dsl.Semantics
             // составное присваивание: десахарим в обычное — target op= v → target = target op v.
             // ВНИМАНИЕ: подвыражения цели вычисляются дважды (для чтения и записи);
             // побочные эффекты в индексах/цепочках свойств отработают два раза.
+            if (a.IsIncDec)
+            {
+                // x++ / x--: цель обязана быть числом. Иначе «+= 1» молча стал бы
+                // склейкой строки («s++» дописал бы "1») или невнятной E0214
+                var tt0 = CheckLValue(a.Target);
+                if (tt0.IsError) return; // причина уже названа (readonly, константа, не цель)
+                if (!tt0.IsNumeric)
+                {
+                    _diag.Error("E0247",
+                        $"'{(a.Op == TokenKind.PlusAssign ? "++" : "--")}' применим к числу (int/float/double), а цель имеет тип {tt0}.",
+                        a.Pos);
+                    return;
+                }
+                a.Value = new BinaryExpr
+                {
+                    Left = a.Target,
+                    Op = a.Op == TokenKind.PlusAssign ? TokenKind.Plus : TokenKind.Minus,
+                    Right = a.Value,
+                    Pos = a.Pos,
+                };
+                a.Op = TokenKind.Assign;
+                var vt0 = CheckExpr(ref a.Value);
+                var v0 = a.Value;
+                CoerceAssign(ref v0, tt0, vt0, a.Pos, "присваивание");
+                a.Value = v0;
+                return;
+            }
+
             if (a.Op != TokenKind.Assign)
             {
                 var binOp = a.Op switch
@@ -1402,6 +2060,7 @@ namespace Dsl.Semantics
                     TokenKind.PlusAssign => TokenKind.Plus,
                     TokenKind.MinusAssign => TokenKind.Minus,
                     TokenKind.StarAssign => TokenKind.Star,
+                    TokenKind.PercentAssign => TokenKind.Percent,
                     _ => TokenKind.Slash,
                 };
                 a.Value = new BinaryExpr { Left = a.Target, Op = binOp, Right = a.Value, Pos = a.Pos };
@@ -1543,7 +2202,18 @@ namespace Dsl.Semantics
                 case InterpExpr ip: return CheckInterp(ip);
                 case IdentExpr id: return CheckIdent(id);
                 case QualifiedExpr q: return CheckQualified(q);
-                case MemberExpr me: return CheckMember(me);
+                case MemberExpr me:
+                {
+                    // «Ns.Sub.Name» — путь по пространствам имён: узел подменяется
+                    // свёрнутым, и дальше его видят как обычный идентификатор
+                    var folded = TryFoldNamespaceMember(me);
+                    if (folded != null)
+                    {
+                        e = folded;
+                        return CheckExpr(ref e);
+                    }
+                    return CheckMember(me);
+                }
                 case IndexExpr ix: return CheckIndex(ix);
                 case CallExpr call: return CheckCall(call);
                 case SpawnExpr sp: return CheckSpawn(sp);
@@ -1601,6 +2271,13 @@ namespace Dsl.Semantics
 
         private TypeRef CheckIdent(IdentExpr id)
         {
+            // 0) узел, свёрнутый из «Ns.Name» (TryFoldNamespaceMember): уже разрешён
+            if (id.Folded)
+            {
+                if (id.IdKind == IdentKind.NamespaceRef) return NamespaceNotAValue(id.Name, id.Pos, id);
+                return id.Sym is Symbol fsym ? AnnotateGlobalIdent(id, fsym) : (id.Type = TypeRef.Error);
+            }
+
             // 1) локаль
             var loc = FindLocal(id.Name);
             if (loc != null)
@@ -1618,6 +2295,26 @@ namespace Dsl.Semantics
                 id.Slot = fs.Slot;
                 id.Sym = fs;
                 return id.Type = fs.Type;
+            }
+
+            // 2½) своё пространство имён и объемлющие: имена мода перекрывают
+            // игровые и глобальные (как в C#) — поэтому раньше Engine и хоста
+            if (_ns != null)
+            {
+                switch (ResolveScoped(id.Name, false, out var nsSym, out var nsPath))
+                {
+                    case ResolveResult.Found when nsSym != null:
+                        return AnnotateGlobalIdent(id, nsSym);
+                    case ResolveResult.Found:
+                        id.IdKind = IdentKind.NamespaceRef;
+                        id.Sym = nsPath;
+                        return NamespaceNotAValue(nsPath, id.Pos, id);
+                    case ResolveResult.Ambiguous:
+                        _diag.Error("E0155",
+                            $"Имя '{id.Name}' объявлено в нескольких видимых модулях — уточните: module::{id.Name}.",
+                            id.Pos);
+                        return id.Type = TypeRef.Error;
+                }
             }
 
             // 3) встроенный Engine
@@ -1664,6 +2361,22 @@ namespace Dsl.Semantics
                         id.Pos);
                     return id.Type = TypeRef.Error;
                 default:
+                    // 5½) глобальное пространство имён — голова пути «Mods.X»;
+                    // само по себе не значение (путь CheckMember/CheckCall сворачивает)
+                    if (IsNamespaceVisible(id.Name))
+                    {
+                        id.IdKind = IdentKind.NamespaceRef;
+                        id.Sym = id.Name;
+                        return NamespaceNotAValue(id.Name, id.Pos, id);
+                    }
+                    // 6) встроенный Math — последним: локаль, поле, API/класс/енум
+                    // игры и скриптовый class с этим именем важнее, поэтому игра со
+                    // своим Api("Math") и старые скрипты со своим class Math не ломаются
+                    if (id.Name == "Math")
+                    {
+                        id.IdKind = IdentKind.MathRef;
+                        return id.Type = TypeRef.Error; // сам по себе значения не имеет
+                    }
                     _diag.Error("E0156", $"Неизвестное имя '{id.Name}'.", id.Pos);
                     return id.Type = TypeRef.Error;
             }
@@ -1699,6 +2412,13 @@ namespace Dsl.Semantics
 
         private TypeRef CheckQualified(QualifiedExpr q)
         {
+            if (q.Folded)
+            {
+                if (q.IdKind == IdentKind.NamespaceRef)
+                    return NamespaceNotAValue(q.Module + "::" + q.Name, q.Pos, q);
+                if (q.Sym is Symbol fsym) AnnotateQualified(q, fsym);
+                return q.Type = TypeRef.Error;
+            }
             if (!_module.Visible.Contains(q.Module))
             {
                 _diag.Error("E0157", $"Модуль '{q.Module}' не входит в зависимости текущего модуля.", q.Pos);
@@ -1706,9 +2426,21 @@ namespace Dsl.Semantics
             }
             if (!_globals.TryResolveQualified(q.Module, q.Name, out var sym))
             {
+                if (IsNamespaceInModule(q.Module, q.Name))
+                {
+                    q.IdKind = IdentKind.NamespaceRef;
+                    q.Sym = q.Name;
+                    return NamespaceNotAValue(q.Module + "::" + q.Name, q.Pos, q);
+                }
                 _diag.Error("E0158", $"В модуле '{q.Module}' нет символа '{q.Name}'.", q.Pos);
                 return q.Type = TypeRef.Error;
             }
+            AnnotateQualified(q, sym);
+            return q.Type = TypeRef.Error; // как и Ident: типы/классы — не значения
+        }
+
+        private static void AnnotateQualified(QualifiedExpr q, Symbol sym)
+        {
             switch (sym)
             {
                 case ClassSymbol cs: q.IdKind = IdentKind.ClassRef; q.Sym = cs; break;
@@ -1716,7 +2448,17 @@ namespace Dsl.Semantics
                 case ListenerSymbol lsq: q.IdKind = IdentKind.ListenerRef; q.Slot = lsq.RuntimeId; q.Sym = lsq; break;
                 case EnumSymbol es: q.IdKind = IdentKind.EnumTypeRef; q.Slot = es.Id; q.Sym = es; break;
             }
-            return q.Type = TypeRef.Error; // как и Ident: типы/классы — не значения
+        }
+
+        /// <summary>
+        /// Пространство имён там, где нужно значение. До сюда доходят только
+        /// «голые» пути: головы цепочек CheckMember и CheckCall сворачивают раньше.
+        /// </summary>
+        private TypeRef NamespaceNotAValue(string path, SourcePos pos, Expr node)
+        {
+            _diag.Error("E0315",
+                $"'{path}' — пространство имён, а не значение. Допишите имя объявления: {path}.Имя.", pos);
+            return node.Type = TypeRef.Error;
         }
 
         private TypeRef CheckMember(MemberExpr me)
@@ -1802,6 +2544,20 @@ namespace Dsl.Semantics
                 // целиком разбирает ResolveApiMember в начале метода
                 case IdentKind.EngineRef:
                     _diag.Error("E0162", $"'{me.Name}' — метод; его можно только вызвать.", me.Pos);
+                    return me.Type = TypeRef.Error;
+
+                case IdentKind.MathRef:
+                    // единственная константа — PI; сворачивается в литерал, как константа API
+                    if (me.Name == "PI")
+                    {
+                        me.MKind = MemberKind.ApiConst;
+                        me.Sym = MathPi;
+                        return me.Type = TypeRef.Float;
+                    }
+                    if (MathSigs.ContainsKey(me.Name))
+                        _diag.Error("E0162", $"'Math.{me.Name}' — метод; его можно только вызвать.", me.Pos);
+                    else
+                        _diag.Error("E0249", $"У Math нет '{me.Name}'. Есть: {MathMemberList()}.", me.Pos);
                     return me.Type = TypeRef.Error;
 
                 case IdentKind.ApiNamespaceRef:
@@ -2215,6 +2971,11 @@ namespace Dsl.Semantics
                 if (loc == null && _ownerFuncs != null && _ownerFuncs.TryGetValue(own.Name, out var fn))
                     return BindScriptCall(call, fn);
 
+                // base(...) — предыдущая версия этого же члена. Слово контекстное:
+                // своя функция с именем base (ветка выше) важнее
+                if (loc == null && own.Name == "base")
+                    return BindBaseCall(call, own);
+
                 _diag.Error("E0180", $"Функция '{own.Name}' не найдена в текущем классе/триггере.", own.Pos);
                 CheckArgsLoose(call);
                 return call.Type = TypeRef.Error;
@@ -2223,6 +2984,25 @@ namespace Dsl.Semantics
             // 2) вызов через точку: Target.Name(...)
             if (call.Callee is MemberExpr me)
             {
+                // цель — путь по пространствам имён: "Mods.Buffs.Apply(...)" →
+                // цель сворачивается в "Mods.Buffs" (класс) до разбора ниже
+                if (me.Target is MemberExpr mt)
+                {
+                    var folded = TryFoldNamespaceMember(mt);
+                    if (folded != null) me.Target = folded;
+                }
+                // у самого пространства имён методов нет: "Mods.Foo()"
+                if ((me.Target is IdentExpr nid && TryIdentAsNamespace(nid, out string callNs))
+                    || (me.Target is QualifiedExpr nq && TryQualifiedAsNamespace(nq, out callNs)))
+                {
+                    string what = callNs + "." + me.Name;
+                    _diag.Error("E0316",
+                        $"'{what}(...)': у пространства имён нет функций. Функции живут в классах — " +
+                        $"вызывайте {callNs}.Класс.{me.Name}(...).", me.Pos);
+                    CheckArgsLoose(call);
+                    return call.Type = TypeRef.Error;
+                }
+
                 // цель — идентификатор класса/API/Engine или module::Class
                 if (me.Target is IdentExpr tid)
                 {
@@ -2362,6 +3142,9 @@ namespace Dsl.Semantics
                     return BindEngineCall(call, sig, me.Pos);
                 }
 
+                case IdentKind.MathRef:
+                    return BindMathCall(call, me);
+
                 case IdentKind.ApiClassRef:
                 {
                     if (!_host.TryGetApi(targetName, out var api))
@@ -2455,7 +3238,116 @@ namespace Dsl.Semantics
             return call.Type = fn.ReturnType;
         }
 
+        /// <summary>
+        /// base(...) внутри версии-ядра: вызвать ядро, объявленное раньше. Цель
+        /// известна статически, если ближайшая ранняя версия не требует гейта
+        /// (модуль владельца или свой собственный) — тогда это прямой вызов.
+        /// Иначе — синтетический селектор: первая ранняя версия, чей модуль
+        /// включён (выключенный replace пропускается и ничего не стирает).
+        /// </summary>
+        private TypeRef BindBaseCall(CallExpr call, IdentExpr callee)
+        {
+            var fn = _fn;
+            string fail = null, code = null;
+            if (_inInitializer || fn == null || fn.Chain == null || fn.Synth != null)
+            {
+                code = "E0245";
+                fail = "base() вызывает предыдущую версию члена и доступен только в теле event, func или action.";
+            }
+            else if (fn.Mode == MergeMode.Before || fn.Mode == MergeMode.After)
+            {
+                code = "E0243";
+                fail = $"base() доступен только в основной версии, а это слой {ModeWord(fn.Mode)}: " +
+                       "ядро и так выполнится — до или после слоя.";
+            }
+            else if (fn.Mode == MergeMode.Replace)
+            {
+                code = "E0244";
+                fail = "replace стирает всё, что объявлено раньше, — base() звать некого. " +
+                       "Нужна предыдущая версия — объявите без replace.";
+            }
+
+            FuncMember first = null;
+            int k = -1;
+            if (fail == null)
+            {
+                var links = fn.Chain.Links;
+                k = links.IndexOf(fn);
+                for (int j = k - 1; j >= 0 && first == null; j--)
+                    if (links[j].IsCore) first = links[j];
+                if (first == null)
+                {
+                    code = "E0245";
+                    fail = $"У '{fn.Name}' нет более ранней версии — base() звать некого.";
+                }
+            }
+
+            if (fail != null)
+            {
+                _diag.Error(code, fail, callee.Pos);
+                CheckArgsLoose(call);
+                return call.Type = TypeRef.Error;
+            }
+
+            // аргументы — по сигнатуре СВОЕЙ версии: base зовёт ту же функцию
+            if (call.Args.Count != fn.Params.Count)
+                _diag.Error("E0187", $"base() для '{fn.Name}' принимает {fn.Params.Count} аргументов, передано {call.Args.Count}.", call.Pos);
+            int n = System.Math.Min(call.Args.Count, fn.Params.Count);
+            for (int i = 0; i < n; i++)
+            {
+                var a = call.Args[i];
+                var t = CheckExpr(ref a);
+                CoerceAssign(ref a, fn.Params[i].Type, t, a.Pos, $"аргумент #{i + 1}");
+                call.Args[i] = a;
+            }
+            for (int i = n; i < call.Args.Count; i++) { var a = call.Args[i]; CheckExpr(ref a); call.Args[i] = a; }
+
+            // каждая ранняя версия, до которой может дойти base(), вызывается
+            // этими аргументами — сигнатуры обязаны совпадать
+            var ch = fn.Chain;
+            string callerModule = LinkModule(fn);
+            for (int j = k - 1; j >= 0; j--)
+            {
+                var c = ch.Links[j];
+                if (!c.IsCore) continue;
+                if (!HasErrorType(c) && !HasErrorType(fn) && !SameSignature(c, fn))
+                {
+                    // расхождение этих версий уже названо сборкой цепочки — не дублируем
+                    if (!_sigReported.Contains(fn) && !_sigReported.Contains(c))
+                        _diag.Error("E0242",
+                            $"base() из '{SignatureText(fn)}' ведёт в '{SignatureText(c)}' — сигнатуры не совпадают.",
+                            callee.Pos);
+                    break;
+                }
+                // дальше base() не пройдёт. Модуль самого вызывающего считается
+                // включённым: раз его версия выполняется, он был включён при входе
+                // (файбер, уснувший до DisableModule, доработает как начал)
+                if (!ch.IsGated(c, callerModule)) break;
+            }
+
+            int target;
+            if (!ch.IsGated(first, callerModule))
+                target = first.FuncIndex;
+            else
+            {
+                if (fn.BaseSelector == null)
+                    fn.BaseSelector = NewSynthetic(fn, fn.Owner, new ChainSynth
+                    {
+                        Kind = ChainSynthKind.BaseSelector, Chain = ch, Below = k, CallerModule = callerModule,
+                    });
+                target = fn.BaseSelector.FuncIndex;
+            }
+
+            call.CKind = CallKind.ScriptFunc;
+            call.TargetIndex = target;
+            call.ReturnsValue = fn.ReturnType.Kind != TypeKind.Void;
+            return call.Type = fn.ReturnType;
+        }
+
         private TypeRef BindHostCall(CallExpr call, HostMethodInfo m)
+            => BindHostCall(call, m, CallKind.HostMethod);
+
+        private TypeRef BindHostCall(CallExpr call, HostMethodInfo m, CallKind kind)
         {
             if (call.Args.Count != m.Params.Length)
                 _diag.Error("E0188", $"'{m.Name}' принимает {m.Params.Length} аргументов, передано {call.Args.Count}.", call.Pos);
@@ -2470,10 +3362,112 @@ namespace Dsl.Semantics
             }
             for (int i = n; i < call.Args.Count; i++) { var a = call.Args[i]; CheckExpr(ref a); call.Args[i] = a; }
 
-            call.CKind = CallKind.HostMethod;
+            call.CKind = kind;
             call.TargetIndex = m.HostFnId;
             call.ReturnsValue = m.Ret.Kind != TypeKind.Void;
             return call.Type = m.Ret;
+        }
+
+        // ===== встроенный Math =====
+
+        /// <summary>
+        /// Как у функции Math получается тип результата из типов аргументов.
+        /// Same — общий числовой тип аргументов (Min(1, 2.5) → float);
+        /// ToInt — всегда int (Floor/Ceil/Round/Sign); Float — общий тип, но не
+        /// ниже float (корень из int — не int).
+        /// </summary>
+        private enum MathShape : byte { Same, ToInt, Float }
+
+        private struct MathSig
+        {
+            public EngineOp Op;
+            public int Argc;
+            public MathShape Shape;
+            public MathSig(EngineOp op, int argc, MathShape shape) { Op = op; Argc = argc; Shape = shape; }
+        }
+
+        private static readonly Dictionary<string, MathSig> MathSigs = new Dictionary<string, MathSig>
+        {
+            ["Min"] = new MathSig(EngineOp.MathMin, 2, MathShape.Same),
+            ["Max"] = new MathSig(EngineOp.MathMax, 2, MathShape.Same),
+            ["Clamp"] = new MathSig(EngineOp.MathClamp, 3, MathShape.Same),
+            ["Abs"] = new MathSig(EngineOp.MathAbs, 1, MathShape.Same),
+            ["Sign"] = new MathSig(EngineOp.MathSign, 1, MathShape.ToInt),
+            ["Floor"] = new MathSig(EngineOp.MathFloor, 1, MathShape.ToInt),
+            ["Ceil"] = new MathSig(EngineOp.MathCeil, 1, MathShape.ToInt),
+            ["Round"] = new MathSig(EngineOp.MathRound, 1, MathShape.ToInt),
+            ["Sqrt"] = new MathSig(EngineOp.MathSqrt, 1, MathShape.Float),
+            ["Pow"] = new MathSig(EngineOp.MathPow, 2, MathShape.Float),
+            ["Lerp"] = new MathSig(EngineOp.MathLerp, 3, MathShape.Float),
+        };
+
+        /// <summary>Math.PI — float, как и литералы 3.14: в double расширится сам, в float не сузится.</summary>
+        private static readonly HostApiConstInfo MathPi = new HostApiConstInfo
+        {
+            Name = "PI",
+            Type = TypeRef.Float,
+            Value = Variant.Float((float)System.Math.PI),
+        };
+
+        private static string MathMemberList()
+        {
+            var names = new List<string>(MathSigs.Keys) { "PI" };
+            return string.Join(", ", names);
+        }
+
+        private TypeRef BindMathCall(CallExpr call, MemberExpr me)
+        {
+            if (!MathSigs.TryGetValue(me.Name, out var sig))
+            {
+                if (me.Name == "PI")
+                    _diag.Error("E0239", "'Math.PI' — константа, а не метод: читайте её без скобок.", me.Pos);
+                else
+                    _diag.Error("E0249", $"У Math нет '{me.Name}'. Есть: {MathMemberList()}.", me.Pos);
+                CheckArgsLoose(call);
+                return call.Type = TypeRef.Error;
+            }
+
+            if (call.Args.Count != sig.Argc)
+            {
+                _diag.Error("E0250",
+                    $"Math.{me.Name} принимает {sig.Argc} аргумент(а/ов), передано {call.Args.Count}.", call.Pos);
+                CheckArgsLoose(call);
+                return call.Type = TypeRef.Error;
+            }
+
+            // общий числовой тип аргументов: как у арифметики, int → float → double
+            var types = new TypeRef[call.Args.Count];
+            bool bad = false;
+            TypeRef common = null;
+            for (int i = 0; i < call.Args.Count; i++)
+            {
+                var a = call.Args[i];
+                var t = CheckExpr(ref a);
+                call.Args[i] = a;
+                types[i] = t;
+                if (t.IsError) { bad = true; continue; }
+                if (!t.IsNumeric)
+                {
+                    _diag.Error("E0251", $"Math.{me.Name}: аргумент #{i + 1} должен быть числом, получен {t}.", a.Pos);
+                    bad = true;
+                    continue;
+                }
+                if (common == null || t.NumericRank > common.NumericRank) common = t;
+            }
+            if (bad || common == null) return call.Type = TypeRef.Error;
+            if (sig.Shape == MathShape.Float && common.NumericRank < TypeRef.Float.NumericRank) common = TypeRef.Float;
+
+            // Sign/Floor/Ceil/Round разбирают тип операнда сами — приводить незачем;
+            // остальным нужен один тип на все аргументы (VM ветвится по первому)
+            if (sig.Shape != MathShape.ToInt)
+                for (int i = 0; i < call.Args.Count; i++)
+                    if (types[i].NumericRank < common.NumericRank)
+                        call.Args[i] = Convert(call.Args[i], common);
+
+            call.CKind = CallKind.Engine;
+            call.TargetIndex = (int)sig.Op;
+            call.ReturnsValue = true;
+            return call.Type = sig.Shape == MathShape.ToInt ? TypeRef.Int : common;
         }
 
         private TypeRef BindEngineCall(CallExpr call, EngineSig sig, SourcePos pos)
@@ -2550,6 +3544,25 @@ namespace Dsl.Semantics
             BuiltinOp op;
             TypeRef ret = TypeRef.Void;
             TypeRef argT = null;
+
+            // Метод самого объекта: basket.AddPerk("x"). Приёмник уходит нулевым
+            // аргументом хостовой функции, поэтому байткод получается тот же, что
+            // у Api.Npc.Perk(basket, "x") — разница только в разрешении имени.
+            if (targetT.Kind == TypeKind.Entity && _host.TryGetClassById(targetT.HostTypeId, out var hostCls))
+            {
+                if (hostCls.TryGetMethod(me.Name, out var hm))
+                    return BindHostCall(call, hm, CallKind.HostInstance);
+                if (hostCls.TryGetProp(me.Name, out _))
+                {
+                    // соседняя ошибка: «нет такого метода» увело бы искать метод,
+                    // которого не существует, вместо лишних скобок
+                    _diag.Error("E0240",
+                        $"'{hostCls.Name}.{me.Name}' — свойство, а не метод: читайте его без скобок.",
+                        me.Pos);
+                    CheckArgsLoose(call);
+                    return call.Type = TypeRef.Error;
+                }
+            }
 
             if (targetT.Kind == TypeKind.List && me.Name == "Add") { op = BuiltinOp.ListAdd; argT = targetT.Elem; }
             else if (targetT.Kind == TypeKind.List && me.Name == "Clear") { op = BuiltinOp.ListClear; }

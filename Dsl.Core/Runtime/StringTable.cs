@@ -21,9 +21,14 @@ namespace Dsl.Runtime
         private int _count;
         private readonly Stack<int> _free = new Stack<int>();
         private int _staticCount; // граница статического сегмента
+        private int _liveDynamic; // сколько динамических строк ЖИВО сейчас
 
-        // hash -> список id с этим хэшем (коллизии редки)
-        private readonly Dictionary<int, List<int>> _byHash = new Dictionary<int, List<int>>();
+        // hash -> ПЕРВЫЙ id с этим хэшем; остальные — по цепочке _nextInBucket (коллизии
+        // редки). Интрузивная цепочка вместо List<int> на каждый хэш: раньше на каждую
+        // уникальную строку рождался List, а после свипа пустой List навсегда оставался
+        // в словаре — на долгой сессии с $"hp: {x}" словарь рос без предела.
+        private readonly Dictionary<int, int> _byHash = new Dictionary<int, int>();
+        private int[] _nextInBucket;
 
         // scratch-буфер сборки
         private char[] _buf;
@@ -35,16 +40,23 @@ namespace Dsl.Runtime
         public StringTable(int slotCapacity = 256, int scratchCapacity = 512)
         {
             _slots = new string[slotCapacity];
+            _nextInBucket = new int[slotCapacity];
             _buf = new char[scratchCapacity];
         }
 
         public int Count => _count;
-        public int DynamicCount => _count - _staticCount;
+        /// <summary>
+        /// Число ЖИВЫХ динамических строк. Раньше здесь стояло `_count - _staticCount`,
+        /// а _count — отметка максимума, после свипа она не падает (id уходят во
+        /// free-list). Один всплеск выше порога — и условие сборки в Tick оставалось
+        /// истинным навсегда: полный mark-and-sweep на каждом кадре при нуле мусора.
+        /// </summary>
+        public int DynamicCount => _liveDynamic;
         /// <summary>Граница статического сегмента (id ниже — литералы программы, стабильны при том же отпечатке).</summary>
         public int StaticCount => _staticCount;
 
         /// <summary>Зафиксировать статический сегмент (после интернирования литералов).</summary>
-        public void FreezeStatics() => _staticCount = _count;
+        public void FreezeStatics() { _staticCount = _count; _liveDynamic = 0; }
 
         public string Get(int id) => (uint)id < (uint)_slots.Length ? _slots[id] : null;
 
@@ -177,26 +189,36 @@ namespace Dsl.Runtime
             }
             else
             {
-                if (_count >= _slots.Length) Array.Resize(ref _slots, _slots.Length * 2);
+                if (_count >= _slots.Length)
+                {
+                    Array.Resize(ref _slots, _slots.Length * 2);
+                    Array.Resize(ref _nextInBucket, _slots.Length);
+                }
                 id = _count;
             }
             _slots[id] = s;
             if (id >= _count) _count = id + 1;
+            if (id >= _staticCount) _liveDynamic++;
 
-            if (!_byHash.TryGetValue(hash, out var bucket))
+            // новый id встаёт в ХВОСТ цепочки: порядок просмотра кандидатов тот же, что был у List
+            _nextInBucket[id] = -1;
+            if (_byHash.TryGetValue(hash, out int cur))
             {
-                bucket = new List<int>(1);
-                _byHash[hash] = bucket;
+                while (_nextInBucket[cur] >= 0) cur = _nextInBucket[cur];
+                _nextInBucket[cur] = id;
             }
-            bucket.Add(id);
+            else
+            {
+                _byHash[hash] = id;
+            }
             return id;
         }
 
         private bool TryFind(int hash, string s, int offset, int len, out int id)
         {
-            if (_byHash.TryGetValue(hash, out var bucket))
+            if (_byHash.TryGetValue(hash, out int cand))
             {
-                foreach (var cand in bucket)
+                for (; cand >= 0; cand = _nextInBucket[cand])
                 {
                     var c = _slots[cand];
                     if (c != null && c.Length == len && string.CompareOrdinal(c, 0, s, offset, len) == 0)
@@ -212,9 +234,9 @@ namespace Dsl.Runtime
 
         private bool TryFindSpan(int hash, char[] buf, int len, out int id)
         {
-            if (_byHash.TryGetValue(hash, out var bucket))
+            if (_byHash.TryGetValue(hash, out int cand))
             {
-                foreach (var cand in bucket)
+                for (; cand >= 0; cand = _nextInBucket[cand])
                 {
                     var c = _slots[cand];
                     if (c == null || c.Length != len) continue;
@@ -248,6 +270,25 @@ namespace Dsl.Runtime
             }
         }
 
+        /// <summary>Убрать id из цепочки его хэша; опустевшая запись словаря удаляется.</summary>
+        private void Unlink(int hash, int id)
+        {
+            if (!_byHash.TryGetValue(hash, out int head)) return;
+            if (head == id)
+            {
+                int next = _nextInBucket[id];
+                if (next >= 0) _byHash[hash] = next;
+                else _byHash.Remove(hash);
+            }
+            else
+            {
+                int prev = head;
+                while (prev >= 0 && _nextInBucket[prev] != id) prev = _nextInBucket[prev];
+                if (prev >= 0) _nextInBucket[prev] = _nextInBucket[id];
+            }
+            _nextInBucket[id] = -1;
+        }
+
         // ===== mark-and-sweep динамического сегмента =======================
 
         public void BeginSweep()
@@ -270,9 +311,10 @@ namespace Dsl.Runtime
                 if (_slots[id] == null || _marks[id]) continue;
 
                 int hash = HashOf(_slots[id], 0, _slots[id].Length);
-                if (_byHash.TryGetValue(hash, out var bucket)) bucket.Remove(id);
+                Unlink(hash, id);
                 _slots[id] = null;
                 _free.Push(id);
+                _liveDynamic--;
                 removed++;
             }
             return removed;

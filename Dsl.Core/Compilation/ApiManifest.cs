@@ -31,6 +31,15 @@ namespace Dsl.Compilation
             [JsonProperty("name")] public string Name;
             [JsonProperty("summary", NullValueHandling = NullValueHandling.Ignore)] public string Summary;
             [JsonProperty("members")] public string[] Members = Array.Empty<string>();
+
+            /// <summary>
+            /// Пояснения к элементам ПАРАЛЛЕЛЬНЫМ массивом (той же длины, null
+            /// там, где пояснения нет). Параллельный массив, а не объекты
+            /// {name, doc}: старые манифесты, где ключа нет вовсе, читаются
+            /// как раньше, и `members` остаётся простым списком имён.
+            /// </summary>
+            [JsonProperty("memberDocs", NullValueHandling = NullValueHandling.Ignore)]
+            public string[] MemberDocs;
         }
 
         public sealed class PropDef
@@ -46,6 +55,13 @@ namespace Dsl.Compilation
             [JsonProperty("name")] public string Name;
             [JsonProperty("summary", NullValueHandling = NullValueHandling.Ignore)] public string Summary;
             [JsonProperty("props")] public PropDef[] Props = Array.Empty<PropDef>();
+
+            /// <summary>
+            /// Методы самого объекта (basket.AddPerk("x")). Params — как их видит
+            /// скрипт, без приёмника. Ключ пишется только когда методы есть:
+            /// у классов-данных манифест выглядит как раньше.
+            /// </summary>
+            [JsonProperty("methods", NullValueHandling = NullValueHandling.Ignore)] public MethodDef[] Methods;
         }
 
         public sealed class MethodDef
@@ -62,6 +78,17 @@ namespace Dsl.Compilation
             [JsonProperty("summary", NullValueHandling = NullValueHandling.Ignore)] public string Summary;
             [JsonProperty("methods")] public MethodDef[] Methods = Array.Empty<MethodDef>();
             [JsonProperty("consts", NullValueHandling = NullValueHandling.Ignore)] public ApiConstDef[] Consts;
+        }
+
+        /// <summary>
+        /// Узел составного имени ("Api", "Api.PartsCatalog") — только описание.
+        /// Сами узлы выводятся из имён API, поэтому в манифест попадают лишь
+        /// описанные: перечислять остальные значило бы дублировать `apis`.
+        /// </summary>
+        public sealed class ApiNamespaceDef
+        {
+            [JsonProperty("name")] public string Name;
+            [JsonProperty("summary")] public string Summary;
         }
 
         /// <summary>Именованное значение у API-класса: читается без скобок.</summary>
@@ -114,6 +141,14 @@ namespace Dsl.Compilation
             [JsonProperty("knownIds", NullValueHandling = NullValueHandling.Ignore)] public string[] KnownIds;
             [JsonProperty("consts", NullValueHandling = NullValueHandling.Ignore)] public ConstDef[] Consts;
             [JsonProperty("events")] public EventDef[] Events = Array.Empty<EventDef>();
+
+            /// <summary>
+            /// Сущность вида вправе не реализовать ни одного события. Ключ
+            /// пишется только когда true: у видов, где ничего не разрешали,
+            /// манифест выглядит как раньше.
+            /// </summary>
+            [JsonProperty("eventsOptional", DefaultValueHandling = DefaultValueHandling.Ignore)]
+            public bool EventsOptional;
         }
 
         public sealed class EventDef
@@ -128,6 +163,7 @@ namespace Dsl.Compilation
         [JsonProperty("enums")] public EnumDef[] Enums = Array.Empty<EnumDef>();
         [JsonProperty("structs", NullValueHandling = NullValueHandling.Ignore)] public StructDef[] Structs;
         [JsonProperty("classes")] public ClassDef[] Classes = Array.Empty<ClassDef>();
+        [JsonProperty("apiNamespaces", NullValueHandling = NullValueHandling.Ignore)] public ApiNamespaceDef[] ApiNamespaces;
         [JsonProperty("apis")] public ApiDef[] Apis = Array.Empty<ApiDef>();
         [JsonProperty("events")] public EventDef[] Events = Array.Empty<EventDef>();
         [JsonProperty("archetypes", NullValueHandling = NullValueHandling.Ignore)] public ArchetypeKindDef[] Archetypes;
@@ -142,7 +178,13 @@ namespace Dsl.Compilation
 
             var enums = new List<EnumDef>();
             foreach (var e in r.AllEnums)
-                enums.Add(new EnumDef { Name = e.Name, Summary = e.Summary, Members = e.Names });
+                enums.Add(new EnumDef
+                {
+                    Name = e.Name, Summary = e.Summary, Members = e.Names,
+                    // массива нет вовсе, если не описан ни один элемент —
+                    // манифесты без пояснений выглядят как раньше
+                    MemberDocs = HasAnyDoc(e.Docs) ? e.Docs : null,
+                });
             m.Enums = enums.ToArray();
 
             // структуры идут перед классами: свойство класса может быть структурой,
@@ -169,9 +211,39 @@ namespace Dsl.Compilation
                 var props = new List<PropDef>();
                 foreach (var p in c.Props.Values)
                     props.Add(new PropDef { Name = p.Name, Type = TypeToString(r, p.Type), ReadOnly = p.ReadOnly, Doc = p.Doc });
-                classes.Add(new ClassDef { Name = c.Name, Summary = c.Summary, Props = props.ToArray() });
+
+                MethodDef[] cmethods = null;
+                if (c.Methods.Count > 0)
+                {
+                    var list = new List<MethodDef>();
+                    foreach (var f in c.Methods.Values)
+                        list.Add(new MethodDef
+                        {
+                            Name = f.Name,
+                            Summary = f.Summary,
+                            Params = BuildParams(r, f.Params, f.ParamNames, f.ParamDocs),
+                            Returns = TypeToString(r, f.Ret),
+                        });
+                    cmethods = list.ToArray();
+                }
+                classes.Add(new ClassDef
+                {
+                    Name = c.Name, Summary = c.Summary,
+                    Props = props.ToArray(), Methods = cmethods,
+                });
             }
             m.Classes = classes.ToArray();
+
+            // описанные узлы составных имён — перед apis, как и читаются
+            var namespaces = new List<ApiNamespaceDef>();
+            foreach (var ns in r.ApiNamespaces)
+                if (!string.IsNullOrEmpty(ns.Value))
+                    namespaces.Add(new ApiNamespaceDef { Name = ns.Key, Summary = ns.Value });
+            if (namespaces.Count > 0)
+            {
+                namespaces.Sort((x, y) => string.CompareOrdinal(x.Name, y.Name)); // словарь неупорядочен
+                m.ApiNamespaces = namespaces.ToArray();
+            }
 
             var apis = new List<ApiDef>();
             foreach (var a in r.AllApis)
@@ -267,6 +339,7 @@ namespace Dsl.Compilation
                         KnownIds = known,
                         Consts = consts,
                         Events = kevents.ToArray(),
+                        EventsOptional = info.EventsOptional,
                     });
                 }
                 m.Archetypes = kinds.ToArray();
@@ -306,7 +379,15 @@ namespace Dsl.Compilation
 
             // порядок важен: сперва имена типов (енумы/классы), потом сигнатуры
             foreach (var e in m.Enums ?? Array.Empty<EnumDef>())
-                r.DefineEnum(e.Name, e.Summary, e.Members ?? Array.Empty<string>());
+            {
+                var members = e.Members ?? Array.Empty<string>();
+                var docs = e.MemberDocs;
+                if (docs != null && docs.Length != members.Length)
+                    throw new FormatException(
+                        $"salamander-api.json: у енума '{e.Name}' {docs.Length} пояснений " +
+                        $"на {members.Length} элементов — массивы идут параллельно.");
+                r.DefineEnum(e.Name, e.Summary, members, docs);
+            }
 
             // структуры — сразу после енумов: поле структуры бывает только
             // литеральным или элементом енума, а вот свойство класса и параметр
@@ -335,7 +416,18 @@ namespace Dsl.Compilation
                         setter: p.ReadOnly ? null : StubSetter,
                         doc: p.Doc);
                 }
+                foreach (var f in c.Methods ?? Array.Empty<MethodDef>())
+                {
+                    SplitParams(r, f.Params, out var types, out var names, out var docs);
+                    r.DefineClassMethod(c.Name, f.Name, types, ParseType(r, f.Returns),
+                                        StubFunction, f.Summary, names, docs);
+                }
             }
+
+            // узлы описываем ДО API: DefineApiClass создаёт недостающие узлы,
+            // и текст, уже лежащий на узле, он не трогает
+            foreach (var ns in m.ApiNamespaces ?? Array.Empty<ApiNamespaceDef>())
+                r.DescribeApiNamespace(ns.Name, ns.Summary);
 
             foreach (var a in m.Apis ?? Array.Empty<ApiDef>())
             {
@@ -362,6 +454,7 @@ namespace Dsl.Compilation
             foreach (var k in m.Archetypes ?? Array.Empty<ArchetypeKindDef>())
             {
                 int kid = r.DefineArchetypeKind(k.Name, k.Summary);
+                if (k.EventsOptional) r.SetArchetypeEventsOptional(kid);
                 foreach (var ev in k.Events ?? Array.Empty<EventDef>())
                 {
                     SplitParams(r, ev.Params, out var types, out var names, out var docs);
@@ -402,6 +495,13 @@ namespace Dsl.Compilation
         // Литерал в манифесте — один и тот же для дефолта константы вида, дефолта
         // поля структуры и значения константы API. Кодировщик поэтому тоже один:
         // три копии этой лестницы уже начинали расходиться.
+
+        private static bool HasAnyDoc(string[] docs)
+        {
+            if (docs == null) return false;
+            foreach (var d in docs) if (!string.IsNullOrEmpty(d)) return true;
+            return false;
+        }
 
         private static object EncodeLiteral(HostRegistry r, TypeRef type, Variant value, string str)
         {
