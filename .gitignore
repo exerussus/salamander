@@ -14,3 +14,4 @@ modkit/bin/*
 [Bb]uild/
 [Ll]ogs/
 *.csproj.user
+Tools/DslLsp/publish/
