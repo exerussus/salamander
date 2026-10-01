@@ -224,7 +224,7 @@ namespace Dsl.Tests
         [Test]
         public void LayerWithoutCore_RunsAlone_AndCountsAsImplementation()
         {
-            // у вида spell события обязательны (E0199) — слой считается реализацией
+            // слой без ядра — полноценная реализация события
             var engine = Load(Compile(
                 Mod("modA", @"spell fireball { after event OnCast(Unit c, float p) { Api.Note(""A.after""); } }")));
             Assert.AreEqual(new[] { "A.after" }, Cast(engine));

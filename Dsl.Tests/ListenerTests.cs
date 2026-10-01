@@ -270,9 +270,14 @@ namespace Dsl.Tests
         }
 
         [Test]
-        public void ListenerWithoutHostEvents_IsError()
+        public void ListenerWithoutHostEvents_IsFine_ButSelfIsUnavailable()
         {
-            var r = Compile(@"listener L { event OnSubscribe() { } }");
+            // без хостовых событий listener законен: поля подписки, OnSubscribe
+            var ok = Compile(@"listener L { int n = 0; event OnSubscribe() { n = 1; } }");
+            Assert.IsTrue(ok.Success, Dump(ok));
+
+            // а вот тип цели выводить не из чего — self недоступен
+            var r = Compile(@"listener L { event OnSubscribe() { var t = self; } }");
             Assert.IsTrue(Has(r, "E0171"), Dump(r));
         }
 

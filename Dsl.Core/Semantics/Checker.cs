@@ -138,34 +138,15 @@ namespace Dsl.Semantics
             }
             _ns = null;
 
-            // Мерж-сущность обязана иметь хотя бы одно событие — но не у всякого
-            // вида. Проверяем ИТОГ мержа, а не блок: отдельный блок бывает чистым
-            // патчем полей. Требование снимается в двух случаях:
-            //  - у вида НЕТ объявленных событий: требовать событие и запрещать
-            //    любое его имя (E0217) — тупик, а не проверка;
-            //  - хост разрешил это явно (EventsOptional): вид-конфиг или вид,
-            //    поведение которого по умолчанию живёт в игре, а блок — данные.
+            // События у сущностей НЕ обязательны. Архетип без событий — вариант
+            // механики, описанный данными (стихия, фракция, рецепт): игра читает
+            // его поля, а поведение живёт в ней самой. Триггер без событий —
+            // состояние и action Do, запускаемый через Engine.ActivateTrigger.
+            // Опечатку в имени события ловит E0217, а не пустота сущности.
+            // Listener без хостовых событий тоже законен; у него лишь нет типа
+            // цели — им нельзя пользоваться через self (E0171 в CheckSelf).
             foreach (var asym in _archetypes)
-            {
-                if (asym.Events.Count == 0 && asym.Decls.Count > 0
-                    && _host.TryGetArchetypeKind(asym.Kind, out var kindInfo) && kindInfo.RequiresEvent)
-                    _diag.Error("E0199",
-                        $"'{asym.Kind} {asym.Id}' не содержит ни одного события вида (ни в одном из блоков).",
-                        asym.Decls[0].Pos);
                 CheckArchetypeConsts(asym);
-            }
-
-            foreach (var tr in _triggers)
-                if (tr.Events.Count == 0 && tr.Decls.Count > 0)
-                    _diag.Error("E0109",
-                        $"Триггер '{tr.Name}' не содержит ни одного обработчика event (ни в одном из блоков). " +
-                        "Триггер обязан на что-то реагировать; если это набор функций/данных — объявите class.",
-                        tr.Decls[0].Pos);
-            foreach (var lsn in _listeners)
-                if (lsn.Events.Count == 0 && lsn.Decls.Count > 0)
-                    _diag.Error("E0171",
-                        $"listener '{lsn.Name}' должен обрабатывать хотя бы одно хостовое событие " +
-                        "(по его первому параметру выводится тип цели подписки).", lsn.Decls[0].Pos);
 
             return new CheckResult
             {
@@ -808,8 +789,8 @@ namespace Dsl.Semantics
 
             if (!kind.EventByName.TryGetValue(fn.Name, out var ev))
             {
-                // E0199 закреплён за «блок без событий» (это пиннится ArchetypeTests),
-                // поэтому «нет такого события у вида» переехало на свободный код
+                // E0199 когда-то означал «блок без событий» (требование снято),
+                // поэтому «нет такого события у вида» живёт на своём коде
                 _diag.Error("E0217",
                     $"У вида '{kind.Name}' нет события '{fn.Name}'. События вида перечислены в манифесте API.",
                     fn.Pos);
@@ -2676,6 +2657,16 @@ namespace Dsl.Semantics
             if (_listener == null)
             {
                 _diag.Error("E0177", "'self' доступен только внутри listener.", se.Pos);
+                return se.Type = TypeRef.Error;
+            }
+            // тип цели выводится из первого параметра хостовых событий: без них
+            // выводить не из чего — self в таком listener просто недоступен
+            if (_listener.TargetType == null && _listener.Events.Count == 0)
+            {
+                _diag.Error("E0171",
+                    $"listener '{_listener.Name}' не обрабатывает ни одного хостового события, поэтому тип цели " +
+                    "подписки неизвестен и 'self' недоступен. Добавьте событие о цели (её тип — первый параметр) " +
+                    "или работайте без self.", se.Pos);
                 return se.Type = TypeRef.Error;
             }
             // TargetType может быть null, если события listener не прошли проверку —

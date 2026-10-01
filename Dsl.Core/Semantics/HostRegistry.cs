@@ -145,14 +145,14 @@ namespace Dsl.Semantics
         public readonly Dictionary<string, ArchetypeConstInfo> ConstByName = new Dictionary<string, ArchetypeConstInfo>();
 
         /// <summary>
-        /// Сущность вида может не реализовать ни одного события (E0199 снимается).
-        /// Нужно, когда поведение по умолчанию живёт в хосте, а блок — только данные.
-        /// У вида БЕЗ объявленных событий это верно само собой, флаг для него не нужен.
+        /// Исторический флаг «сущность вида может не реализовать ни одного события».
+        /// Теперь это верно для любого вида, поэтому флаг на компиляцию не влияет;
+        /// хранится и экспортируется в манифест ради совместимости хостов.
         /// </summary>
         public bool EventsOptional;
 
-        /// <summary>Требовать ли от сущности хотя бы одно событие.</summary>
-        public bool RequiresEvent => !EventsOptional && Events.Count > 0;
+        /// <summary>Требовать ли от сущности хотя бы одно событие. Больше никогда: события необязательны.</summary>
+        public bool RequiresEvent => false;
     }
 
     /// <summary>Поле структуры: имя, тип, значение по умолчанию (если в new его не задали).</summary>

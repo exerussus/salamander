@@ -60,11 +60,11 @@ namespace Dsl.Tests
         // ===== структурные правила =========================================
 
         [Test]
-        public void EmptyTrigger_IsError()
+        public void TriggerWithoutEvents_IsFine()
         {
-            var r = Compile("trigger T { int x = 0; func F() {} }");
-            Assert.IsFalse(r.Success);
-            Assert.IsTrue(HasError(r, "E0109"), "триггер без event обязан падать с E0109");
+            // состояние + action Do, который запускают через Engine.ActivateTrigger
+            var r = Compile("trigger T { int x = 0; func F() {} action Do() { x = x + 1; } }");
+            Assert.IsTrue(r.Success, string.Join("\n", r.Diagnostics));
         }
 
         [Test]

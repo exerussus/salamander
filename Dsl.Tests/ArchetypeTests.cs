@@ -312,7 +312,7 @@ namespace Dsl.Tests
             Assert.IsTrue(Has(r1, "E0198"), Dump(r1));
 
             var r2 = Compile(Mod("game", @"spell fb { event OnExplode(Unit u) { } }"));
-            Assert.IsTrue(Has(r2, "E0199"), Dump(r2));
+            Assert.IsTrue(Has(r2, "E0217"), Dump(r2)); // у вида нет такого события
 
             var r3 = Compile(Mod("game", @"spell fb { event OnCast(Unit c) { } }")); // мало параметров
             Assert.IsTrue(Has(r3, "E0200"), Dump(r3));
@@ -320,17 +320,16 @@ namespace Dsl.Tests
             var r4 = Compile(Mod("game", @"spell fb { event OnCast(Unit c, int p) { } }")); // не тот тип
             Assert.IsTrue(Has(r4, "E0201"), Dump(r4));
 
-            var r5 = Compile(Mod("game", @"spell fb { int x = 0; }")); // без событий
-            Assert.IsTrue(Has(r5, "E0199"), Dump(r5));
+            var r5 = Compile(Mod("game", @"spell fb { int x = 0; }")); // без событий — законно
+            Assert.IsTrue(r5.Success, Dump(r5));
         }
 
         // ===================================================================
         // Данные без механики: виды-конфиги
         // ===================================================================
-        // E0199 требует хотя бы одно событие у МЕРЖ-сущности. Требование снимается
-        // в двух случаях, и первый — не политика, а починка тупика: у вида без
-        // объявленных событий E0199 требовала событие, а E0217 запрещала любое
-        // его имя, так что выхода из ошибки не было вовсе.
+        // События у сущностей необязательны: архетип без событий — вариант
+        // механики, описанный данными (стихия, фракция, рецепт). Раньше это
+        // требовал E0199, и приходилось писать «мусорное» событие.
 
         [Test]
         public void KindWithoutEvents_AllowsDataOnlyEntities()
@@ -357,13 +356,38 @@ namespace Dsl.Tests
         }
 
         [Test]
-        public void KindWithEvents_StillRequiresOne()
+        public void KindWithEvents_DataOnlyEntity_IsFine()
         {
-            // дефолт не тронут: у механического вида пустой блок — почти всегда
-            // недописанная механика, и это по-прежнему ошибка
-            var r = Compile(Mod("game", @"spell fireball { int casts = 0; }"));
-            Assert.IsFalse(r.Success);
-            Assert.IsTrue(Has(r, "E0199"), Dump(r));
+            // у вида есть события, но конкретная сущность — только данные: вариант
+            // механики (стихия, фракция), поведение которого живёт в игре
+            var r = Compile(Mod("game", @"
+                spell frost { readonly float slow = 0.3; readonly string school = ""ice""; }
+                spell fire  { readonly float burn = 2.0; func Bonus() -> float { return burn * 2.0; } }
+                spell fireball { event OnCast(Unit c, float p) { Api.Note(""cast""); } }"));
+            Assert.IsTrue(r.Success, Dump(r));
+
+            var engine = Load(r);
+            var ids = new List<string>();
+            engine.GetArchetypeIds("spell", ids);
+            CollectionAssert.AreEquivalent(new[] { "frost", "fire", "fireball" }, ids);
+            Assert.IsTrue(engine.TryGetArchetypeConst("spell", "frost", "slow", out var slow));
+            Assert.AreEqual(0.3f, slow.ToF(), 1e-6f);
+
+            // событие у сущности без обработчика — тишина, а не ошибка
+            _onCast.Raise(engine, "frost", new Unit { Name = "H" }, 1f);
+            _onCast.Raise(engine, "fireball", new Unit { Name = "H" }, 1f);
+            Assert.AreEqual(new[] { "cast" }, _log);
+        }
+
+        [Test]
+        public void DataOnlyEntity_ModAddsEventsLater()
+        {
+            // база описывает вариант данными, мод позже добавляет ему механику
+            var baseMod = Mod("base", @"spell frost { readonly float slow = 0.3; }");
+            var mod = Mod("mod", @"spell frost { event OnCast(Unit c, float p) { Api.Note($""slow {slow}""); } }", "base");
+            var engine = Load(Compile(baseMod, mod));
+            _onCast.Raise(engine, "frost", new Unit { Name = "H" }, 1f);
+            Assert.AreEqual(new[] { "slow 0.3" }, _log);
         }
 
         [Test]
@@ -385,8 +409,10 @@ namespace Dsl.Tests
         }
 
         [Test]
-        public void EventsOptional_IsPerKind()
+        public void EventsOptional_NoLongerNeeded()
         {
+            // флаг остался ради совместимости хостов, но ничего не меняет:
+            // данные без событий законны у любого вида, с флагом и без
             var item = _host.Archetype("item");
             item.Event<Unit>("OnPick");
             item.EventsOptional();
@@ -394,10 +420,7 @@ namespace Dsl.Tests
             var r = Compile(Mod("game", @"
                 item potion { readonly int charges = 3; }
                 spell fireball { int casts = 0; }"));
-
-            Assert.IsFalse(r.Success);
-            StringAssert.Contains("spell fireball", Dump(r), "ослаблен только item");
-            StringAssert.DoesNotContain("item potion", Dump(r));
+            Assert.IsTrue(r.Success, Dump(r));
         }
 
         [Test]
