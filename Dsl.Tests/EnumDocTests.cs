@@ -4,6 +4,7 @@ using Dsl.Hosting;
 using Dsl.Runtime;
 using Dsl.Semantics;
 using NUnit.Framework;
+using Dsl.Text;
 
 namespace Dsl.Tests
 {
@@ -58,9 +59,9 @@ namespace Dsl.Tests
                  .Member(Slot.AttackSpeed, "Множитель времён оружия. Меньше — быстрее.");
 
             var e = EnumOf(_host.Registry, "Slot");
-            Assert.AreEqual("Слоты характеристик.", e.Summary);
-            Assert.AreEqual("Скорость передвижения, м/с.", e.DocOf((int)Slot.MoveSpeed));
-            Assert.AreEqual("Множитель времён оружия. Меньше — быстрее.", e.DocOf((int)Slot.AttackSpeed));
+            Assert.AreEqual("Слоты характеристик.", e.Summary?.Ru);
+            Assert.AreEqual("Скорость передвижения, м/с.", e.DocOf((int)Slot.MoveSpeed)?.Ru);
+            Assert.AreEqual("Множитель времён оружия. Меньше — быстрее.", e.DocOf((int)Slot.AttackSpeed)?.Ru);
             Assert.IsNull(e.DocOf((int)Slot.Armor), "неописанный элемент остаётся без пояснения");
         }
 
@@ -94,12 +95,12 @@ namespace Dsl.Tests
             var r = new HostRegistry();
             r.DefineEnum("Slot", "Слоты.",
                 new[] { "MoveSpeed", "AttackSpeed", "Armor" },
-                new[] { "м/с", null, "плоское снижение урона" });
+                DocText.FromArray(new[] { "м/с", null, "плоское снижение урона" }));
 
             var e = EnumOf(r, "Slot");
-            Assert.AreEqual("м/с", e.DocOf(0));
+            Assert.AreEqual("м/с", e.DocOf(0)?.Ru);
             Assert.IsNull(e.DocOf(1), "null внутри массива — это «пояснения нет»");
-            Assert.AreEqual("плоское снижение урона", e.DocOf(2));
+            Assert.AreEqual("плоское снижение урона", e.DocOf(2)?.Ru);
         }
 
         [Test]
@@ -107,7 +108,7 @@ namespace Dsl.Tests
         {
             var r = new HostRegistry();
             var ex = Assert.Throws<System.ArgumentException>(
-                () => r.DefineEnum("Slot", null, new[] { "A", "B" }, new[] { "только одно" }));
+                () => r.DefineEnum("Slot", null, new[] { "A", "B" }, DocText.FromArray(new[] { "только одно" })));
             StringAssert.Contains("параллельно", ex.Message);
         }
 
@@ -117,9 +118,9 @@ namespace Dsl.Tests
             _host.Register(typeof(WeaponParameter));
 
             var e = EnumOf(_host.Registry, "WeaponParameter");
-            Assert.AreEqual("Параметры оружия.", e.Summary);
-            Assert.AreEqual("Тиков до полного заряда.", e.DocOf((int)WeaponParameter.ChargeToFullTicks));
-            Assert.AreEqual("Множитель урона на полном заряде.", e.DocOf((int)WeaponParameter.ChargeDamageMul));
+            Assert.AreEqual("Параметры оружия.", e.Summary?.Ru);
+            Assert.AreEqual("Тиков до полного заряда.", e.DocOf((int)WeaponParameter.ChargeToFullTicks)?.Ru);
+            Assert.AreEqual("Множитель урона на полном заряде.", e.DocOf((int)WeaponParameter.ChargeDamageMul)?.Ru);
             Assert.IsNull(e.DocOf((int)WeaponParameter.Reserved));
         }
 
@@ -168,9 +169,9 @@ namespace Dsl.Tests
 
             var imported = ApiManifest.Import(json, out _);
             var e = EnumOf(imported, "Slot");
-            Assert.AreEqual("Скорость передвижения, м/с.", e.DocOf((int)Slot.MoveSpeed));
+            Assert.AreEqual("Скорость передвижения, м/с.", e.DocOf((int)Slot.MoveSpeed)?.Ru);
             Assert.IsNull(e.DocOf((int)Slot.AttackSpeed));
-            Assert.AreEqual("Плоское снижение урона.", e.DocOf((int)Slot.Armor));
+            Assert.AreEqual("Плоское снижение урона.", e.DocOf((int)Slot.Armor)?.Ru);
         }
 
         [Test]

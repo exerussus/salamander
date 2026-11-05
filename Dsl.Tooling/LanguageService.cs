@@ -1,4 +1,5 @@
 using System;
+using Dsl.Text;
 using System.Collections.Generic;
 using System.Text.RegularExpressions;
 using Dsl.Compilation;
@@ -18,6 +19,17 @@ namespace Dsl.Tooling
     {
         /// <summary>Манифест API хоста; null — манифеста нет (язык и Engine.* всё равно подсказываются).</summary>
         public ApiManifest Api;
+
+        /// <summary>
+        /// Язык подсказок, справки и сообщений сервиса (из настройки "language").
+        /// Справка хоста ({"ru","en"} в salamander-api.json) показывается на нём же.
+        /// </summary>
+        public Language Language { get; set; }
+
+        private string T(string ru, string en) => Dsl.Text.Loc.T(Language, ru, en);
+
+        /// <summary>Справка хоста на языке сервиса.</summary>
+        private string D(DocText d) => d?.Get(Language);
 
         /// <summary>Синтакс-индекс всех файлов воркспейса.</summary>
         public readonly WorkspaceIndex Index = new WorkspaceIndex();
@@ -155,17 +167,17 @@ namespace Dsl.Tooling
                 if (target == "Engine")
                 {
                     foreach (var em in EngineDocs.Methods)
-                        Add(em.Name, CompletionKind.Method, em.Signature, em.Summary,
-                            insert: ApiFormat.CallSnippet(em.Name, ApiFormat.ParamLabels(em)), snippet: true);
+                        Add(em.Name, CompletionKind.Method, em.SignatureFor(Language), D(em.Summary),
+                            insert: ApiFormat.CallSnippet(em.Name, ApiFormat.ParamLabels(em, Language)), snippet: true);
                     return items;
                 }
                 if (target == "Math" && !MathShadowed())
                 {
                     foreach (var mm in EngineDocs.MathMethods)
-                        Add(mm.Name, CompletionKind.Method, mm.Signature, mm.Summary,
-                            insert: ApiFormat.CallSnippet(mm.Name, ApiFormat.ParamLabels(mm)), snippet: true);
+                        Add(mm.Name, CompletionKind.Method, mm.SignatureFor(Language), D(mm.Summary),
+                            insert: ApiFormat.CallSnippet(mm.Name, ApiFormat.ParamLabels(mm, Language)), snippet: true);
                     foreach (var (cn, ct, cd) in EngineDocs.MathConsts)
-                        Add(cn, CompletionKind.Constant, $"Math.{cn}: {ct}", cd);
+                        Add(cn, CompletionKind.Constant, $"Math.{cn}: {ct}", D(cd));
                     return items;
                 }
                 // API хоста: сначала методы самого API (если такое имя есть),
@@ -179,11 +191,11 @@ namespace Dsl.Tooling
                         {
                             anyApi = true;
                             foreach (var me in api.Methods)
-                                Add(me.Name, CompletionKind.Method, ApiFormat.MethodSig(api.Name, me), ApiFormat.MethodDocMd(me),
+                                Add(me.Name, CompletionKind.Method, ApiFormat.MethodSig(api.Name, me), ApiFormat.MethodDocMd(me, Language),
                                     insert: ApiFormat.CallSnippet(me.Name, ApiFormat.ParamLabels(me)), snippet: true);
                             // константы: без скобок, поэтому и вставляются как есть
                             foreach (var c in api.Consts ?? Array.Empty<ApiManifest.ApiConstDef>())
-                                Add(c.Name, CompletionKind.Constant, ApiFormat.ConstSig(api.Name, c), c.Doc);
+                                Add(c.Name, CompletionKind.Constant, ApiFormat.ConstSig(api.Name, c), D(c.Doc));
                         }
 
                     string prefix = target + ".";
@@ -199,8 +211,10 @@ namespace Dsl.Tooling
                         string nodeName = target + "." + seg;
                         Add(seg, dot < 0 ? CompletionKind.Module : CompletionKind.Function,
                             dot < 0 ? api.Name : nodeName,
-                            dot < 0 ? api.Summary
-                                    : ApiFormat.NamespaceSummary(Api, nodeName) ?? "пространство имён API");
+                            T(dot < 0 ? D(api.Summary)
+                                    : ApiFormat.NamespaceSummary(Api, nodeName, Language) ?? "пространство имён API",
+                                dot < 0 ? D(api.Summary)
+                                : ApiFormat.NamespaceSummary(Api, nodeName, Language) ?? "API namespace"));
                     }
                 }
                 if (anyApi) return items;
@@ -210,7 +224,7 @@ namespace Dsl.Tooling
                         if (en.Name == target)
                         {
                             for (int i = 0; i < en.Members.Length; i++)
-                                Add(en.Members[i], CompletionKind.EnumMember, $"{en.Name}.{en.Members[i]}", ApiFormat.MemberDoc(en, i));
+                                Add(en.Members[i], CompletionKind.EnumMember, $"{en.Name}.{en.Members[i]}", ApiFormat.MemberDoc(en, i, Language));
                             return items;
                         }
                 // скриптовые: имя разрешается по областям namespace, как в компиляторе;
@@ -272,18 +286,18 @@ namespace Dsl.Tooling
                     if (cls != null)
                     {
                         foreach (var pr in cls.Props)
-                            Add(pr.Name, CompletionKind.Property, $"{cls.Name}.{pr.Name}: {pr.Type}", pr.Doc);
+                            Add(pr.Name, CompletionKind.Property, $"{cls.Name}.{pr.Name}: {pr.Type}", D(pr.Doc));
                         foreach (var me in cls.Methods ?? Array.Empty<ApiManifest.MethodDef>())
-                            Add(me.Name, CompletionKind.Method, ApiFormat.MethodSig(cls.Name, me), ApiFormat.MethodDocMd(me),
+                            Add(me.Name, CompletionKind.Method, ApiFormat.MethodSig(cls.Name, me), ApiFormat.MethodDocMd(me, Language),
                                 insert: ApiFormat.CallSnippet(me.Name, ApiFormat.ParamLabels(me)), snippet: true);
                         return items;
                     }
                     foreach (var c in Api.Classes)
                     {
                         foreach (var pr in c.Props)
-                            Add(pr.Name, CompletionKind.Property, $"{c.Name}: {pr.Type}", pr.Doc);
+                            Add(pr.Name, CompletionKind.Property, $"{c.Name}: {pr.Type}", D(pr.Doc));
                         foreach (var me in c.Methods ?? Array.Empty<ApiManifest.MethodDef>())
-                            Add(me.Name, CompletionKind.Method, ApiFormat.MethodSig(c.Name, me), ApiFormat.MethodDocMd(me),
+                            Add(me.Name, CompletionKind.Method, ApiFormat.MethodSig(c.Name, me), ApiFormat.MethodDocMd(me, Language),
                                 insert: ApiFormat.CallSnippet(me.Name, ApiFormat.ParamLabels(me)), snippet: true);
                     }
                 }
@@ -306,7 +320,7 @@ namespace Dsl.Tooling
                         if (Regex.IsMatch(already, @"\b" + Regex.Escape(f.Name) + @"\s*:"))
                             continue;
                         Add(f.Name, CompletionKind.Field, $"{f.Name}: {f.Type}" + (f.Default == null ? "" : $" = {f.Default}"),
-                            f.Doc, insert: f.Name + ": $0", snippet: true);
+                            D(f.Doc), insert: f.Name + ": $0", snippet: true);
                     }
                     return items;
                 }
@@ -317,7 +331,7 @@ namespace Dsl.Tooling
             {
                 if (Api?.Structs != null)
                     foreach (var st in Api.Structs)
-                        Add(st.Name, CompletionKind.Struct, "структура", st.Summary,
+                        Add(st.Name, CompletionKind.Struct, T("структура", "struct"), D(st.Summary),
                             insert: st.Name + "($0)", snippet: true);
                 Add("List", CompletionKind.Struct, "new List<T>()", null, "List<${1:float}>()", true);
                 Add("Map", CompletionKind.Struct, "new Map<K, V>()", null, "Map<${1:string}, ${2:float}>()", true);
@@ -334,26 +348,26 @@ namespace Dsl.Tooling
                         if (k.Name == encl.Kind) { events = k.Events; break; }
                 if (events != null)
                     foreach (var ev in events)
-                        Add(ev.Name, CompletionKind.Event, ApiFormat.EventSig(ev), ev.Summary,
+                        Add(ev.Name, CompletionKind.Event, ApiFormat.EventSig(ev), D(ev.Summary),
                             insert: ApiFormat.EventSnippet(ev), snippet: true);
                 if (encl != null && encl.Kind == "listener")
                 {
-                    Add("OnSubscribe", CompletionKind.Event, "при Engine.Attach", null, "OnSubscribe()\n{\n\t$0\n}", true);
-                    Add("OnUnsubscribe", CompletionKind.Event, "при detach (без wait/spawn)", null, "OnUnsubscribe()\n{\n\t$0\n}", true);
+                    Add("OnSubscribe", CompletionKind.Event, T("при Engine.Attach", "on Engine.Attach"), null, "OnSubscribe()\n{\n\t$0\n}", true);
+                    Add("OnUnsubscribe", CompletionKind.Event, T("при detach (без wait/spawn)", "on detach (without wait/spawn)"), null, "OnUnsubscribe()\n{\n\t$0\n}", true);
                 }
                 return items;
             }
 
             // 3) голый идентификатор: ключевые слова + типы + глобалы + API
             foreach (var kw in EngineDocs.Keywords) Add(kw, CompletionKind.Keyword, null);
-            foreach (var (chainWord, chainDoc) in EngineDocs.ChainWords) Add(chainWord, CompletionKind.Keyword, null, chainDoc);
+            foreach (var (chainWord, chainDoc) in EngineDocs.ChainWords) Add(chainWord, CompletionKind.Keyword, null, D(chainDoc));
             foreach (var tp in EngineDocs.Types) Add(tp, CompletionKind.Class, null);
-            Add("Engine", CompletionKind.Module, "встроенный класс движка");
-            if (!MathShadowed()) Add("Math", CompletionKind.Module, "встроенная математика: Min, Max, Clamp, Lerp, Round, …");
-            if (Api?.Apis != null) foreach (var api in Api.Apis) Add(api.Name, CompletionKind.Module, api.Summary ?? "API игры");
-            if (Api?.Structs != null) foreach (var st in Api.Structs) Add(st.Name, CompletionKind.Struct, st.Summary ?? "структура");
-            if (Api?.Enums != null) foreach (var en in Api.Enums) Add(en.Name, CompletionKind.Enum, en.Summary ?? "enum хоста");
-            if (Api?.Classes != null) foreach (var c in Api.Classes) Add(c.Name, CompletionKind.Class, c.Summary ?? "сущность игры");
+            Add("Engine", CompletionKind.Module, T("встроенный класс движка", "built-in engine class"));
+            if (!MathShadowed()) Add("Math", CompletionKind.Module, T("встроенная математика: Min, Max, Clamp, Lerp, Round, …", "built-in math: Min, Max, Clamp, Lerp, Round, …"));
+            if (Api?.Apis != null) foreach (var api in Api.Apis) Add(api.Name, CompletionKind.Module, T(D(api.Summary) ?? "API игры", D(api.Summary) ?? "game API"));
+            if (Api?.Structs != null) foreach (var st in Api.Structs) Add(st.Name, CompletionKind.Struct, T(D(st.Summary) ?? "структура", D(st.Summary) ?? "struct"));
+            if (Api?.Enums != null) foreach (var en in Api.Enums) Add(en.Name, CompletionKind.Enum, T(D(en.Summary) ?? "enum хоста", D(en.Summary) ?? "host enum"));
+            if (Api?.Classes != null) foreach (var c in Api.Classes) Add(c.Name, CompletionKind.Class, T(D(c.Summary) ?? "сущность игры", D(c.Summary) ?? "game entity"));
             // скриптовые: глобальные — по имени, из namespace — корень пути, а
             // объявления текущего и объемлющих пространств — коротким именем
             string curNs = NamespaceAt(file, line1);
@@ -471,12 +485,12 @@ namespace Dsl.Tooling
             if (owner == "Engine")
             {
                 foreach (var em in EngineDocs.Methods)
-                    if (em.Name == method) { label = em.Signature; doc = em.Summary; plabels = ApiFormat.ParamLabels(em); break; }
+                    if (em.Name == method) { label = em.SignatureFor(Language); doc = D(em.Summary); plabels = ApiFormat.ParamLabels(em, Language); break; }
             }
             else if (owner == "Math" && !MathShadowed())
             {
                 foreach (var mm in EngineDocs.MathMethods)
-                    if (mm.Name == method) { label = mm.Signature; doc = mm.Summary; plabels = ApiFormat.ParamLabels(mm); break; }
+                    if (mm.Name == method) { label = mm.SignatureFor(Language); doc = D(mm.Summary); plabels = ApiFormat.ParamLabels(mm, Language); break; }
             }
             else if (owner.Length > 0 && Api?.Apis != null)
             {
@@ -484,7 +498,7 @@ namespace Dsl.Tooling
                     if (api.Name == owner)
                         foreach (var me in api.Methods)
                             if (me.Name == method)
-                            { label = ApiFormat.MethodSig(api.Name, me); doc = ApiFormat.MethodDocMd(me); plabels = ApiFormat.ParamLabels(me); break; }
+                            { label = ApiFormat.MethodSig(api.Name, me); doc = ApiFormat.MethodDocMd(me, Language); plabels = ApiFormat.ParamLabels(me); break; }
             }
             if (label == null && owner.Length > 0 && Api?.Classes != null)
             {
@@ -496,7 +510,7 @@ namespace Dsl.Tooling
                     if (vcls != null && c.Name != vcls.Name) continue;
                     foreach (var me in c.Methods ?? Array.Empty<ApiManifest.MethodDef>())
                         if (me.Name == method)
-                        { label = ApiFormat.MethodSig(c.Name, me); doc = ApiFormat.MethodDocMd(me); plabels = ApiFormat.ParamLabels(me); break; }
+                        { label = ApiFormat.MethodSig(c.Name, me); doc = ApiFormat.MethodDocMd(me, Language); plabels = ApiFormat.ParamLabels(me); break; }
                     if (label != null) break;
                 }
             }
@@ -542,7 +556,7 @@ namespace Dsl.Tooling
             if (afterEngine)
             {
                 foreach (var em in EngineDocs.Methods)
-                    if (em.Name == word) { md = $"```\n{em.Signature}\n```\n{em.Summary}"; break; }
+                    if (em.Name == word) { md = $"```\n{em.SignatureFor(Language)}\n```\n{D(em.Summary)}"; break; }
             }
             // встроенный Math: методы, PI и само имя
             if (md == null && !MathShadowed())
@@ -550,21 +564,23 @@ namespace Dsl.Tooling
                 if (TextUtil.HasPrefix(lineText, wordCol, "Math."))
                 {
                     foreach (var mm in EngineDocs.MathMethods)
-                        if (mm.Name == word) { md = $"```\n{mm.Signature}\n```\n{mm.Summary}"; break; }
+                        if (mm.Name == word) { md = $"```\n{mm.SignatureFor(Language)}\n```\n{D(mm.Summary)}"; break; }
                     if (md == null)
                         foreach (var (cn, ct, cd) in EngineDocs.MathConsts)
-                            if (cn == word) { md = $"```\nMath.{cn}: {ct}\n```\n{cd}"; break; }
+                            if (cn == word) { md = $"```\nMath.{cn}: {ct}\n```\n{D(cd)}"; break; }
                 }
                 else if (word == "Math" && !TextUtil.HasPrefix(lineText, wordCol, "."))
-                    md = "```\nMath\n```\nВстроенная математика: Min, Max, Clamp, Abs, Sign, Floor, Ceil, Round, Sqrt, Pow, Lerp и Math.PI. " +
-                         "Тип результата — общий тип аргументов (int → float → double).";
+                    md = T("```\nMath\n```\nВстроенная математика: Min, Max, Clamp, Abs, Sign, Floor, Ceil, Round, Sqrt, Pow, Lerp и Math.PI. " +
+                         "Тип результата — общий тип аргументов (int → float → double).",
+                        "```\nMath\n```\nBuilt-in math: Min, Max, Clamp, Abs, Sign, Floor, Ceil, Round, Sqrt, Pow, Lerp and Math.PI. " +
+                        "The result type is the common type of the arguments (int → float → double).");
             }
             if (md == null && Api?.Apis != null)
                 foreach (var api in Api.Apis)
                     if (TextUtil.HasPrefix(lineText, wordCol, api.Name + "."))
                         foreach (var me in api.Methods)
                             if (me.Name == word)
-                            { md = $"```\n{ApiFormat.MethodSig(api.Name, me)}\n```\n{ApiFormat.MethodDocMd(me) ?? ""}"; break; }
+                            { md = $"```\n{ApiFormat.MethodSig(api.Name, me)}\n```\n{ApiFormat.MethodDocMd(me, Language) ?? ""}"; break; }
             // сам путь: узел составного имени или API-класс. Узел — первое, что
             // человек набирает, и до сих пор наведение на нём молчало
             if (md == null && Api?.Apis != null)
@@ -573,7 +589,8 @@ namespace Dsl.Tooling
                 foreach (var api in Api.Apis)
                 {
                     if (api.Name != dotted) continue;
-                    md = $"```\napi {api.Name}\n```\n{api.Summary ?? "API игры."}";
+                    md = T($"```\napi {api.Name}\n```\n{D(api.Summary) ?? "API игры."}",
+                        $"```\napi {api.Name}\n```\n{D(api.Summary) ?? "Game API."}");
                     break;
                 }
                 if (md == null)
@@ -582,9 +599,12 @@ namespace Dsl.Tooling
                     foreach (var api in Api.Apis)
                         if (api.Name.StartsWith(dotted + ".", StringComparison.Ordinal)) under++;
                     if (under > 0)
-                        md = $"```\nAPI: {dotted}.…\n```\n"
-                           + (ApiFormat.NamespaceSummary(Api, dotted) ?? "Пространство имён API.")
-                           + $"\n\nAPI под этим именем: {under}.";
+                        md = T($"```\nAPI: {dotted}.…\n```\n"
+                           + (ApiFormat.NamespaceSummary(Api, dotted, Language) ?? "Пространство имён API.")
+                           + $"\n\nAPI под этим именем: {under}.",
+                            $"```\nAPI: {dotted}.…\n```\n"
+                            + (ApiFormat.NamespaceSummary(Api, dotted, Language) ?? "API namespace.")
+                            + $"\n\nAPIs under this name: {under}.");
                 }
             }
 
@@ -598,7 +618,7 @@ namespace Dsl.Tooling
                     for (int i = 0; i < en.Members.Length; i++)
                     {
                         if (en.Members[i] != word) continue;
-                        md = $"```\n{en.Name}.{word}\n```\n{ApiFormat.MemberDoc(en, i) ?? en.Summary ?? ""}";
+                        md = $"```\n{en.Name}.{word}\n```\n{ApiFormat.MemberDoc(en, i, Language) ?? D(en.Summary) ?? ""}";
                         break;
                     }
                     if (md != null) break;
@@ -609,7 +629,8 @@ namespace Dsl.Tooling
                 foreach (var en in Api.Enums)
                     if (en.Name == word)
                     {
-                        md = $"```\nenum {en.Name}\n```\n{en.Summary ?? $"Енум игры, элементов: {en.Members.Length}."}";
+                        md = T($"```\nenum {en.Name}\n```\n{D(en.Summary) ?? $"Енум игры, элементов: {en.Members.Length}."}",
+                            $"```\nenum {en.Name}\n```\n{D(en.Summary) ?? $"Game enum, members: {en.Members.Length}."}");
                         break;
                     }
 
@@ -620,7 +641,7 @@ namespace Dsl.Tooling
                     if (api.Consts == null || !TextUtil.HasPrefix(lineText, wordCol, api.Name + ".")) continue;
                     foreach (var c in api.Consts)
                         if (c.Name == word)
-                        { md = $"```\n{ApiFormat.ConstSig(api.Name, c)}\n```\n{c.Doc ?? ""}"; break; }
+                        { md = $"```\n{ApiFormat.ConstSig(api.Name, c)}\n```\n{D(c.Doc) ?? ""}"; break; }
                     if (md != null) break;
                 }
 
@@ -635,17 +656,21 @@ namespace Dsl.Tooling
                         if (k.Name != encl.Kind) continue;
                         foreach (var ev in k.Events ?? Array.Empty<ApiManifest.EventDef>())
                             if (ev.Name == word)
-                            { md = $"```\n{ApiFormat.EventSig(ev)}\n```\n{ev.Summary ?? $"Событие вида {k.Name}."}"; break; }
+                            { md = T($"```\n{ApiFormat.EventSig(ev)}\n```\n{D(ev.Summary) ?? $"Событие вида {k.Name}."}",
+                                $"```\n{ApiFormat.EventSig(ev)}\n```\n{D(ev.Summary) ?? $"Event of kind {k.Name}."}"); break; }
                         if (md == null)
                             foreach (var c in k.Consts ?? Array.Empty<ApiManifest.ConstDef>())
                                 if (c.Name == word)
                                 {
                                     // дефолт показываем СЛОВАМИ: "= 3" в сигнатуре читалось бы
                                     // как текущее значение, а блок его переопределяет
-                                    string note = $"Константа вида `{k.Name}`"
+                                    string note = T($"Константа вида `{k.Name}`"
                                         + (c.Required ? ", обязательная."
-                                           : c.HasDefault ? $", по умолчанию `{ApiFormat.Literal(c.Default)}`." : ".");
-                                    md = $"```\nreadonly {c.Type} {c.Name}\n```\n{note}\n\n{c.Doc ?? ""}";
+                                           : c.HasDefault ? $", по умолчанию `{ApiFormat.Literal(c.Default)}`." : "."),
+                                        $"Constant of kind `{k.Name}`"
+                                        + (c.Required ? ", required."
+                                        : c.HasDefault ? $", default `{ApiFormat.Literal(c.Default)}`." : "."));
+                                    md = $"```\nreadonly {c.Type} {c.Name}\n```\n{note}\n\n{D(c.Doc) ?? ""}";
                                     break;
                                 }
                         break;
@@ -655,7 +680,8 @@ namespace Dsl.Tooling
             if (md == null && Api?.Events != null)
                 foreach (var ev in Api.Events)
                     if (ev.Name == word)
-                    { md = $"```\n{ApiFormat.EventSig(ev)}\n```\n{ev.Summary ?? "Событие игры."}"; break; }
+                    { md = T($"```\n{ApiFormat.EventSig(ev)}\n```\n{D(ev.Summary) ?? "Событие игры."}",
+                        $"```\n{ApiFormat.EventSig(ev)}\n```\n{D(ev.Summary) ?? "Game event."}"); break; }
 
             // поле структуры: в new Damage(...) тип известен точно, иначе — если
             // имя поля уникально среди всех структур
@@ -674,8 +700,10 @@ namespace Dsl.Tooling
                         if (f.Name == word) { hits++; ownerSt = st; fld = f; }
                 }
                 if (hits == 1)
-                    md = $"```\n{ownerSt.Name}.{fld.Name}: {fld.Type}\n```\n" +
-                         $"Поле структуры, по умолчанию `{ApiFormat.Literal(fld.Default)}`.\n\n{fld.Doc ?? ""}";
+                    md = T($"```\n{ownerSt.Name}.{fld.Name}: {fld.Type}\n```\n" +
+                         $"Поле структуры, по умолчанию `{ApiFormat.Literal(fld.Default)}`.\n\n{D(fld.Doc) ?? ""}",
+                        $"```\n{ownerSt.Name}.{fld.Name}: {fld.Type}\n```\n" +
+                        $"Struct field, default `{ApiFormat.Literal(fld.Default)}`.\n\n{D(fld.Doc) ?? ""}");
             }
             if (md == null && Api?.Classes != null)
             {
@@ -685,7 +713,7 @@ namespace Dsl.Tooling
                     foreach (var me in c.Methods ?? Array.Empty<ApiManifest.MethodDef>())
                         if (me.Name == word) { mHits++; mOwner = c; meth = me; }
                 if (mHits == 1)
-                    md = $"```\n{ApiFormat.MethodSig(mOwner.Name, meth)}\n```\n{ApiFormat.MethodDocMd(meth) ?? ""}";
+                    md = $"```\n{ApiFormat.MethodSig(mOwner.Name, meth)}\n```\n{ApiFormat.MethodDocMd(meth, Language) ?? ""}";
             }
             if (md == null && Api?.Classes != null)
             {
@@ -695,7 +723,8 @@ namespace Dsl.Tooling
                     foreach (var pr in c.Props)
                         if (pr.Name == word) { hits++; ownerCls = c; prop = pr; }
                 if (hits == 1)
-                    md = $"```\n{ownerCls.Name}.{prop.Name}: {prop.Type}{(prop.ReadOnly ? " (только чтение)" : "")}\n```\n{prop.Doc ?? ""}";
+                    md = T($"```\n{ownerCls.Name}.{prop.Name}: {prop.Type}{(prop.ReadOnly ? " (только чтение)" : "")}\n```\n{D(prop.Doc) ?? ""}",
+                        $"```\n{ownerCls.Name}.{prop.Name}: {prop.Type}{(prop.ReadOnly ? " (read-only)" : "")}\n```\n{D(prop.Doc) ?? ""}");
             }
             if (md == null)
             {
@@ -720,7 +749,7 @@ namespace Dsl.Tooling
         private string ChainWordHover(string file, int line1, string lineText, string word, int wordCol)
         {
             string doc = null;
-            foreach (var (w, d) in EngineDocs.ChainWords) if (w == word) { doc = d; break; }
+            foreach (var (w, d) in EngineDocs.ChainWords) if (w == word) { doc = D(d); break; }
             if (doc == null) return null;
 
             if (word == "base")
@@ -836,21 +865,26 @@ namespace Dsl.Tooling
 
             string Where(MemberVersion v) => $"{FileLabel?.Invoke(v.File) ?? ShortName(v.File)}:{v.Line}";
             var sb = new System.Text.StringBuilder();
-            sb.Append($"**Версии `{memberKind} {member}`** в `{encl.Kind} {encl.Name}`");
-            sb.Append(FileOrder != null ? " — в порядке загрузки:\n\n" : " — в порядке файлов индекса (точный порядок загрузки задаёт сборка):\n\n");
+            sb.Append(T($"**Версии `{memberKind} {member}`** в `{encl.Kind} {encl.Name}`",
+                $"**Versions of `{memberKind} {member}`** in `{encl.Kind} {encl.Name}`"));
+            sb.Append(T(FileOrder != null ? " — в порядке загрузки:\n\n" : " — в порядке файлов индекса (точный порядок загрузки задаёт сборка):\n\n",
+                FileOrder != null ? " — in load order:\n\n" : " — in index file order (the exact load order is set by the build):\n\n"));
             for (int i = 0; i < versions.Count; i++)
             {
                 var v = versions[i];
                 bool here = v.File == file && v.Line == line1;
-                sb.Append($"{i + 1}. `{(v.Mode != null ? v.Mode + " " : "")}{memberKind}` — {Where(v)}{(here ? " ← здесь" : "")}\n");
+                sb.Append(T($"{i + 1}. `{(v.Mode != null ? v.Mode + " " : "")}{memberKind}` — {Where(v)}{(here ? " ← здесь" : "")}\n",
+                    $"{i + 1}. `{(v.Mode != null ? v.Mode + " " : "")}{memberKind}` — {Where(v)}{(here ? " ← here" : "")}\n"));
             }
 
             var run = new List<string>();
             foreach (var v in befores) run.Add($"before {Where(v)}");
-            run.Add(core != null ? $"**ядро** {Where(core)}" : "*(ядра нет)*");
+            run.Add(T(core != null ? $"**ядро** {Where(core)}" : "*(ядра нет)*",
+                core != null ? $"**core** {Where(core)}" : "*(no core)*"));
             foreach (var v in afters) run.Add($"after {Where(v)}");
-            sb.Append("\nВыполнится: ").Append(string.Join(" → ", run)).Append('.');
-            sb.Append("\n\nВыключенный модуль прозрачен: его версии пропускаются, его replace ничего не стирает.");
+            sb.Append(T("\nВыполнится: ", "\nRuns as: ")).Append(string.Join(" → ", run)).Append('.');
+            sb.Append(T("\n\nВыключенный модуль прозрачен: его версии пропускаются, его replace ничего не стирает.",
+                "\n\nA disabled module is transparent: its versions are skipped and its replace erases nothing."));
             return sb.ToString();
         }
 

@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using Dsl.Runtime;
+using Dsl.Text;
 
 namespace Dsl.Semantics
 {
@@ -9,7 +10,7 @@ namespace Dsl.Semantics
         public string Name;
         public readonly Dictionary<string, int> Members = new Dictionary<string, int>();
         public string[] Names;
-        public string Summary;
+        public DocText Summary;
 
         /// <summary>
         /// Пояснения к элементам, параллельно Names (значение элемента = индекс).
@@ -18,9 +19,9 @@ namespace Dsl.Semantics
         /// всего енума одну строку на три десятка элементов не вмещает, и при
         /// наведении на элемент его никто не видит.
         /// </summary>
-        public string[] Docs;
+        public DocText[] Docs;
 
-        public string DocOf(int value)
+        public DocText DocOf(int value)
             => Docs != null && (uint)value < (uint)Docs.Length ? Docs[value] : null;
     }
 
@@ -30,14 +31,14 @@ namespace Dsl.Semantics
         public string Name;
         public TypeRef Type;
         public bool ReadOnly;
-        public string Doc;
+        public DocText Doc;
     }
 
     public sealed class HostClassInfo
     {
         public int Id;
         public string Name;
-        public string Summary;
+        public DocText Summary;
         public readonly Dictionary<string, HostPropInfo> Props = new Dictionary<string, HostPropInfo>();
         public bool TryGetProp(string n, out HostPropInfo p) => Props.TryGetValue(n, out p);
 
@@ -57,9 +58,9 @@ namespace Dsl.Semantics
         public string Name;
         public TypeRef[] Params;
         public TypeRef Ret;          // Void, если метод ничего не возвращает
-        public string Summary;
+        public DocText Summary;
         public string[] ParamNames;  // может быть null — тогда синтезируются argN
-        public string[] ParamDocs;   // может быть null
+        public DocText[] ParamDocs;   // может быть null
     }
 
     /// <summary>
@@ -74,13 +75,13 @@ namespace Dsl.Semantics
         public TypeRef Type;
         public Variant Value;
         public string ValueStr;  // строки отдельно: их id раздаёт StringTable при загрузке
-        public string Doc;
+        public DocText Doc;
     }
 
     public sealed class HostApiInfo
     {
         public string Name;
-        public string Summary;
+        public DocText Summary;
         public readonly Dictionary<string, HostMethodInfo> Methods = new Dictionary<string, HostMethodInfo>();
         public bool TryGetMethod(string n, out HostMethodInfo m) => Methods.TryGetValue(n, out m);
 
@@ -96,9 +97,9 @@ namespace Dsl.Semantics
         public int LocalId;          // индекс внутри вида
         public string Name;
         public TypeRef[] Params;
-        public string Summary;
+        public DocText Summary;
         public string[] ParamNames;
-        public string[] ParamDocs;
+        public DocText[] ParamDocs;
     }
 
     /// <summary>
@@ -114,7 +115,7 @@ namespace Dsl.Semantics
         public string Name;
         public TypeRef Type;
         public bool Required;    // нет в блоке → ошибка компиляции, а не пустая сущность на плейтесте
-        public string Doc;
+        public DocText Doc;
 
         /// <summary>
         /// Дефолт: блок вправе поле не объявлять — оно всё равно есть, видно
@@ -135,7 +136,7 @@ namespace Dsl.Semantics
     {
         public int Id;
         public string Name;
-        public string Summary;
+        public DocText Summary;
         public readonly List<ArchetypeEventInfo> Events = new List<ArchetypeEventInfo>();
         public readonly Dictionary<string, ArchetypeEventInfo> EventByName = new Dictionary<string, ArchetypeEventInfo>();
         /// <summary>Известные игре id (опционально): непусто — чекер ловит опечатки в id блоков.</summary>
@@ -163,7 +164,7 @@ namespace Dsl.Semantics
         public TypeRef Type;
         public Variant Default;      // bool/int/float/double/enum; для string — DefaultStr
         public string DefaultStr;
-        public string Doc;
+        public DocText Doc;
     }
 
     /// <summary>
@@ -180,7 +181,7 @@ namespace Dsl.Semantics
     {
         public int Id;
         public string Name;
-        public string Summary;
+        public DocText Summary;
         public readonly List<HostStructFieldInfo> Fields = new List<HostStructFieldInfo>();
         public readonly Dictionary<string, HostStructFieldInfo> FieldByName = new Dictionary<string, HostStructFieldInfo>();
         public bool TryGetField(string n, out HostStructFieldInfo f) => FieldByName.TryGetValue(n, out f);
@@ -191,9 +192,9 @@ namespace Dsl.Semantics
         public int Id;
         public string Name;
         public TypeRef[] Params;
-        public string Summary;
+        public DocText Summary;
         public string[] ParamNames;
-        public string[] ParamDocs;
+        public DocText[] ParamDocs;
     }
 
     /// <summary>
@@ -224,6 +225,9 @@ namespace Dsl.Semantics
     /// </summary>
     public sealed class HostRegistry
     {
+        /// <summary>Схемы видов из host.Kind&lt;T&gt;() (тип → Dsl.Hosting.KindSchema) — для engine.Bake&lt;T&gt;().</summary>
+        internal readonly Dictionary<System.Type, object> KindSchemas = new Dictionary<System.Type, object>();
+
         private readonly Dictionary<string, HostEnumInfo> _enums = new Dictionary<string, HostEnumInfo>();
         private readonly Dictionary<string, HostClassInfo> _classes = new Dictionary<string, HostClassInfo>();
         private readonly Dictionary<string, HostApiInfo> _apis = new Dictionary<string, HostApiInfo>();
@@ -246,6 +250,16 @@ namespace Dsl.Semantics
         /// </summary>
         public QuarantineScope Quarantine { get; set; } = QuarantineScope.Module;
 
+        /// <summary>
+        /// Язык по умолчанию для всего, что собрано на этом хосте: ошибок регистрации
+        /// (HostBuilder и др.), компиляции (если в <c>ScriptCompiler.Compile</c> язык не
+        /// передан) и движков (<c>new ScriptEngine(host)</c> берёт его как начальный).
+        /// Компиляция и движок могут переопределить его у себя. В API-манифест не выгружается.
+        /// </summary>
+        public Language Language { get; set; } = Language.Ru;
+
+        internal string T(string ru, string en) => Loc.T(Language, ru, en);
+
         // ===== регистрация (вызывает хост) ==================================
 
         public int DefineEnum(string name, params string[] members)
@@ -258,7 +272,7 @@ namespace Dsl.Semantics
         // другом месте как InvalidCastException → «Внутренняя ошибка».
         // Плюс id скриптовых енумов считаются как EnumCount + n, так что сдвиг
         // ломал и их. Поэтому дубль теперь — явная ошибка регистрации.
-        public int DefineEnum(string name, string summary, string[] members)
+        public int DefineEnum(string name, DocText summary, string[] members)
             => DefineEnum(name, summary, members, null);
 
         /// <summary>
@@ -266,18 +280,22 @@ namespace Dsl.Semantics
         /// (значение элемента = индекс), null внутри разрешён. Отдельный массив,
         /// а не пары: Names уже так устроен, и порядок задаёт сам енум.
         /// </summary>
-        public int DefineEnum(string name, string summary, string[] members, string[] docs)
+        public int DefineEnum(string name, DocText summary, string[] members, DocText[] docs)
         {
             if (_enums.ContainsKey(name))
                 throw new System.InvalidOperationException(
-                    $"Енум '{name}' уже зарегистрирован. Регистрируйте каждый тип ровно один раз.");
+                    T($"Енум '{name}' уже зарегистрирован. Регистрируйте каждый тип ровно один раз.",
+                        $"Enum '{name}' is already registered. Register each type exactly once."));
             if (_classes.ContainsKey(name) || _structByName.ContainsKey(name))
                 throw new System.InvalidOperationException(
-                    $"Имя '{name}' уже занято классом или структурой хоста.");
+                    T($"Имя '{name}' уже занято классом или структурой хоста.",
+                        $"The name '{name}' is already taken by a host class or struct."));
             if (docs != null && docs.Length != members.Length)
                 throw new System.ArgumentException(
-                    $"Енум '{name}': пояснений {docs.Length}, а элементов {members.Length}. " +
-                    "Массив пояснений идёт параллельно элементам — оставляйте null там, где пояснения нет.");
+                    T($"Енум '{name}': пояснений {docs.Length}, а элементов {members.Length}. " +
+                    "Массив пояснений идёт параллельно элементам — оставляйте null там, где пояснения нет.",
+                        $"Enum '{name}': {docs.Length} descriptions but {members.Length} members. " +
+                        "The descriptions array runs parallel to the members — leave null where there is no description."));
 
             var info = new HostEnumInfo
             {
@@ -293,50 +311,57 @@ namespace Dsl.Semantics
         /// описываются по одному уже после регистрации типа. Повторное описание
         /// того же элемента — ошибка: молча затирать пояснение неоткуда узнать.
         /// </summary>
-        public void SetEnumMemberDoc(int enumId, int value, string doc)
+        public void SetEnumMemberDoc(int enumId, int value, DocText doc)
         {
             HostEnumInfo info = null;
             foreach (var e in _enums.Values) if (e.Id == enumId) { info = e; break; }
             if (info == null)
-                throw new System.InvalidOperationException($"Енум #{enumId} не зарегистрирован.");
+                throw new System.InvalidOperationException(T($"Енум #{enumId} не зарегистрирован.", $"Enum #{enumId} is not registered."));
             if ((uint)value >= (uint)info.Names.Length)
                 throw new System.ArgumentException(
-                    $"У енума '{info.Name}' нет элемента со значением {value} " +
-                    $"(элементов: {info.Names.Length}).");
+                    T($"У енума '{info.Name}' нет элемента со значением {value} " +
+                    $"(элементов: {info.Names.Length}).",
+                        $"Enum '{info.Name}' has no member with value {value} " +
+                        $"(members: {info.Names.Length})."));
 
-            info.Docs ??= new string[info.Names.Length];
+            info.Docs ??= new DocText[info.Names.Length];
             if (info.Docs[value] != null)
                 throw new System.InvalidOperationException(
-                    $"Элемент '{info.Name}.{info.Names[value]}' уже описан.");
+                    T($"Элемент '{info.Name}.{info.Names[value]}' уже описан.",
+                        $"Member '{info.Name}.{info.Names[value]}' is already described."));
             info.Docs[value] = doc;
         }
 
         public int DefineClass(string name) => DefineClass(name, null);
 
-        public int DefineClass(string name, string summary)
+        public int DefineClass(string name, DocText summary)
         {
             if (_classes.ContainsKey(name))
                 throw new System.InvalidOperationException(
-                    $"Класс '{name}' уже зарегистрирован. Регистрируйте каждый тип ровно один раз.");
+                    T($"Класс '{name}' уже зарегистрирован. Регистрируйте каждый тип ровно один раз.",
+                        $"Class '{name}' is already registered. Register each type exactly once."));
             // имя типа в скрипте одно на всех: молча разрешить дубль — значит
             // отдать разрешение имени на откуп порядку проверок в чекере
             if (_enums.ContainsKey(name) || _structByName.ContainsKey(name))
                 throw new System.InvalidOperationException(
-                    $"Имя '{name}' уже занято енумом или структурой хоста.");
+                    T($"Имя '{name}' уже занято енумом или структурой хоста.",
+                        $"The name '{name}' is already taken by a host enum or struct."));
             var info = new HostClassInfo { Id = _classes.Count, Name = name, Summary = summary };
             _classes[name] = info;
             return info.Id;
         }
 
         public int DefineProperty(string className, string propName, TypeRef type,
-                                  bool readOnly, HostGetter getter, HostSetter setter, string doc = null)
+                                  bool readOnly, HostGetter getter, HostSetter setter, DocText doc = null)
         {
             if (!_classes.TryGetValue(className, out var cls))
-                throw new System.InvalidOperationException($"Класс хоста '{className}' не зарегистрирован.");
+                throw new System.InvalidOperationException(T($"Класс хоста '{className}' не зарегистрирован.", $"Host class '{className}' is not registered."));
             if (cls.Methods.ContainsKey(propName))
                 throw new System.InvalidOperationException(
-                    $"У класса '{className}' уже есть метод '{propName}': имя одно на всех, " +
-                    "свойством и методом одновременно оно быть не может.");
+                    T($"У класса '{className}' уже есть метод '{propName}': имя одно на всех, " +
+                    "свойством и методом одновременно оно быть не может.",
+                        $"Class '{className}' already has a method '{propName}': a name is shared, " +
+                        "it cannot be both a property and a method."));
             int id = _getters.Count;
             _getters.Add(getter);
             _setters.Add(setter); // может быть null для read-only
@@ -355,19 +380,23 @@ namespace Dsl.Semantics
         /// а половина — в списке API.
         /// </summary>
         public int DefineClassMethod(string className, string method, TypeRef[] paramTypes, TypeRef ret,
-                                     HostFunction fn, string summary = null,
-                                     string[] paramNames = null, string[] paramDocs = null)
+                                     HostFunction fn, DocText summary = null,
+                                     string[] paramNames = null, DocText[] paramDocs = null)
         {
             if (!_classes.TryGetValue(className, out var cls))
-                throw new System.InvalidOperationException($"Класс хоста '{className}' не зарегистрирован.");
+                throw new System.InvalidOperationException(T($"Класс хоста '{className}' не зарегистрирован.", $"Host class '{className}' is not registered."));
             if (cls.Methods.ContainsKey(method))
                 throw new System.InvalidOperationException(
-                    $"Метод '{method}' уже зарегистрирован у класса '{className}'. " +
-                    "Перегрузок в языке нет — дайте методам разные имена.");
+                    T($"Метод '{method}' уже зарегистрирован у класса '{className}'. " +
+                    "Перегрузок в языке нет — дайте методам разные имена.",
+                        $"Method '{method}' is already registered on class '{className}'. " +
+                        "The language has no overloads — give the methods different names."));
             if (cls.Props.ContainsKey(method))
                 throw new System.InvalidOperationException(
-                    $"У класса '{className}' уже есть свойство '{method}': имя одно на всех, " +
-                    "свойством и методом одновременно оно быть не может.");
+                    T($"У класса '{className}' уже есть свойство '{method}': имя одно на всех, " +
+                    "свойством и методом одновременно оно быть не может.",
+                        $"Class '{className}' already has a property '{method}': a name is shared, " +
+                        "it cannot be both a property and a method."));
 
             int id = _functions.Count;
             _functions.Add(fn);
@@ -392,8 +421,8 @@ namespace Dsl.Semantics
         // Значение — описание узла (null, пока не задано): узел это первое, что
         // человек набирает, и до сих пор он был единственным местом в объявлениях
         // хоста без текста вообще.
-        private readonly Dictionary<string, string> _apiNamespaces =
-            new Dictionary<string, string>(System.StringComparer.Ordinal);
+        private readonly Dictionary<string, DocText> _apiNamespaces =
+            new Dictionary<string, DocText>(System.StringComparer.Ordinal);
 
         public HostApiInfo DefineApiClass(string name)
         {
@@ -413,7 +442,7 @@ namespace Dsl.Semantics
             return api;
         }
 
-        private static void ValidateApiName(string name)
+        private void ValidateApiName(string name)
         {
             bool bad = string.IsNullOrEmpty(name);
             if (!bad)
@@ -427,8 +456,10 @@ namespace Dsl.Semantics
                 }
             if (bad)
                 throw new System.ArgumentException(
-                    $"Недопустимое имя API '{name}'. Имя — один или несколько сегментов-идентификаторов " +
-                    "через точку: \"WeaponApi\", \"Api.Weapon\".");
+                    T($"Недопустимое имя API '{name}'. Имя — один или несколько сегментов-идентификаторов " +
+                    "через точку: \"WeaponApi\", \"Api.Weapon\".",
+                        $"Invalid API name '{name}'. A name is one or more identifier segments " +
+                        "separated by dots: \"WeaponApi\", \"Api.Weapon\"."));
         }
 
         /// <summary>
@@ -439,11 +470,11 @@ namespace Dsl.Semantics
         public bool IsApiNamespace(string name) => _apiNamespaces.ContainsKey(name);
 
         /// <summary>Описание узла или null. Узла нет — тоже null.</summary>
-        public string ApiNamespaceSummary(string name)
+        public DocText ApiNamespaceSummary(string name)
             => _apiNamespaces.TryGetValue(name, out var s) ? s : null;
 
         /// <summary>Все узлы составных имён с описаниями (описание может быть null).</summary>
-        public IEnumerable<KeyValuePair<string, string>> ApiNamespaces => _apiNamespaces;
+        public IEnumerable<KeyValuePair<string, DocText>> ApiNamespaces => _apiNamespaces;
 
         /// <summary>
         /// Описание узла составного имени: <c>DescribeApiNamespace("Api.PartsCatalog", "…")</c>.
@@ -455,7 +486,7 @@ namespace Dsl.Semantics
         /// ApiClassRef, и вместо «допишите имя API и метод» на нём начало бы
         /// появляться «у него можно только вызвать метод».
         /// </summary>
-        public void DescribeApiNamespace(string name, string summary)
+        public void DescribeApiNamespace(string name, DocText summary)
         {
             ValidateApiName(name);
             if (summary != null || !_apiNamespaces.ContainsKey(name))
@@ -471,7 +502,7 @@ namespace Dsl.Semantics
         }
 
         /// <summary>Задать краткое описание API-класса (уходит в манифест).</summary>
-        public void DescribeApi(string name, string summary)
+        public void DescribeApi(string name, DocText summary)
         {
             if (summary != null) DefineApiClass(name).Summary = summary;
         }
@@ -480,7 +511,7 @@ namespace Dsl.Semantics
             => DefineMethod(apiClass, method, paramTypes, ret, fn, null, null, null);
 
         public int DefineMethod(string apiClass, string method, TypeRef[] paramTypes, TypeRef ret, HostFunction fn,
-                                string summary, string[] paramNames, string[] paramDocs)
+                                DocText summary, string[] paramNames, DocText[] paramDocs)
         {
             var api = DefineApiClass(apiClass);
             // Дубль молча затирал первую регистрацию, и находилось это по «эта
@@ -488,12 +519,16 @@ namespace Dsl.Semantics
             // одноимённых метода — всегда ошибка проводки, а не намерение.
             if (api.Methods.ContainsKey(method))
                 throw new System.InvalidOperationException(
-                    $"Метод '{method}' уже зарегистрирован у API '{apiClass}'. " +
-                    "Перегрузок в языке нет — дайте методам разные имена.");
+                    T($"Метод '{method}' уже зарегистрирован у API '{apiClass}'. " +
+                    "Перегрузок в языке нет — дайте методам разные имена.",
+                        $"Method '{method}' is already registered on API '{apiClass}'. " +
+                        "The language has no overloads — give the methods different names."));
             if (api.ConstByName.ContainsKey(method))
                 throw new System.InvalidOperationException(
-                    $"У API '{apiClass}' уже есть константа '{method}': имя одно на всех, " +
-                    "методом и константой одновременно оно быть не может.");
+                    T($"У API '{apiClass}' уже есть константа '{method}': имя одно на всех, " +
+                    "методом и константой одновременно оно быть не может.",
+                        $"API '{apiClass}' already has a constant '{method}': a name is shared, " +
+                        "it cannot be both a method and a constant."));
             int id = _functions.Count;
             _functions.Add(fn);
             api.Methods[method] = new HostMethodInfo
@@ -517,16 +552,19 @@ namespace Dsl.Semantics
         /// сворачивается компилятором в литерал.
         /// </summary>
         public HostApiConstInfo DefineApiConst(string apiClass, string name, TypeRef type,
-                                               Variant value, string valueStr, string doc = null)
+                                               Variant value, string valueStr, DocText doc = null)
         {
             var api = DefineApiClass(apiClass);
             if (api.ConstByName.ContainsKey(name))
                 throw new System.InvalidOperationException(
-                    $"Константа '{name}' уже зарегистрирована у API '{apiClass}'.");
+                    T($"Константа '{name}' уже зарегистрирована у API '{apiClass}'.",
+                        $"Constant '{name}' is already registered on API '{apiClass}'."));
             if (api.Methods.ContainsKey(name))
                 throw new System.InvalidOperationException(
-                    $"У API '{apiClass}' уже есть метод '{name}': имя одно на всех, " +
-                    "методом и константой одновременно оно быть не может.");
+                    T($"У API '{apiClass}' уже есть метод '{name}': имя одно на всех, " +
+                    "методом и константой одновременно оно быть не может.",
+                        $"API '{apiClass}' already has a method '{name}': a name is shared, " +
+                        "it cannot be both a method and a constant."));
 
             var info = new HostApiConstInfo
             {
@@ -545,12 +583,13 @@ namespace Dsl.Semantics
         public int DefineEvent(string name, params TypeRef[] paramTypes)
             => DefineEvent(name, paramTypes, null, null, null);
 
-        public int DefineEvent(string name, TypeRef[] paramTypes, string summary, string[] paramNames, string[] paramDocs)
+        public int DefineEvent(string name, TypeRef[] paramTypes, DocText summary, string[] paramNames, DocText[] paramDocs)
         {
             // дубль оставлял в _eventList мёртвый слот и незаметно менял EventCount
             if (_events.ContainsKey(name))
                 throw new System.InvalidOperationException(
-                    $"Событие '{name}' уже зарегистрировано. Имя события должно быть уникальным.");
+                    T($"Событие '{name}' уже зарегистрировано. Имя события должно быть уникальным.",
+                        $"Event '{name}' is already registered. An event name must be unique."));
             var info = new HostEventInfo
             {
                 Id = _eventList.Count,
@@ -596,14 +635,16 @@ namespace Dsl.Semantics
         }
         public IEnumerable<HostStructInfo> AllStructs => _structs;
 
-        public int DefineStruct(string name, string summary = null)
+        public int DefineStruct(string name, DocText summary = null)
         {
             if (_structByName.ContainsKey(name))
                 throw new System.InvalidOperationException(
-                    $"Структура '{name}' уже зарегистрирована. Регистрируйте каждый тип ровно один раз.");
+                    T($"Структура '{name}' уже зарегистрирована. Регистрируйте каждый тип ровно один раз.",
+                        $"Struct '{name}' is already registered. Register each type exactly once."));
             if (_classes.ContainsKey(name) || _enums.ContainsKey(name))
                 throw new System.InvalidOperationException(
-                    $"Имя '{name}' уже занято классом или енумом хоста.");
+                    T($"Имя '{name}' уже занято классом или енумом хоста.",
+                        $"The name '{name}' is already taken by a host class or enum."));
             var s = new HostStructInfo { Id = _structs.Count, Name = name, Summary = summary };
             _structs.Add(s);
             _structByName[name] = s;
@@ -611,11 +652,12 @@ namespace Dsl.Semantics
         }
 
         public int DefineStructField(int structId, string name, TypeRef type,
-                                     Variant defaultValue = default, string defaultStr = null, string doc = null)
+                                     Variant defaultValue = default, string defaultStr = null, DocText doc = null)
         {
             var s = _structs[structId];
             if (s.FieldByName.ContainsKey(name))
-                throw new System.ArgumentException($"Поле '{name}' уже объявлено у структуры '{s.Name}'.");
+                throw new System.ArgumentException(T($"Поле '{name}' уже объявлено у структуры '{s.Name}'.",
+                    $"Field '{name}' is already declared on struct '{s.Name}'."));
             var f = new HostStructFieldInfo
             {
                 Index = s.Fields.Count,
@@ -655,7 +697,7 @@ namespace Dsl.Semantics
         public ArchetypeKindInfo GetArchetypeKind(int id) => _archKinds[id];
         public bool TryGetArchetypeKind(string name, out ArchetypeKindInfo k) => _archKindByName.TryGetValue(name, out k);
 
-        public int DefineArchetypeKind(string name, string summary = null)
+        public int DefineArchetypeKind(string name, DocText summary = null)
         {
             if (_archKindByName.TryGetValue(name, out var existing))
             {
@@ -677,11 +719,12 @@ namespace Dsl.Semantics
             => _archKinds[kindId].EventsOptional = optional;
 
         public int DefineArchetypeEvent(int kindId, string name, TypeRef[] paramTypes,
-                                        string summary = null, string[] paramNames = null, string[] paramDocs = null)
+                                        DocText summary = null, string[] paramNames = null, DocText[] paramDocs = null)
         {
             var k = _archKinds[kindId];
             if (k.EventByName.ContainsKey(name))
-                throw new System.ArgumentException($"Событие '{name}' уже объявлено у вида '{k.Name}'.");
+                throw new System.ArgumentException(T($"Событие '{name}' уже объявлено у вида '{k.Name}'.",
+                    $"Event '{name}' is already declared on kind '{k.Name}'."));
             var e = new ArchetypeEventInfo
             {
                 LocalId = k.Events.Count,
@@ -702,20 +745,23 @@ namespace Dsl.Semantics
         /// дало бы контракт, которого никто не писал.
         /// </summary>
         public int DefineArchetypeConst(int kindId, string name, TypeRef type,
-                                        bool required = false, string doc = null)
+                                        bool required = false, DocText doc = null)
             => DefineArchetypeConst(kindId, name, type, required, doc, false, Variant.Nil, null);
 
         public int DefineArchetypeConst(int kindId, string name, TypeRef type,
-                                        bool required, string doc,
+                                        bool required, DocText doc,
                                         bool hasDefault, Variant defaultValue, string defaultStr)
         {
             var k = _archKinds[kindId];
             if (k.ConstByName.ContainsKey(name))
-                throw new System.ArgumentException($"Константа '{name}' уже объявлена у вида '{k.Name}'.");
+                throw new System.ArgumentException(T($"Константа '{name}' уже объявлена у вида '{k.Name}'.",
+                    $"Constant '{name}' is already declared on kind '{k.Name}'."));
             if (required && hasDefault)
                 throw new System.ArgumentException(
-                    $"Константа '{name}' вида '{k.Name}': required и дефолт взаимоисключающи — " +
-                    "либо блок обязан её объявить, либо есть значение по умолчанию.");
+                    T($"Константа '{name}' вида '{k.Name}': required и дефолт взаимоисключающи — " +
+                    "либо блок обязан её объявить, либо есть значение по умолчанию.",
+                        $"Constant '{name}' of kind '{k.Name}': required and a default are mutually exclusive — " +
+                        "either the block must declare it, or there is a default value."));
             var c = new ArchetypeConstInfo
             {
                 Index = k.Consts.Count,

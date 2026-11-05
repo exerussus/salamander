@@ -88,8 +88,10 @@ namespace Dsl.Ide
                     // стандартные контролы (скроллбары) без оформления. Лучше задать ассет.
                     _panelSettings = ScriptableObject.CreateInstance<PanelSettings>();
                     _panelSettings.scaleMode = PanelScaleMode.ConstantPhysicalSize;
-                    Debug.LogWarning("[salamander-ide] PanelSettings не заданы — созданы временные без темы. " +
-                                     "Назначьте ассет PanelSettings с Default Runtime Theme.");
+                    Debug.LogWarning(IdeText.T("[salamander-ide] PanelSettings не заданы — созданы временные без темы. " +
+                                     "Назначьте ассет PanelSettings с Default Runtime Theme.",
+                        "[salamander-ide] PanelSettings are not set — temporary ones without a theme were created. " +
+                        "Assign a PanelSettings asset with Default Runtime Theme."));
                 }
                 _document.panelSettings = _panelSettings;
             }
@@ -114,6 +116,9 @@ namespace Dsl.Ide
                 return;
             }
 
+            // язык IDE — язык бутстрапа игры (поле «Язык / Language» в его инспекторе)
+            IdeText.Language = _bootstrap != null ? _bootstrap.Language : Dsl.Text.Language.Ru;
+
             string storageDir = Path.Combine(Application.persistentDataPath, "SalamanderIde");
             var host = new DefaultIdeHost();
             var storage = new FileIdeStorage(storageDir, (what, e) => host.Log(IdeLogLevel.Warning, "storage", what, e));
@@ -132,6 +137,7 @@ namespace Dsl.Ide
                 Api = api,
                 StyleSheet = _styleSheet,
                 CodeFont = font,
+                Language = IdeText.Language,
             });
             // воркспейс и API собраны под этот бутстрап (возможно, под его отсутствие)
             _bound = _bootstrap;
@@ -146,7 +152,7 @@ namespace Dsl.Ide
             EnsureApplyTarget();
 
             // закрыть — кнопкой в тулбаре (в игре нет рамки окна)
-            var close = new Button(() => SetVisible(false)) { text = "Закрыть", tooltip = $"Закрыть IDE ({_toggleKey})" };
+            var close = new Button(() => SetVisible(false)) { text = IdeText.T("Закрыть", "Close"), tooltip = IdeText.T($"Закрыть IDE ({_toggleKey})", $"Close the IDE ({_toggleKey})") };
             close.AddToClassList("sal-btn");
             _view.ToolbarExtras.Add(close);
 
@@ -188,12 +194,15 @@ namespace Dsl.Ide
         /// <summary>Движок сменился: подсказки и модули — от нового бутстрапа.</summary>
         private void Rebind()
         {
+            if (_bootstrap != null) _view.Language = _bootstrap.Language;
             _view.SetApiSource(new BootstrapApiSource(_bootstrap));
             if (_view.HasUnsavedChanges)
             {
                 // молча подменять воркспейс нельзя — несохранённые правки пропали бы
-                _view.Log(IdeLogKind.Warning, "Движок скриптов сменился (новая сцена). Сохраните или отмените правки, " +
-                                              "чтобы IDE перешла на его модули.");
+                _view.Log(IdeLogKind.Warning, IdeText.T("Движок скриптов сменился (новая сцена). Сохраните или отмените правки, " +
+                                              "чтобы IDE перешла на его модули.",
+                    "The script engine has changed (new scene). Save or discard your edits " +
+                    "so the IDE can switch to its modules."));
                 return;
             }
             _view.SetWorkspace(BootstrapWorkspace.Create(_bootstrap, _modsRootOverride));

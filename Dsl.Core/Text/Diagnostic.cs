@@ -54,6 +54,18 @@ namespace Dsl.Text
             _files = files;
         }
 
+        public DiagnosticBag(IReadOnlyList<SourceText> files, Language language)
+        {
+            _files = files;
+            Language = language;
+        }
+
+        /// <summary>Язык текстов сообщений этой компиляции. Коды (E0101…) от языка не зависят.</summary>
+        public Language Language { get; set; }
+
+        /// <summary>Текст на языке компиляции.</summary>
+        public string T(string ru, string en) => Loc.T(Language, ru, en);
+
         public IReadOnlyList<Diagnostic> Items => _items;
         public bool HasErrors { get; private set; }
 
@@ -75,7 +87,8 @@ namespace Dsl.Text
             {
                 _overflowed = true;
                 _items.Add(new Diagnostic(Severity.Error, "E0221",
-                    $"Сообщений больше {MaxItems} — остальные не показаны. Исправьте первые: обычно дальше идут их следствия.",
+                    T($"Сообщений больше {MaxItems} — остальные не показаны. Исправьте первые: обычно дальше идут их следствия.",
+                        $"More than {MaxItems} messages — the rest are not shown. Fix the first ones: the following are usually their consequences."),
                     "<compiler>", 0, 0));
                 return;
             }

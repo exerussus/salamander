@@ -3,6 +3,7 @@ using System.IO;
 using Dsl.Compilation;
 using Dsl.Runtime;
 using Dsl.Semantics;
+using Dsl.Text;
 using UnityEngine;
 
 namespace Dsl.Unity
@@ -87,12 +88,34 @@ namespace Dsl.Unity
                  "версию или убивается. Новые вызовы в любом случае идут в новую версию.")]
         [SerializeField] private HotSwapFiberPolicy _hotSwapFiberPolicy = HotSwapFiberPolicy.FinishOnOldCode;
 
+        [Header("Язык / Language")]
+        [Tooltip("Язык ошибок компилятора, сообщений движка и подсказок: Ru или En. " +
+                 "Language of compiler errors, engine messages and hints: Ru or En.")]
+        [SerializeField] private Language _language = Language.Ru;
+
         [Header("Инструменты")]
         [Tooltip("В редакторе выгружать salamander-api.json рядом с модулями: его читают CLI-чекер и расширение VS Code")]
         [SerializeField] private bool _exportApiManifest = true;
 
         private ScriptEngine _engine;
         private HostRegistry _registry;
+
+        /// <summary>
+        /// Язык ошибок, сообщений и подсказок. Уходит в реестр (а из него — в компиляцию
+        /// и движок). Смена на лету применяется к движку сразу, к компиляции — со следующей.
+        /// </summary>
+        public Language Language
+        {
+            get => _language;
+            set
+            {
+                _language = value;
+                if (_registry != null) _registry.Language = value;
+                if (_engine != null) _engine.Language = value;
+            }
+        }
+
+        private string T(string ru, string en) => Loc.T(_language, ru, en);
         private int _updateEventId = -1;
 
         private FileSystemWatcher _watcher;
@@ -183,7 +206,7 @@ namespace Dsl.Unity
 
             // 1) коровая загрузка: папка модулей игры (под флагом)
             if (_loadFromModsFolder && Directory.Exists(ModsPath))
-                modules.AddRange(UnitySourceProvider.LoadFromFolder(ModsPath));
+                modules.AddRange(UnitySourceProvider.LoadFromFolder(ModsPath, _language));
 
             // 2) внешний источник сборщика (моды, Addressables, сеть) — складывается
             var provided = SourceProvider?.Invoke();
@@ -197,11 +220,12 @@ namespace Dsl.Unity
                     if (em == null || em.manifest == null) continue;
                     try
                     {
-                        modules.Add(UnitySourceProvider.FromTextAssets(em.manifest, em.sources ?? System.Array.Empty<TextAsset>()));
+                        modules.Add(UnitySourceProvider.FromTextAssets(em.manifest, em.sources ?? System.Array.Empty<TextAsset>(), _language));
                     }
                     catch (System.Exception ex)
                     {
-                        Debug.LogError($"[script] Вшитый модуль '{em.manifest.name}' не загрузился: {ex.Message}");
+                        Debug.LogError(T($"[script] Вшитый модуль '{em.manifest.name}' не загрузился: {ex.Message}",
+                            $"[script] Embedded module '{em.manifest.name}' failed to load: {ex.Message}"));
                     }
                 }
             }
@@ -251,7 +275,7 @@ namespace Dsl.Unity
         /// <summary>Строит реестр так же, как Awake — общий путь для рантайма и экспорта.</summary>
         private HostRegistry BuildRegistry(out int updateEventId)
         {
-            var reg = new HostRegistry();
+            var reg = new HostRegistry { Language = _language };
             // Update — встроенное событие тика; регистрируем до пользовательских
             updateEventId = reg.DefineEvent("Update", TypeRef.Float, TypeRef.Float);
             ConfigureHost(reg);
@@ -271,7 +295,7 @@ namespace Dsl.Unity
             if (!Directory.Exists(ModsPath)) Directory.CreateDirectory(ModsPath);
             string path = Path.Combine(ModsPath, "salamander-api.json");
             File.WriteAllText(path, Compilation.ApiManifest.Export(reg, _apiVersion));
-            Debug.Log($"[script] salamander-api.json выгружен: {path}");
+            Debug.Log(T($"[script] salamander-api.json выгружен: {path}", $"[script] salamander-api.json exported: {path}"));
             UnityEditor.AssetDatabase.Refresh();
         }
 #endif
@@ -319,7 +343,8 @@ namespace Dsl.Unity
                 {
                     // редактор ещё держит файл открытым на запись — попробуем ещё раз после
                     // паузы, иначе правка терялась до следующего сохранения
-                    Debug.LogWarning($"[script] Файл занят, перезагрузка отложена: {ex.Message}");
+                    Debug.LogWarning(T($"[script] Файл занят, перезагрузка отложена: {ex.Message}",
+                        $"[script] File is busy, reload postponed: {ex.Message}"));
                     _dirty = true;
                     _dirtyAt = UnityEngine.Time.unscaledTime;
                 }
@@ -384,7 +409,8 @@ namespace Dsl.Unity
             }
             catch (System.Exception ex)
             {
-                Debug.LogWarning($"[script] Не удалось выгрузить salamander-api.json: {ex.Message}");
+                Debug.LogWarning(T($"[script] Не удалось выгрузить salamander-api.json: {ex.Message}",
+                    $"[script] Failed to export salamander-api.json: {ex.Message}"));
             }
 #endif
         }
@@ -431,9 +457,11 @@ namespace Dsl.Unity
             }
 
             foreach (var ex in result.Excluded)
-                Debug.LogError($"[script] Модуль '{ex.Name}' ИСКЛЮЧЁН из сборки — {ex.Reason}");
+                Debug.LogError(T($"[script] Модуль '{ex.Name}' ИСКЛЮЧЁН из сборки — {ex.Reason}",
+                    $"[script] Module '{ex.Name}' EXCLUDED from the build — {ex.Reason}"));
             foreach (var ex in result.ExcludedFiles)
-                Debug.LogError($"[script] Файл '{ex.File}' ИСКЛЮЧЁН из сборки — {ex.Reason}; остальной модуль '{ex.Module}' работает");
+                Debug.LogError(T($"[script] Файл '{ex.File}' ИСКЛЮЧЁН из сборки — {ex.Reason}; остальной модуль '{ex.Module}' работает",
+                    $"[script] File '{ex.File}' EXCLUDED from the build — {ex.Reason}; the rest of module '{ex.Module}' works"));
 
             if (result.Success)
             {
@@ -446,20 +474,26 @@ namespace Dsl.Unity
                     var swap = _engine.TryHotSwap(result.Program, _hotSwapFiberPolicy);
                     LastHotSwap = swap;
                     swapped = swap.Applied;
-                    Debug.Log(swap.Applied
+                    Debug.Log(T(swap.Applied
                         ? "[script] " + (swap.NoChanges ? "Код не изменился — программа не тронута." : swap.ToString())
-                        : $"[script] Полная перезагрузка: {swap.Reason}.");
+                        : $"[script] Полная перезагрузка: {swap.Reason}.",
+                        swap.Applied
+                        ? "[script] " + (swap.NoChanges ? "The code has not changed — the program is untouched." : swap.ToString())
+                        : $"[script] Full reload: {swap.Reason}."));
                 }
                 if (!swapped)
                 {
                     _engine.LoadProgram(result.Program);
-                    Debug.Log($"[script] Программа загружена: модулей {result.Program.Modules.Length}, " +
-                              $"триггеров {result.Program.Triggers.Length}, функций {result.Program.Functions.Length}.");
+                    Debug.Log(T($"[script] Программа загружена: модулей {result.Program.Modules.Length}, " +
+                              $"триггеров {result.Program.Triggers.Length}, функций {result.Program.Functions.Length}.",
+                        $"[script] Program loaded: modules {result.Program.Modules.Length}, " +
+                        $"triggers {result.Program.Triggers.Length}, functions {result.Program.Functions.Length}."));
                 }
             }
             else
             {
-                Debug.LogError("[script] Компиляция не удалась — работает предыдущая версия (если была).");
+                Debug.LogError(T("[script] Компиляция не удалась — работает предыдущая версия (если была).",
+                    "[script] Compilation failed — the previous version (if any) keeps running."));
             }
 
             try { Compiled?.Invoke(result); }

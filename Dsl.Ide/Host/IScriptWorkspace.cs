@@ -119,7 +119,8 @@ namespace Dsl.Ide
         /// <summary>Читатель модулей этого воркспейса (никогда не null).</summary>
         public IModuleReader Reader => _reader ?? WorkspaceLoader.DefaultReader ?? ModuleJsonReader.Instance;
 
-        public string DisplayName => _root == null ? "нет папки" : Path.GetFileName(_root.TrimEnd('/', '\\'));
+        public string DisplayName => IdeText.T(_root == null ? "нет папки" : Path.GetFileName(_root.TrimEnd('/', '\\')),
+            _root == null ? "no folder" : Path.GetFileName(_root.TrimEnd('/', '\\')));
         public string Root => _root;
         public bool CanCreateFiles => true;
 
@@ -284,7 +285,7 @@ namespace Dsl.Ide
             if (_last == null) Load();
             if (!_last.ModuleDirs.TryGetValue(moduleName ?? "", out var dir))
             {
-                error = $"модуль «{moduleName}» не найден";
+                error = IdeText.T($"модуль «{moduleName}» не найден", $"module «{moduleName}» not found");
                 return null;
             }
             return CreateInModuleDir(dir, relativePath, out error, Reader);
@@ -296,7 +297,7 @@ namespace Dsl.Ide
         {
             error = null;
             string rel = (relativePath ?? "").Trim().Replace('\\', '/').TrimStart('/');
-            if (rel.Length == 0) { error = "пустое имя файла"; return null; }
+            if (rel.Length == 0) { error = IdeText.T("пустое имя файла", "empty file name"); return null; }
             if (!rel.EndsWith(".sal", StringComparison.OrdinalIgnoreCase)) rel += ".sal";
             string full;
             try
@@ -304,10 +305,10 @@ namespace Dsl.Ide
                 string root = Path.GetFullPath(moduleDir);
                 full = Path.GetFullPath(Path.Combine(root, rel));
                 string prefix = root.EndsWith(Path.DirectorySeparatorChar.ToString()) ? root : root + Path.DirectorySeparatorChar;
-                if (!full.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) { error = "путь выходит за папку модуля"; return null; }
+                if (!full.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) { error = IdeText.T("путь выходит за папку модуля", "the path leaves the module folder"); return null; }
             }
             catch (Exception e) { error = e.Message; return null; }
-            if (File.Exists(full)) { error = "такой файл уже есть"; return null; }
+            if (File.Exists(full)) { error = IdeText.T("такой файл уже есть", "such a file already exists"); return null; }
 
             string name = Path.GetFileNameWithoutExtension(full);
             if (!WriteFile(full, $"// {name}\n", out error)) return null;
@@ -338,7 +339,7 @@ namespace Dsl.Ide
         private readonly Dictionary<string, string> _texts = new Dictionary<string, string>(StringComparer.Ordinal);
         private long _token = 1;
 
-        public string DisplayName { get; set; } = "в памяти";
+        public string DisplayName { get; set; } = IdeText.T("в памяти", "in memory");
         public string Root => null;
         public bool CanCreateFiles => true;
 
@@ -396,7 +397,7 @@ namespace Dsl.Ide
         public bool Write(string key, string text, out string error)
         {
             error = null;
-            if (!_texts.ContainsKey(key)) { error = "файла нет в воркспейсе"; return false; }
+            if (!_texts.ContainsKey(key)) { error = IdeText.T("файла нет в воркспейсе", "the file is not in the workspace"); return false; }
             _texts[key] = text ?? "";
             return true;
         }
@@ -418,13 +419,13 @@ namespace Dsl.Ide
         {
             error = null;
             var set = _modules.Find(m => m.Manifest.Name == moduleName);
-            if (set == null) { error = $"модуль «{moduleName}» не найден"; return null; }
+            if (set == null) { error = IdeText.T($"модуль «{moduleName}» не найден", $"module «{moduleName}» not found"); return null; }
             string rel = (relativePath ?? "").Trim().Replace('\\', '/').TrimStart('/');
-            if (rel.Length == 0 || rel.Contains("..")) { error = "недопустимое имя файла"; return null; }
+            if (rel.Length == 0 || rel.Contains("..")) { error = IdeText.T("недопустимое имя файла", "invalid file name"); return null; }
             if (!rel.EndsWith(".sal", StringComparison.OrdinalIgnoreCase)) rel += ".sal";
             string logical = $"{moduleName}/{rel}";
             string key = KeyPrefix + logical;
-            if (_texts.ContainsKey(key)) { error = "такой файл уже есть"; return null; }
+            if (_texts.ContainsKey(key)) { error = IdeText.T("такой файл уже есть", "such a file already exists"); return null; }
             string text = $"// {Path.GetFileNameWithoutExtension(rel)}\n";
             set.Files.Add((logical, text));
             var sources = new List<string>(set.Manifest.Sources ?? Array.Empty<string>()) { rel };

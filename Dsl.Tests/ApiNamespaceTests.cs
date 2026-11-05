@@ -391,9 +391,9 @@ namespace Dsl.Tests
             _host.DescribeApiNamespace("Api", "Всё, что доступно контенту.");
             _host.DescribeApiNamespace("Api.PartsCatalog", "Имена деталей из каталога.");
 
-            Assert.AreEqual("Всё, что доступно контенту.", _host.Registry.ApiNamespaceSummary("Api"));
+            Assert.AreEqual("Всё, что доступно контенту.", _host.Registry.ApiNamespaceSummary("Api")?.Ru);
             Assert.AreEqual("Имена деталей из каталога.",
-                _host.Registry.ApiNamespaceSummary("Api.PartsCatalog"));
+                _host.Registry.ApiNamespaceSummary("Api.PartsCatalog")?.Ru);
 
             // главное: узел остался узлом, а не превратился в API-класс
             Assert.IsTrue(_host.Registry.IsApiNamespace("Api.PartsCatalog"));
@@ -414,7 +414,7 @@ namespace Dsl.Tests
             _host.Api("Api.PartsCatalog.Weapon.Grip").Const("sword_01", "x");
 
             Assert.AreEqual("Имена деталей из каталога.",
-                _host.Registry.ApiNamespaceSummary("Api.PartsCatalog"),
+                _host.Registry.ApiNamespaceSummary("Api.PartsCatalog")?.Ru,
                 "регистрация API не должна затирать уже написанный текст");
             Assert.IsTrue(_host.Registry.IsApiNamespace("Api"));
             Assert.IsNull(_host.Registry.ApiNamespaceSummary("Api"), "неописанный узел — без текста");
@@ -425,7 +425,7 @@ namespace Dsl.Tests
         {
             _host.DescribeApiNamespace("Api", "первое");
             _host.DescribeApiNamespace("Api", "второе");
-            Assert.AreEqual("второе", _host.Registry.ApiNamespaceSummary("Api"),
+            Assert.AreEqual("второе", _host.Registry.ApiNamespaceSummary("Api")?.Ru,
                 "описание узла — не объявление типа: переписать его не ошибка");
 
             Assert.Throws<System.ArgumentException>(() => _host.DescribeApiNamespace("Api..Bad", "x"));
@@ -458,8 +458,8 @@ namespace Dsl.Tests
             StringAssert.Contains("Имена деталей из каталога.", json);
 
             var imported = ApiManifest.Import(json, out _);
-            Assert.AreEqual("Всё, что доступно контенту.", imported.ApiNamespaceSummary("Api"));
-            Assert.AreEqual("Имена деталей из каталога.", imported.ApiNamespaceSummary("Api.PartsCatalog"));
+            Assert.AreEqual("Всё, что доступно контенту.", imported.ApiNamespaceSummary("Api")?.Ru);
+            Assert.AreEqual("Имена деталей из каталога.", imported.ApiNamespaceSummary("Api.PartsCatalog")?.Ru);
             // неописанные узлы в манифест не пишутся, но восстанавливаются из имён API
             Assert.IsTrue(imported.IsApiNamespace("Api.PartsCatalog.Weapon"));
             Assert.IsNull(imported.ApiNamespaceSummary("Api.PartsCatalog.Weapon"));

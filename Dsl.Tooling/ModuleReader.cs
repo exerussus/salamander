@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using Dsl.Compilation;
+using Dsl.Text;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 
@@ -75,6 +76,9 @@ namespace Dsl.Tooling
         /// <summary>Глубина поиска исходников в папке модуля.</summary>
         public int ScanDepth = 4;
 
+        /// <summary>Язык сообщений об ошибках чтения модулей.</summary>
+        public Language Language = Language.Ru;
+
         public bool IsModuleDir(string dir)
         {
             if (string.IsNullOrEmpty(dir)) return false;
@@ -88,7 +92,7 @@ namespace Dsl.Tooling
 
         public ModuleSourceSet ReadModule(string dir, Action<string, string> onError,
                                           Dictionary<string, string> logicalToAbsolute) =>
-            ModuleLoader.LoadModuleDir(dir, onError, logicalToAbsolute);
+            ModuleLoader.LoadModuleDir(dir, onError, logicalToAbsolute, Language);
 
         public IEnumerable<string> ListUnlisted(string dir)
         {
@@ -131,7 +135,8 @@ namespace Dsl.Tooling
             }
             catch (Exception e)
             {
-                warning = "файл создан, но " + ManifestFileName + " не обновлён: " + e.Message;
+                warning = Loc.T(Language, "файл создан, но " + ManifestFileName + " не обновлён: " + e.Message,
+                    "the file was created, but " + ManifestFileName + " was not updated: " + e.Message);
                 return false;
             }
         }

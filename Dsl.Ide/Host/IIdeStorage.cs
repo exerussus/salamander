@@ -39,7 +39,7 @@ namespace Dsl.Ide
         {
             // ключ — только относительное имя внутри корня: никаких '..' и абсолютных путей
             string rel = (key ?? "").Replace('\\', '/').TrimStart('/');
-            if (rel.Length == 0 || rel.Contains("..")) throw new ArgumentException("недопустимый ключ хранилища: " + key);
+            if (rel.Length == 0 || rel.Contains("..")) throw new ArgumentException(IdeText.T("недопустимый ключ хранилища: " + key, "invalid storage key: " + key));
             return Path.Combine(_root, rel.Replace('/', Path.DirectorySeparatorChar));
         }
 
@@ -52,7 +52,7 @@ namespace Dsl.Ide
             }
             catch (Exception e)
             {
-                _onError?.Invoke("чтение " + key, e);
+                _onError?.Invoke(IdeText.T("чтение " + key, "reading " + key), e);
                 return null;
             }
         }
@@ -71,7 +71,7 @@ namespace Dsl.Ide
             }
             catch (Exception e)
             {
-                _onError?.Invoke("запись " + key, e);
+                _onError?.Invoke(IdeText.T("запись " + key, "writing " + key), e);
             }
         }
 
@@ -84,7 +84,7 @@ namespace Dsl.Ide
             }
             catch (Exception e)
             {
-                _onError?.Invoke("удаление " + key, e);
+                _onError?.Invoke(IdeText.T("удаление " + key, "deleting " + key), e);
             }
         }
     }

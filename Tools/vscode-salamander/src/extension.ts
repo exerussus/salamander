@@ -24,6 +24,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         command: 'dotnet',
         args: [found.dll],
         transport: TransportKind.stdio,
+        // язык лога сервера до initialize; дальше его ведёт настройка salamander.language
+        options: { env: { ...process.env, SALAMANDER_LANGUAGE: language() } },
     };
     const clientOptions: LanguageClientOptions = {
         documentSelector: [{ language: 'salamander' }],
@@ -51,9 +53,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         // проигнорировать правку хуже, чем спросить: человек будет думать, что
         // настройку приняли, и искать причину в другом месте.
         if (e.affectsConfiguration('salamander.server.path')) {
-            const reload = 'Перезагрузить окно';
+            const reload = t('Перезагрузить окно', 'Reload window');
             const pick = await vscode.window.showInformationMessage(
-                'Salamander: путь к LSP-серверу изменён — чтобы применить, нужно перезагрузить окно.',
+                t('Salamander: путь к LSP-серверу изменён — чтобы применить, нужно перезагрузить окно.',
+                  'Salamander: the LSP server path has changed — reload the window to apply it.'),
                 reload);
             if (pick === reload) await vscode.commands.executeCommand('workbench.action.reloadWindow');
         }
@@ -74,10 +77,22 @@ function serverSettings(): Record<string, string | string[]> {
         const value = cfg.get<string>(key);
         out[key] = value ? expand(value) : '';
     }
+    // язык диагностик и подсказок: "ru" / "en"; пусто — из salamander-build.json, иначе ru
+    out['language'] = cfg.get<string>('language') ?? '';
     // справочные модули (игра, зависимости мода): только для ссылок и подсказок
     const refs = cfg.get<string[]>('referencePaths') ?? [];
     out['referencePaths'] = refs.filter(r => typeof r === 'string' && r.trim().length > 0).map(expand);
     return out;
+}
+
+/** Язык сообщений самого расширения: настройка salamander.language, по умолчанию ru (как у сервера). */
+function language(): 'ru' | 'en' {
+    const v = (vscode.workspace.getConfiguration('salamander').get<string>('language') ?? '').trim().toLowerCase();
+    return v === 'en' ? 'en' : 'ru';
+}
+
+function t(ru: string, en: string): string {
+    return language() === 'en' ? en : ru;
 }
 
 function workspaceRoot(): string {
@@ -119,17 +134,22 @@ async function findServer(): Promise<{ dll?: string; error?: string }> {
     // сервер (а запущен другой — или никакой).
     if (raw && raw.trim()) {
         const configured = resolvePathSetting(raw);
-        const shown = configured === raw.trim() ? configured : `${configured} (из «${raw.trim()}»)`;
+        const shown = configured === raw.trim() ? configured
+            : `${configured} (${t('из', 'from')} «${raw.trim()}»)`;
         if (!fs.existsSync(configured)) {
             return {
-                error: `Salamander: по пути из настройки salamander.server.path файла нет — ${shown}. `
+                error: t(`Salamander: по пути из настройки salamander.server.path файла нет — ${shown}. `
                     + `Проверьте путь либо соберите сервер: ${build}`,
+                    `Salamander: there is no file at the salamander.server.path setting — ${shown}. `
+                    + `Check the path or build the server: ${build}`),
             };
         }
         if (!configured.toLowerCase().endsWith('.dll')) {
             return {
-                error: 'Salamander: в salamander.server.path нужен именно DslLsp.dll — '
+                error: t('Salamander: в salamander.server.path нужен именно DslLsp.dll — '
                     + `клиент запускает «dotnet <путь>», а не исполняемый файл. Указано: ${shown}`,
+                    'Salamander: salamander.server.path must point to DslLsp.dll — '
+                    + `the client runs «dotnet <path>», not an executable. Given: ${shown}`),
             };
         }
         return { dll: configured };
@@ -150,8 +170,10 @@ async function findServer(): Promise<{ dll?: string; error?: string }> {
     if (found.length > 0) return { dll: found[0].fsPath };
 
     return {
-        error: `Salamander: LSP-сервер не найден. Соберите его один раз: ${build} — `
+        error: t(`Salamander: LSP-сервер не найден. Соберите его один раз: ${build} — `
             + 'или укажите полный путь к DslLsp.dll в настройке salamander.server.path.',
+            `Salamander: the LSP server was not found. Build it once: ${build} — `
+            + 'or set the full path to DslLsp.dll in the salamander.server.path setting.'),
     };
 }
 

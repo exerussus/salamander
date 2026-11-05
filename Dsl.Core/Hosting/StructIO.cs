@@ -1,4 +1,5 @@
 using System;
+using Dsl.Text;
 using System.Collections.Generic;
 using Dsl.Runtime;
 using Dsl.Semantics;
@@ -54,13 +55,19 @@ namespace Dsl.Hosting
             if (id != Id)
                 throw new ScriptError(id < 0
                     ? $"Ожидалась структура {Name}, а значение ею не является."
-                    : $"Ожидалась структура {Name}, а пришла другая структура.");
+                    : $"Ожидалась структура {Name}, а пришла другая структура.",
+                    id < 0
+                    ? $"Expected struct {Name}, but the value is not one."
+                    : $"Expected struct {Name}, but got a different struct.");
 
             if (Factory == null)
                 throw new InvalidOperationException(
-                    $"Структуру '{Name}' нельзя принять параметром хостового метода: " +
+                    Loc.T(h.Language, $"Структуру '{Name}' нельзя принять параметром хостового метода: " +
                     $"не задана фабрика C#-значения. Добавьте " +
-                    $"host.Struct<{typeof(T).Name}>(...).Build(v => new {typeof(T).Name}(...)).");
+                    $"host.Struct<{typeof(T).Name}>(...).Build(v => new {typeof(T).Name}(...)).",
+                        $"Struct '{Name}' cannot be accepted as a host method parameter: " +
+                        $"no C# value factory is set. Add " +
+                        $"host.Struct<{typeof(T).Name}>(...).Build(v => new {typeof(T).Name}(...))."));
 
             return Factory(new StructValue(Info, v, h));
         }
@@ -71,16 +78,21 @@ namespace Dsl.Hosting
         {
             if (IsRefType && (object)value == null)
                 throw new ScriptError(
-                    $"Вместо структуры {Name} хост вернул null: у структур нет пустого значения.");
+                    $"Вместо структуры {Name} хост вернул null: у структур нет пустого значения.",
+                        $"The host returned null instead of struct {Name}: structs have no empty value.");
 
             for (int i = 0; i < _writers.Count; i++)
             {
                 if (_writers[i] != null) continue;
                 throw new InvalidOperationException(
-                    $"Структуру '{Name}' нельзя отдать скрипту: поле '{_names[i]}' объявлено " +
+                    Loc.T(h.Language, $"Структуру '{Name}' нельзя отдать скрипту: поле '{_names[i]}' объявлено " +
                     $"без геттера. Объявите его как " +
                     $".Field(\"{_names[i]}\", x => x.{_names[i]}, ...) — тогда движок сможет " +
-                    "собрать значение обратно.");
+                    "собрать значение обратно.",
+                        $"Struct '{Name}' cannot be passed to a script: field '{_names[i]}' is declared " +
+                        $"without a getter. Declare it as " +
+                        $".Field(\"{_names[i]}\", x => x.{_names[i]}, ...) — then the engine can " +
+                        "build the value back."));
             }
 
             var v = h.StructNew(Id, _writers.Count);

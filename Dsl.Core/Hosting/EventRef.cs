@@ -1,3 +1,4 @@
+using Dsl.Text;
 using System;
 using Dsl.Runtime;
 
@@ -38,19 +39,20 @@ namespace Dsl.Hosting
 
         public void Raise(ScriptEngine engine, T1 a1)
         {
-            GuardInit(_w1);
+            GuardInit(_w1, engine);
             engine.RaiseBegin();
             engine.RaiseAdd(_w1(engine, a1));
             engine.RaiseCommit(Id);
         }
 
-        private static void GuardInit(object w)
+        private static void GuardInit(object w, ScriptEngine engine)
         {
-            if (w == null) throw NotInitialized();
+            if (w == null) throw NotInitialized(engine);
         }
 
-        internal static Exception NotInitialized() => new InvalidOperationException(
-            "EventRef не инициализирован: получите его из HostBuilder.Event<...>() при регистрации.");
+        internal static Exception NotInitialized(ScriptEngine engine) => new InvalidOperationException(
+            Loc.T(engine?.Language ?? Language.Ru, "EventRef не инициализирован: получите его из HostBuilder.Event<...>() при регистрации.",
+                "EventRef is not initialized: get it from HostBuilder.Event<...>() during registration."));
     }
 
     public readonly struct EventRef<T1, T2>
@@ -66,7 +68,7 @@ namespace Dsl.Hosting
 
         public void Raise(ScriptEngine engine, T1 a1, T2 a2)
         {
-            if (_w1 == null) throw EventRef<T1>.NotInitialized();
+            if (_w1 == null) throw EventRef<T1>.NotInitialized(engine);
             engine.RaiseBegin();
             engine.RaiseAdd(_w1(engine, a1));
             engine.RaiseAdd(_w2(engine, a2));
@@ -88,7 +90,7 @@ namespace Dsl.Hosting
 
         public void Raise(ScriptEngine engine, T1 a1, T2 a2, T3 a3)
         {
-            if (_w1 == null) throw EventRef<T1>.NotInitialized();
+            if (_w1 == null) throw EventRef<T1>.NotInitialized(engine);
             engine.RaiseBegin();
             engine.RaiseAdd(_w1(engine, a1));
             engine.RaiseAdd(_w2(engine, a2));
@@ -113,7 +115,7 @@ namespace Dsl.Hosting
 
         public void Raise(ScriptEngine engine, T1 a1, T2 a2, T3 a3, T4 a4)
         {
-            if (_w1 == null) throw EventRef<T1>.NotInitialized();
+            if (_w1 == null) throw EventRef<T1>.NotInitialized(engine);
             engine.RaiseBegin();
             engine.RaiseAdd(_w1(engine, a1));
             engine.RaiseAdd(_w2(engine, a2));
@@ -138,7 +140,7 @@ namespace Dsl.Hosting
 
         public void Raise(ScriptEngine engine, T1 a1, T2 a2, T3 a3, T4 a4, T5 a5)
         {
-            if (_w1 == null) throw EventRef<T1>.NotInitialized();
+            if (_w1 == null) throw EventRef<T1>.NotInitialized(engine);
             engine.RaiseBegin();
             engine.RaiseAdd(_w1(engine, a1));
             engine.RaiseAdd(_w2(engine, a2));
@@ -166,7 +168,7 @@ namespace Dsl.Hosting
 
         public void Raise(ScriptEngine engine, T1 a1, T2 a2, T3 a3, T4 a4, T5 a5, T6 a6)
         {
-            if (_w1 == null) throw EventRef<T1>.NotInitialized();
+            if (_w1 == null) throw EventRef<T1>.NotInitialized(engine);
             engine.RaiseBegin();
             engine.RaiseAdd(_w1(engine, a1));
             engine.RaiseAdd(_w2(engine, a2));
@@ -196,7 +198,7 @@ namespace Dsl.Hosting
 
         public void Raise(ScriptEngine engine, T1 a1, T2 a2, T3 a3, T4 a4, T5 a5, T6 a6, T7 a7)
         {
-            if (_w1 == null) throw EventRef<T1>.NotInitialized();
+            if (_w1 == null) throw EventRef<T1>.NotInitialized(engine);
             engine.RaiseBegin();
             engine.RaiseAdd(_w1(engine, a1));
             engine.RaiseAdd(_w2(engine, a2));
@@ -228,7 +230,7 @@ namespace Dsl.Hosting
 
         public void Raise(ScriptEngine engine, T1 a1, T2 a2, T3 a3, T4 a4, T5 a5, T6 a6, T7 a7, T8 a8)
         {
-            if (_w1 == null) throw EventRef<T1>.NotInitialized();
+            if (_w1 == null) throw EventRef<T1>.NotInitialized(engine);
             engine.RaiseBegin();
             engine.RaiseAdd(_w1(engine, a1));
             engine.RaiseAdd(_w2(engine, a2));

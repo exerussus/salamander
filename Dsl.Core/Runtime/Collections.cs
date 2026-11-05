@@ -89,7 +89,9 @@ namespace Dsl.Runtime
             if (_liveCount < MaxLiveCollections) return;
             throw new ScriptError(
                 $"Исчерпан лимит коллекций ({MaxLiveCollections}) между сборками. Если это не утечка " +
-                "через долгоживущий корень, снизьте ScriptEngine.CollectionSweepThreshold — сборка идёт в конце тика.");
+                "через долгоживущий корень, снизьте ScriptEngine.CollectionSweepThreshold — сборка идёт в конце тика.",
+                    $"The collection limit ({MaxLiveCollections}) between sweeps is exhausted. If this is not a leak " +
+                    "through a long-lived root, lower ScriptEngine.CollectionSweepThreshold — the sweep runs at the end of the tick.");
         }
 
         private static void Grow<T>(ref T[] a, int need)
@@ -104,9 +106,10 @@ namespace Dsl.Runtime
 
         public Variant NewArray(int size)
         {
-            if (size < 0) throw new ScriptError("Отрицательный размер массива.");
+            if (size < 0) throw new ScriptError("Отрицательный размер массива.", "Negative array size.");
             if (size > MaxArrayLength)
-                throw new ScriptError($"Размер массива {size} превышает предел {MaxArrayLength}.");
+                throw new ScriptError($"Размер массива {size} превышает предел {MaxArrayLength}.",
+                    $"Array size {size} exceeds the limit {MaxArrayLength}.");
             EnsureCollectionBudget();
             int id;
             if (_freeArrays.Count > 0)
@@ -187,8 +190,8 @@ namespace Dsl.Runtime
                 case VariantType.Array: return ArrayOf(coll).Length;
                 case VariantType.List: return ListOf(coll).Count;
                 case VariantType.Map: return MapOf(coll).Count;
-                case VariantType.Nil: throw new ScriptError("Обращение к null-коллекции.");
-                default: throw new ScriptError("Значение не является коллекцией.");
+                case VariantType.Nil: throw new ScriptError("Обращение к null-коллекции.", "Access to a null collection.");
+                default: throw new ScriptError("Значение не является коллекцией.", "The value is not a collection.");
             }
         }
 
@@ -201,7 +204,8 @@ namespace Dsl.Runtime
                     var a = ArrayOf(coll);
                     int i = idx.AsInt;
                     if ((uint)i >= (uint)a.Length)
-                        throw new ScriptError($"Индекс {i} вне границ массива (длина {a.Length}).");
+                        throw new ScriptError($"Индекс {i} вне границ массива (длина {a.Length}).",
+                            $"Index {i} is out of array bounds (length {a.Length}).");
                     return a[i];
                 }
                 case VariantType.List:
@@ -209,7 +213,8 @@ namespace Dsl.Runtime
                     var l = ListOf(coll);
                     int i = idx.AsInt;
                     if ((uint)i >= (uint)l.Count)
-                        throw new ScriptError($"Индекс {i} вне границ списка (count {l.Count}).");
+                        throw new ScriptError($"Индекс {i} вне границ списка (count {l.Count}).",
+                            $"Index {i} is out of list bounds (count {l.Count}).");
                     return l.Buf[i];
                 }
                 case VariantType.Map:
@@ -218,9 +223,9 @@ namespace Dsl.Runtime
                     return m.TryGetValue(idx, out var v) ? v : Variant.Nil; // отсутствие ключа = null
                 }
                 case VariantType.Nil:
-                    throw new ScriptError("Обращение к null-коллекции.");
+                    throw new ScriptError("Обращение к null-коллекции.", "Access to a null collection.");
                 default:
-                    throw new ScriptError("Значение не является коллекцией.");
+                    throw new ScriptError("Значение не является коллекцией.", "The value is not a collection.");
             }
         }
 
@@ -233,7 +238,8 @@ namespace Dsl.Runtime
                     var a = ArrayOf(coll);
                     int i = idx.AsInt;
                     if ((uint)i >= (uint)a.Length)
-                        throw new ScriptError($"Индекс {i} вне границ массива (длина {a.Length}).");
+                        throw new ScriptError($"Индекс {i} вне границ массива (длина {a.Length}).",
+                            $"Index {i} is out of array bounds (length {a.Length}).");
                     a[i] = value;
                     return;
                 }
@@ -242,7 +248,8 @@ namespace Dsl.Runtime
                     var l = ListOf(coll);
                     int i = idx.AsInt;
                     if ((uint)i >= (uint)l.Count)
-                        throw new ScriptError($"Индекс {i} вне границ списка (count {l.Count}).");
+                        throw new ScriptError($"Индекс {i} вне границ списка (count {l.Count}).",
+                            $"Index {i} is out of list bounds (count {l.Count}).");
                     l.Buf[i] = value;
                     return;
                 }
@@ -250,9 +257,9 @@ namespace Dsl.Runtime
                     MapOf(coll)[idx] = value;
                     return;
                 case VariantType.Nil:
-                    throw new ScriptError("Обращение к null-коллекции.");
+                    throw new ScriptError("Обращение к null-коллекции.", "Access to a null collection.");
                 default:
-                    throw new ScriptError("Значение не является коллекцией.");
+                    throw new ScriptError("Значение не является коллекцией.", "The value is not a collection.");
             }
         }
 
@@ -435,31 +442,34 @@ namespace Dsl.Runtime
         {
             int id = v.CollId;
             if ((uint)id >= (uint)_arrayCount || !_arrayLive[id] || _arrays[id] == null)
-                throw new ScriptError("Массив не существует.");
+                throw new ScriptError("Массив не существует.", "The array does not exist.");
             if (_arrayVer[id] != v.CollVersion)
-                throw new ScriptError("Обращение к освобождённой коллекции (протухший хэндл массива).");
+                throw new ScriptError("Обращение к освобождённой коллекции (протухший хэндл массива).",
+                    "Access to a freed collection (stale array handle).");
             return _arrays[id];
         }
 
         private ListData ListOf(Variant v)
         {
-            if (v.Type != VariantType.List) throw new ScriptError("Ожидался List.");
+            if (v.Type != VariantType.List) throw new ScriptError("Ожидался List.", "Expected List.");
             int id = v.CollId;
             if ((uint)id >= (uint)_listCount || !_listLive[id] || _lists[id] == null)
-                throw new ScriptError("Список не существует.");
+                throw new ScriptError("Список не существует.", "The list does not exist.");
             if (_listVer[id] != v.CollVersion)
-                throw new ScriptError("Обращение к освобождённой коллекции (протухший хэндл списка).");
+                throw new ScriptError("Обращение к освобождённой коллекции (протухший хэндл списка).",
+                    "Access to a freed collection (stale list handle).");
             return _lists[id];
         }
 
         private Dictionary<Variant, Variant> MapOf(Variant v)
         {
-            if (v.Type != VariantType.Map) throw new ScriptError("Ожидался Map.");
+            if (v.Type != VariantType.Map) throw new ScriptError("Ожидался Map.", "Expected Map.");
             int id = v.CollId;
             if ((uint)id >= (uint)_mapCount || !_mapLive[id] || _maps[id] == null)
-                throw new ScriptError("Map не существует.");
+                throw new ScriptError("Map не существует.", "The Map does not exist.");
             if (_mapVer[id] != v.CollVersion)
-                throw new ScriptError("Обращение к освобождённой коллекции (протухший хэндл Map).");
+                throw new ScriptError("Обращение к освобождённой коллекции (протухший хэндл Map).",
+                    "Access to a freed collection (stale Map handle).");
             return _maps[id];
         }
     }

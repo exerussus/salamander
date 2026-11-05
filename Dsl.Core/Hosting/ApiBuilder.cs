@@ -1,4 +1,5 @@
 using System;
+using Dsl.Text;
 using Dsl.Runtime;
 using Dsl.Semantics;
 
@@ -40,8 +41,10 @@ namespace Dsl.Hosting
         {
             if (doc != null && doc.Names.Count != args.Length)
                 throw new ArgumentException(
-                    $"Метод '{_apiName}.{name}': в описании {doc.Names.Count} параметров, а у метода {args.Length}. " +
-                    "Число .P(...) должно совпадать с числом аргументов.");
+                    _b.T($"Метод '{_apiName}.{name}': в описании {doc.Names.Count} параметров, а у метода {args.Length}. " +
+                    "Число .P(...) должно совпадать с числом аргументов.",
+                        $"Method '{_apiName}.{name}': the description has {doc.Names.Count} parameters, the method has {args.Length}. " +
+                        "The number of .P(...) must match the number of arguments."));
             _b.Registry.DefineMethod(_apiName, name, args, ret, fn,
                 doc?.Summary, doc?.NameArray(), doc?.DocArray());
         }
@@ -64,14 +67,17 @@ namespace Dsl.Hosting
         /// Обобщённый параметр назван TV, а не T: T у ApiBuilder уже занято
         /// сокращением для TypeMap.
         /// </summary>
-        public ApiBuilder Const<TV>(string name, TV value, string doc = null)
+        public ApiBuilder Const<TV>(string name, TV value, DocText doc = null)
         {
             var type = T.RefOf<TV>();
             if (!HostLiteral.TryEncode(type, value, out var v, out var str))
                 throw new ArgumentException(
-                    $"Константа '{_apiName}.{name}' типа {typeof(TV).Name} не поддержана: " +
+                    _b.T($"Константа '{_apiName}.{name}' типа {typeof(TV).Name} не поддержана: " +
                     HostLiteral.Supported + " Сущности, коллекции и структуры константами " +
-                    "быть не могут — их отдают методом.");
+                    "быть не могут — их отдают методом.",
+                        $"Constant '{_apiName}.{name}' of type {typeof(TV).Name} is not supported: " +
+                        HostLiteral.SupportedEn + " Entities, collections and structs cannot be constants " +
+                        "— return them from a method."));
             _b.Registry.DefineApiConst(_apiName, name, type, v, str, doc);
             return this;
         }

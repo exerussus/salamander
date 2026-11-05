@@ -142,9 +142,9 @@ namespace Dsl.Tests
             Assert.AreEqual(1, ver);
             Assert.IsTrue(reg2.TryGetApi("Api", out var api));
             Assert.IsTrue(api.TryGetMethod("Heal", out var m));
-            Assert.AreEqual("Восстанавливает HP.", m.Summary);
+            Assert.AreEqual("Восстанавливает HP.", m.Summary?.Ru);
             Assert.AreEqual("target", m.ParamNames[0]);
-            Assert.AreEqual("сколько", m.ParamDocs[1]);
+            Assert.AreEqual("сколько", m.ParamDocs[1]?.Ru);
         }
 
         [Test]

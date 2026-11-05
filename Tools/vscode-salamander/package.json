@@ -1,8 +1,8 @@
 {
   "name": "salamander",
-  "displayName": "Salamander (игровой скриптовый язык)",
-  "description": "Подсветка синтаксиса, ошибки компиляции и автодополнение для .sal — триггеры, события, файберы.",
-  "version": "0.1.3",
+  "displayName": "%displayName%",
+  "description": "%description%",
+  "version": "0.1.4",
   "publisher": "local",
   "icon": "icons/salamander-128.png",
   "license": "MIT",
@@ -56,7 +56,7 @@
     "commands": [
       {
         "command": "salamander.check",
-        "title": "Salamander: проверить скрипты (компиляция)"
+        "title": "%command.check%"
       }
     ],
     "configuration": {
@@ -65,28 +65,45 @@
         "salamander.server.path": {
           "type": "string",
           "default": "",
-          "description": "Полный путь к DslLsp.dll (LSP-сервер). Пусто — искать в воркспейсе (Tools/DslLsp/publish, затем bin/...). Абсолютный или относительно корня воркспейса; поддерживается ${workspaceFolder}. Нужен .dll, а не .exe: сервер запускается как «dotnet <путь>». После правки нужна перезагрузка окна."
+          "description": "%config.server.path%"
         },
         "salamander.apiManifest": {
           "type": "string",
           "default": "",
-          "description": "Путь к salamander-api.json. Пусто — искать в корне воркспейса, затем ближайший в подпапках. Абсолютный или относительно корня; поддерживается ${workspaceFolder}."
+          "description": "%config.apiManifest%"
         },
         "salamander.modulesRoot": {
           "type": "string",
           "default": "",
-          "description": "Папка, под которой искать модули (module.json) и .sal. Пусто — корень воркспейса. В Unity-проекте укажите сюда, например, Assets/StreamingAssets/Core."
+          "description": "%config.modulesRoot%"
         },
         "salamander.referencePaths": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "default": [],
-          "description": "Папки со справочными модулями — теми, что видит игра, но которых нет в воркспейсе (базовые скрипты игры, зависимости мода). Они компилируются вместе с воркспейсом только ради ссылок и подсказок: классы, поля, методы с сигнатурами и описаниями «///», переход к определению. Их ошибки не показываются. Берутся лишь модули, от которых воркспейс зависит. Абсолютные пути или относительно корня; поддерживается ${workspaceFolder}."
+          "description": "%config.referencePaths%"
         },
         "salamander.buildFile": {
           "type": "string",
           "default": "",
-          "description": "Путь к salamander-build.json (упорядоченный список папок модулей). Пусто — искать в корне модулей. Если файл есть, берутся РОВНО перечисленные в нём модули."
+          "description": "%config.buildFile%"
+        },
+        "salamander.language": {
+          "type": "string",
+          "default": "",
+          "enum": [
+            "",
+            "ru",
+            "en"
+          ],
+          "enumDescriptions": [
+            "%config.language.auto%",
+            "%config.language.ru%",
+            "%config.language.en%"
+          ],
+          "description": "%config.language%"
         }
       }
     }

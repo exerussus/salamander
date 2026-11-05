@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using Dsl.Compilation;
+using Dsl.Text;
 using Newtonsoft.Json.Linq;
 
 namespace Dsl.Tooling
@@ -27,6 +28,16 @@ namespace Dsl.Tooling
 
         /// <summary>Использованный salamander-build.json или null (обход папки).</summary>
         public string BuildFile;
+
+        /// <summary>
+        /// Язык из ключа <c>"language"</c> build-файла ("ru" / "en"); без ключа — язык,
+        /// переданный в <see cref="WorkspaceLoader.Load"/>. Его берут LSP, DslCheck и IDE
+        /// для текстов диагностик и подсказок.
+        /// </summary>
+        public Language Language = Language.Ru;
+
+        /// <summary>Язык задан в build-файле (а не взят по умолчанию).</summary>
+        public bool LanguageFromBuild;
 
         /// <summary>Логическое имя по абсолютному пути; null — файл не входит ни в один модуль.</summary>
         public string LogicalOf(string absPath)
@@ -127,10 +138,11 @@ namespace Dsl.Tooling
         /// <param name="modulesRoot">Корень поиска модулей.</param>
         /// <param name="buildFile">Явный build-файл; null — <see cref="FindBuildFile"/>.</param>
         /// <param name="reader">Чем читать модули; null — <see cref="DefaultReader"/>.</param>
-        public static WorkspaceModules Load(string modulesRoot, string buildFile = null, IModuleReader reader = null)
+        public static WorkspaceModules Load(string modulesRoot, string buildFile = null, IModuleReader reader = null,
+                                            Language language = Language.Ru)
         {
             var r = Pick(reader);
-            var ws = new WorkspaceModules();
+            var ws = new WorkspaceModules { Language = language };
             Action<string, string> onError = (file, message) =>
                 ws.LoadErrors.Add(new KeyValuePair<string, string>(file, message));
 
@@ -141,6 +153,23 @@ namespace Dsl.Tooling
                 try
                 {
                     var build = JObject.Parse(File.ReadAllText(buildPath));
+                    // язык — первым: на нём же и сообщения о дальнейших бедах build-файла
+                    string langValue = build["language"]?.Type == JTokenType.String ? (string)build["language"] : null;
+                    if (langValue != null)
+                    {
+                        if (Loc.TryParse(langValue, out var fromBuild))
+                        {
+                            language = fromBuild;
+                            ws.Language = fromBuild;
+                            ws.LanguageFromBuild = true;
+                        }
+                        else
+                            onError(buildPath, Loc.T(language,
+                                $"salamander-build.json: неизвестный язык \"{langValue}\" — допустимо \"ru\" или \"en\".",
+                                $"salamander-build.json: unknown language \"{langValue}\" — allowed: \"ru\" or \"en\"."));
+                    }
+                    if (r is ModuleJsonReader && language != Language.Ru)
+                        r = new ModuleJsonReader { Language = language, ScanDepth = ((ModuleJsonReader)r).ScanDepth };
                     // пути в build-файле — относительно ЕГО папки: так его можно
                     // положить и в корень проекта, и рядом с модулями
                     string baseDir = Path.GetDirectoryName(Path.GetFullPath(buildPath)) ?? modulesRoot;
@@ -152,7 +181,8 @@ namespace Dsl.Tooling
                 }
                 catch (Exception ex)
                 {
-                    onError(buildPath, "salamander-build.json не читается — " + ex.Message);
+                    onError(buildPath, Loc.T(language, "salamander-build.json не читается — " + ex.Message,
+                        "salamander-build.json cannot be read — " + ex.Message));
                     ws.Modules.Clear();
                 }
                 return ws;
@@ -160,6 +190,8 @@ namespace Dsl.Tooling
 
             // обход ВГЛУБЬ: корень задаёт IDE, и в Unity-проекте модули лежат
             // в StreamingAssets/..., а не прямыми детьми корня
+            if (r is ModuleJsonReader mjr && language != Language.Ru)
+                r = new ModuleJsonReader { Language = language, ScanDepth = mjr.ScanDepth };
             foreach (var dir in FindModuleDirs(modulesRoot, ModuleLoader.DefaultScanDepth, r))
                 AddModule(ws, dir, onError, r);
             return ws;
@@ -221,10 +253,12 @@ namespace Dsl.Tooling
         private static void AddExpanded(WorkspaceModules ws, JObject entry, string baseDir, string buildPath,
                                         Action<string, string> onError)
         {
+            var language = ws.Language;
             var manifest = (entry["manifest"] as JObject)?.ToObject<ModuleManifest>();
             if (manifest == null || string.IsNullOrEmpty(manifest.Name))
             {
-                onError(buildPath, "salamander-build.json: у раскрытого модуля нет manifest.name — модуль пропущен.");
+                onError(buildPath, Loc.T(language, "salamander-build.json: у раскрытого модуля нет manifest.name — модуль пропущен.",
+                    "salamander-build.json: an expanded module has no manifest.name — the module was skipped."));
                 return;
             }
 
@@ -235,7 +269,8 @@ namespace Dsl.Tooling
                 string rel = (string)f?["path"];
                 if (string.IsNullOrEmpty(logical) || string.IsNullOrEmpty(rel))
                 {
-                    onError(buildPath, $"salamander-build.json: у файла модуля '{manifest.Name}' нет logical или path.");
+                    onError(buildPath, Loc.T(language, $"salamander-build.json: у файла модуля '{manifest.Name}' нет logical или path.",
+                        $"salamander-build.json: a file of module '{manifest.Name}' has no logical or path."));
                     continue;
                 }
                 string path = Path.GetFullPath(Path.Combine(baseDir, rel));
@@ -243,8 +278,10 @@ namespace Dsl.Tooling
                 try { text = File.ReadAllText(path); }
                 catch (Exception ex)
                 {
-                    onError(path, $"файл модуля '{manifest.Name}' из salamander-build.json не читается — {ex.Message} " +
-                                  "(build-файл устарел? его перевыгружает редактор игры)");
+                    onError(path, Loc.T(language, $"файл модуля '{manifest.Name}' из salamander-build.json не читается — {ex.Message} " +
+                                  "(build-файл устарел? его перевыгружает редактор игры)",
+                        $"file of module '{manifest.Name}' from salamander-build.json cannot be read — {ex.Message} " +
+                        "(is the build file outdated? the game editor re-exports it)"));
                     continue;
                 }
                 set.Files.Add((logical, text));

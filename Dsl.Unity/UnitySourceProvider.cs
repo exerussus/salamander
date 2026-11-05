@@ -16,24 +16,26 @@ namespace Dsl.Unity
         /// Сканирует папку: каждый подкаталог с module.json — модуль.
         /// Пути в manifest.sources — относительно папки модуля.
         /// </summary>
-        public static List<ModuleSourceSet> LoadFromFolder(string rootPath)
+        public static List<ModuleSourceSet> LoadFromFolder(string rootPath, Dsl.Text.Language language = Dsl.Text.Language.Ru)
         {
             return ModuleLoader.LoadFromFolder(rootPath,
-                (file, message) => Debug.LogError($"[script] {file}: {message}"));
+                (file, message) => Debug.LogError($"[script] {file}: {message}"), null, language);
         }
 
         /// <summary>
         /// Модуль из TextAsset-ов (например, из Resources или Addressables).
         /// Порядок sources должен совпадать с порядком в манифесте.
         /// </summary>
-        public static ModuleSourceSet FromTextAssets(TextAsset manifestJson, IReadOnlyList<TextAsset> sources)
+        public static ModuleSourceSet FromTextAssets(TextAsset manifestJson, IReadOnlyList<TextAsset> sources,
+                                                     Dsl.Text.Language language = Dsl.Text.Language.Ru)
         {
             var manifest = ModuleManifest.Parse(manifestJson.text);
             // JsonConvert возвращает null на содержимом "null" — без проверки
             // следующий же manifest.Sources даёт NullReferenceException
             if (manifest == null)
                 throw new System.InvalidOperationException(
-                    $"Манифест '{manifestJson.name}' пуст или содержит null.");
+                    Dsl.Text.Loc.T(language, $"Манифест '{manifestJson.name}' пуст или содержит null.",
+                        $"Manifest '{manifestJson.name}' is empty or contains null."));
             var set = new ModuleSourceSet { Manifest = manifest };
             for (int i = 0; i < sources.Count; i++)
             {

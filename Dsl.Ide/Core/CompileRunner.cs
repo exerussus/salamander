@@ -1,4 +1,5 @@
 using System;
+using Dsl.Text;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading;
@@ -14,6 +15,8 @@ namespace Dsl.Ide
         public HostRegistry Registry;
         public int ApiVersion;
         public List<ModuleSourceSet> Modules;
+        /// <summary>Язык диагностик этой компиляции.</summary>
+        public Language Language;
         /// <summary>Версии открытых буферов на момент снимка (ключ документа → Version).</summary>
         public Dictionary<string, int> DocVersions;
         /// <summary>Логическое имя → ключ документа (для раскладки диагностик по файлам).</summary>
@@ -105,7 +108,8 @@ namespace Dsl.Ide
                     try { aborted = AbortThread != null && AbortThread(hung.Thread); }
                     catch { /* хост не смог — поток просто бросаем */ }
                     if (!aborted) _abandoned.Add(hung.Thread);
-                    Report?.Invoke($"Компилятор Salamander завис (> {HangSeconds:0} с) — результат отброшен.", IdeStatusKind.Warning);
+                    Report?.Invoke(IdeText.T($"Компилятор Salamander завис (> {HangSeconds:0} с) — результат отброшен.",
+                        $"The Salamander compiler hung (> {HangSeconds:0} s) — the result was discarded."), IdeStatusKind.Warning);
                 }
             }
 
@@ -113,8 +117,10 @@ namespace Dsl.Ide
             if (_abandoned.Count >= MaxAbandoned && !_stalled)
             {
                 _stalled = true;
-                Report?.Invoke("Фоновая компиляция остановлена: компилятор завис несколько раз подряд. " +
-                               "Нажмите «Компилировать», чтобы попробовать снова.", IdeStatusKind.Error);
+                Report?.Invoke(IdeText.T("Фоновая компиляция остановлена: компилятор завис несколько раз подряд. " +
+                               "Нажмите «Компилировать», чтобы попробовать снова.",
+                    "Background compilation stopped: the compiler hung several times in a row. " +
+                    "Press «Compile» to try again."), IdeStatusKind.Error);
             }
 
             // 2) старт новой
@@ -122,7 +128,8 @@ namespace Dsl.Ide
             _dirty = false;
             CompileJob job = null;
             try { job = Snapshot?.Invoke(); }
-            catch (Exception e) { Report?.Invoke("Не удалось собрать входы компиляции: " + e.Message, IdeStatusKind.Error); }
+            catch (Exception e) { Report?.Invoke(IdeText.T("Не удалось собрать входы компиляции: " + e.Message,
+                "Could not collect the compilation inputs: " + e.Message), IdeStatusKind.Error); }
             if (job == null) return;
 
             if (!UseThreads)
@@ -149,7 +156,8 @@ namespace Dsl.Ide
                 // потоки недоступны (платформа) — дальше синхронно
                 _inflight = null;
                 UseThreads = false;
-                Report?.Invoke("Фоновые потоки недоступны, компиляция в основном потоке: " + e.Message, IdeStatusKind.Warning);
+                Report?.Invoke(IdeText.T("Фоновые потоки недоступны, компиляция в основном потоке: " + e.Message,
+                    "Background threads are unavailable, compiling on the main thread: " + e.Message), IdeStatusKind.Warning);
                 Run(job);
                 Deliver(job);
             }
@@ -162,11 +170,12 @@ namespace Dsl.Ide
             try
             {
                 job.Result = ScriptCompiler.Compile(job.Registry ?? new HostRegistry(), job.ApiVersion,
-                                                    job.Modules ?? new List<ModuleSourceSet>());
+                                                    job.Modules ?? new List<ModuleSourceSet>(),
+                                                    false, job.Language);
             }
             catch (ThreadAbortException)
             {
-                job.Error = "прервано";
+                job.Error = IdeText.T("прервано", "aborted");
             }
             catch (Exception e)
             {
@@ -179,11 +188,11 @@ namespace Dsl.Ide
         {
             if (job.Error != null)
             {
-                Report?.Invoke("Сбой компилятора: " + job.Error, IdeStatusKind.Error);
+                Report?.Invoke(IdeText.T("Сбой компилятора: " + job.Error, "Compiler failure: " + job.Error), IdeStatusKind.Error);
                 return;
             }
             try { Apply?.Invoke(job); }
-            catch (Exception e) { Report?.Invoke("Ошибка применения результата: " + e.Message, IdeStatusKind.Error); }
+            catch (Exception e) { Report?.Invoke(IdeText.T("Ошибка применения результата: " + e.Message, "Error applying the result: " + e.Message), IdeStatusKind.Error); }
         }
 
         /// <summary>Бросить текущую компиляцию (перезагрузка домена, закрытие). Хост может прервать поток.</summary>

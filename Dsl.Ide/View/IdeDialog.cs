@@ -61,7 +61,7 @@ namespace Dsl.Ide
         /// <summary>Ввод строки. onResult(текст) или null при отмене.</summary>
         public void Prompt(string title, string message, string initial, Action<string> onResult)
         {
-            Open(title, message, new[] { "ОК", "Отмена" }, 0, 1, true, initial,
+            Open(title, message, new[] { IdeText.T("ОК", "OK"), IdeText.T("Отмена", "Cancel") }, 0, 1, true, initial,
                 i => onResult?.Invoke(i == 0 ? (_input.value ?? "") : null));
         }
 

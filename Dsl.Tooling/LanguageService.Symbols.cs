@@ -130,39 +130,39 @@ namespace Dsl.Tooling
         }
 
         /// <summary>Описание члена для hover/подсказки: сигнатура, «///», чей и откуда.</summary>
-        private static string MemberDocMd(ScriptTypeInfo t, ScriptMemberInfo m, bool withSignature)
+        private string MemberDocMd(ScriptTypeInfo t, ScriptMemberInfo m, bool withSignature)
         {
             var sb = new StringBuilder();
             if (withSignature) sb.Append("```\n").Append(m.Signature).Append("\n```\n");
             if (!string.IsNullOrEmpty(m.Doc)) sb.Append(m.Doc).Append("\n\n");
             sb.Append('_').Append(t.Title);
-            if (m.Module != null) sb.Append(" · модуль ").Append(m.Module);
-            if (m.Versions > 1) sb.Append(" · версий: ").Append(m.Versions);
-            if (m.FromContract) sb.Append(" · из контракта вида");
+            if (m.Module != null) sb.Append(T(" · модуль ", " · module ")).Append(m.Module);
+            if (m.Versions > 1) sb.Append(T(" · версий: ", " · versions: ")).Append(m.Versions);
+            if (m.FromContract) sb.Append(T(" · из контракта вида", " · from the kind contract"));
             sb.Append('_');
             return sb.ToString();
         }
 
         /// <summary>Описание объявления для hover: заголовок, «///», модуль, число блоков и членов.</summary>
-        private static string TypeDocMd(ScriptTypeInfo t)
+        private string TypeDocMd(ScriptTypeInfo t)
         {
             var sb = new StringBuilder();
             sb.Append("```\n").Append(t.Title).Append("\n```\n");
             if (!string.IsNullOrEmpty(t.Doc)) sb.Append(t.Doc).Append("\n\n");
             sb.Append('_');
-            if (t.Module != null) sb.Append("модуль ").Append(t.Module);
-            if (t.Blocks > 1) sb.Append(" · блоков: ").Append(t.Blocks);
+            if (t.Module != null) sb.Append(T("модуль ", "module ")).Append(t.Module);
+            if (t.Blocks > 1) sb.Append(T(" · блоков: ", " · blocks: ")).Append(t.Blocks);
             int fields = 0, funcs = 0;
             foreach (var m in t.Members)
             {
                 if (m.Kind == "field" || m.Kind == "const") fields++;
                 else if (m.IsCallable) funcs++;
             }
-            if (t.Kind == "enum") sb.Append(" · элементов: ").Append(t.Members.Count);
+            if (t.Kind == "enum") sb.Append(T(" · элементов: ", " · members: ")).Append(t.Members.Count);
             else
             {
-                if (fields > 0) sb.Append(" · полей: ").Append(fields);
-                if (funcs > 0) sb.Append(" · функций: ").Append(funcs);
+                if (fields > 0) sb.Append(T(" · полей: ", " · fields: ")).Append(fields);
+                if (funcs > 0) sb.Append(T(" · функций: ", " · functions: ")).Append(funcs);
             }
             sb.Append('_');
             return sb.ToString();

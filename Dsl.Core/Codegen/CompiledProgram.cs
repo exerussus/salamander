@@ -131,6 +131,34 @@ namespace Dsl.Codegen
         public TriggerRuntimeInfo[] Triggers;
         public EventHandlerRef[][] EventHandlers; // [hostEventId] -> упорядоченные обработчики
         public string[] Modules;
+
+        /// <summary>
+        /// Параллельно Modules: модуль объявлен execution: synchronous. Файбер,
+        /// корень которого (обработчик, action, OnSubscribe) принадлежит такому
+        /// модулю, исполняется целиком — бюджет тика его не откладывает и не режет.
+        /// В отпечаток не входит: на раскладку и байткод режим не влияет.
+        /// </summary>
+        public bool[] ModuleSynchronous = System.Array.Empty<bool>();
+
+        /// <summary>
+        /// Параллельно Modules: модуль объявлен "state": "none". Рантайм флаг не
+        /// читает — все гарантии даёт компилятор; массив для хоста, которому нужно
+        /// убедиться при загрузке, что состояния у скриптов нет ни в одном модуле
+        /// (см. <see cref="AllModulesStateless"/>). В отпечаток не входит.
+        /// </summary>
+        public bool[] ModuleStateless = System.Array.Empty<bool>();
+
+        /// <summary>Все модули программы — "state": "none" (у пустой программы — true).</summary>
+        public bool AllModulesStateless
+        {
+            get
+            {
+                int n = Modules?.Length ?? 0;
+                if (ModuleStateless == null || ModuleStateless.Length < n) return n == 0;
+                for (int i = 0; i < n; i++) if (!ModuleStateless[i]) return false;
+                return true;
+            }
+        }
         public ScriptEnumInfo[] ScriptEnums;
 
         // listener-ы: [listenerId][hostEventId] -> funcIndex обработчика (или -1);

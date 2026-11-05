@@ -1,4 +1,5 @@
 using System;
+using Dsl.Text;
 using System.Collections.Generic;
 using System.IO;
 using Dsl.Codegen;
@@ -73,6 +74,9 @@ namespace Dsl.Runtime
     /// </summary>
     public sealed class SaveMigrationReport
     {
+        /// <summary>Язык <see cref="ToString"/> (берётся у движка, создавшего отчёт).</summary>
+        public Language Language;
+
         /// <summary>false — скрипты изменились, файберы не восстановлены (данные — да).</summary>
         public bool FibersRestored = true;
 
@@ -98,20 +102,22 @@ namespace Dsl.Runtime
 
         public override string ToString()
         {
-            if (IsClean) return "сейв восстановлен полностью";
-            var sb = new System.Text.StringBuilder("сейв восстановлен с потерями:");
+            if (IsClean) return Loc.T(Language, "сейв восстановлен полностью", "the save was restored completely");
+            var sb = new System.Text.StringBuilder(Loc.T(Language, "сейв восстановлен с потерями:", "the save was restored with losses:"));
             if (!FibersRestored)
-                sb.Append($" скрипты изменились, файберы не восстановлены ({DroppedFibers});");
+                sb.Append(Loc.T(Language, $" скрипты изменились, файберы не восстановлены ({DroppedFibers});",
+                    $" the scripts changed, fibers were not restored ({DroppedFibers});"));
             else if (DroppedFibers > 0)
-                sb.Append($" файберов не вернулось: {DroppedFibers};");
+                sb.Append(Loc.T(Language, $" файберов не вернулось: {DroppedFibers};", $" fibers not returned: {DroppedFibers};"));
             if (DroppedFiberTriggers.Count > 0)
-                sb.Append(" триггеры: ").Append(string.Join(", ", DroppedFiberTriggers)).Append(';');
+                sb.Append(Loc.T(Language, " триггеры: ", " triggers: ")).Append(string.Join(", ", DroppedFiberTriggers)).Append(';');
             if (MissingStatics.Count > 0)
-                sb.Append($" полей исчезло: {MissingStatics.Count};");
+                sb.Append(Loc.T(Language, $" полей исчезло: {MissingStatics.Count};", $" fields gone: {MissingStatics.Count};"));
             if (NewStatics.Count > 0)
-                sb.Append($" новых полей: {NewStatics.Count};");
+                sb.Append(Loc.T(Language, $" новых полей: {NewStatics.Count};", $" new fields: {NewStatics.Count};"));
             if (DroppedSubscriptions > 0)
-                sb.Append($" подписок не вернулось: {DroppedSubscriptions};");
+                sb.Append(Loc.T(Language, $" подписок не вернулось: {DroppedSubscriptions};",
+                    $" subscriptions not returned: {DroppedSubscriptions};"));
             return sb.ToString();
         }
     }
@@ -148,10 +154,11 @@ namespace Dsl.Runtime
         public void SaveState(Stream stream, ISaveEntityResolver resolver)
         {
             if (resolver == null) throw new ArgumentNullException(nameof(resolver));
-            if (_prog == null) throw new InvalidOperationException("SaveState: программа не загружена.");
+            if (_prog == null) throw new InvalidOperationException(T("SaveState: программа не загружена.", "SaveState: no program is loaded."));
             if (_current != null)
                 throw new InvalidOperationException(
-                    "SaveState: нельзя сохраняться изнутри исполнения скрипта — вызовите между тиками.");
+                    T("SaveState: нельзя сохраняться изнутри исполнения скрипта — вызовите между тиками.",
+                        "SaveState: cannot save from inside script execution — call it between ticks."));
 
             // сборка перед снапшотом: иначе в сейв уедет мусор, который просто
             // ещё не подмели, и файл будет зависеть от того, когда его сделали
@@ -423,9 +430,10 @@ namespace Dsl.Runtime
         public SaveMigrationReport LoadState(Stream stream, ISaveEntityResolver resolver)
         {
             if (resolver == null) throw new ArgumentNullException(nameof(resolver));
-            if (_prog == null) throw new InvalidOperationException("LoadState: сначала загрузите программу (LoadProgram).");
+            if (_prog == null) throw new InvalidOperationException(T("LoadState: сначала загрузите программу (LoadProgram).", "LoadState: load a program first (LoadProgram)."));
             if (_current != null)
-                throw new InvalidOperationException("LoadState: нельзя загружаться изнутри исполнения скрипта.");
+                throw new InvalidOperationException(T("LoadState: нельзя загружаться изнутри исполнения скрипта.",
+                    "LoadState: cannot load from inside script execution."));
 
             double timeBefore = _time; // LoadStateCore перезаписывает часы до того, как может упасть
             try
@@ -445,7 +453,7 @@ namespace Dsl.Runtime
                 // SaveStateException, а движок — остаться в заведомо пустом,
                 // а не в полуразобранном состоянии.
                 ResetRuntimeAfterFailedLoad(timeBefore);
-                throw new SaveStateException("Сейв повреждён или несовместим: " + ex.Message);
+                throw new SaveStateException(T("Сейв повреждён или несовместим: " + ex.Message, "The save is corrupted or incompatible: " + ex.Message));
             }
         }
 
@@ -490,34 +498,38 @@ namespace Dsl.Runtime
         }
 
         /// <summary>Счётчик из сейва с проверкой диапазона: без неё крафт даёт OutOfMemory на аллокации.</summary>
-        private static int ReadCount(BinaryReader r, int max, string what)
+        private int ReadCount(BinaryReader r, int max, string what)
         {
             int n = r.ReadInt32();
             if (n < 0 || n > max)
-                throw new SaveStateException($"Сейв повреждён: {what} = {n} вне диапазона 0..{max}.");
+                throw new SaveStateException(T($"Сейв повреждён: {what} = {n} вне диапазона 0..{max}.",
+                    $"The save is corrupted: {what} = {n} is out of range 0..{max}."));
             return n;
         }
 
-        private static double ReadFiniteTime(BinaryReader r, string what)
+        private double ReadFiniteTime(BinaryReader r, string what)
         {
             double t = r.ReadDouble();
             if (double.IsNaN(t) || double.IsInfinity(t))
-                throw new SaveStateException($"Сейв повреждён: {what} не является конечным числом.");
+                throw new SaveStateException(T($"Сейв повреждён: {what} не является конечным числом.",
+                    $"The save is corrupted: {what} is not a finite number."));
             return t;
         }
 
         private SaveMigrationReport LoadStateCore(Stream stream, ISaveEntityResolver resolver)
         {
             var r = new BinaryReader(stream, System.Text.Encoding.UTF8, leaveOpen: true);
-            var report = new SaveMigrationReport();
+            var report = new SaveMigrationReport { Language = Language };
 
             // --- заголовок ---
             if (r.ReadInt32() != SaveMagic)
-                throw new SaveStateException("Это не сейв Salamander (неверная сигнатура файла).");
+                throw new SaveStateException(T("Это не сейв Salamander (неверная сигнатура файла).",
+                    "This is not a Salamander save (wrong file signature)."));
             byte ver = r.ReadByte();
             if (ver != SaveVersion)
                 throw new SaveStateException(
-                    $"Версия формата сейва {ver} не поддерживается (движок понимает {SaveVersion}).");
+                    T($"Версия формата сейва {ver} не поддерживается (движок понимает {SaveVersion}).",
+                        $"Save format version {ver} is not supported (the engine understands {SaveVersion})."));
 
             ulong savedCodeFp = r.ReadUInt64();
             // Отпечаток кода гейтит ТОЛЬКО файберы: они хранят (функция, позиция в
@@ -526,7 +538,7 @@ namespace Dsl.Runtime
             bool codeMatches = savedCodeFp == _prog.Fingerprint;
             report.FibersRestored = codeMatches;
 
-            double savedTime = ReadFiniteTime(r, "модельное время");
+            double savedTime = ReadFiniteTime(r, T("модельное время", "model time"));
 
             // --- полный сброс текущего рантайма ---
             KillAllFibers();
@@ -553,7 +565,7 @@ namespace Dsl.Runtime
             var ctx = new LoadCtx { Resolver = resolver };
 
             // --- флаги по именам ---
-            int tCount = ReadCount(r, 1 << 20, "число триггеров");
+            int tCount = ReadCount(r, 1 << 20, T("число триггеров", "trigger count"));
             var trigFlags = new Dictionary<string, bool>(tCount, StringComparer.Ordinal);
             for (int i = 0; i < tCount; i++)
             {
@@ -566,7 +578,7 @@ namespace Dsl.Runtime
                     _triggerEnabled[i] = on;
                 // иначе триггер новый — остаётся со своим стартовым флагом
 
-            int mCount = ReadCount(r, 1 << 20, "число модулей");
+            int mCount = ReadCount(r, 1 << 20, T("число модулей", "module count"));
             var modFlags = new Dictionary<string, bool>(mCount, StringComparer.Ordinal);
             for (int i = 0; i < mCount; i++)
             {
@@ -579,7 +591,7 @@ namespace Dsl.Runtime
                     _moduleEnabled[i] = on;
 
             // --- динамические строки ---
-            int strCount = ReadCount(r, 1 << 22, "число динамических строк");
+            int strCount = ReadCount(r, 1 << 22, T("число динамических строк", "dynamic string count"));
             for (int i = 0; i < strCount; i++)
             {
                 int oldId = r.ReadInt32();
@@ -588,17 +600,18 @@ namespace Dsl.Runtime
             }
 
             // --- шапки коллекций: создаём пустые, строим ремап ---
-            int collCount = ReadCount(r, Collections.MaxLiveCollections, "число коллекций");
+            int collCount = ReadCount(r, Collections.MaxLiveCollections, T("число коллекций", "collection count"));
             var collOrder = new (VariantType kind, Variant handle, int len)[collCount];
             for (int i = 0; i < collCount; i++)
             {
                 var kind = (VariantType)r.ReadByte();
                 if (kind != VariantType.Array && kind != VariantType.List && kind != VariantType.Map)
-                    throw new SaveStateException($"Сейв повреждён: неизвестный вид коллекции {(byte)kind}.");
+                    throw new SaveStateException(T($"Сейв повреждён: неизвестный вид коллекции {(byte)kind}.",
+                        $"The save is corrupted: unknown collection kind {(byte)kind}."));
                 int oldId = r.ReadInt32();
                 int len = ReadCount(r,
                     kind == VariantType.Array ? Collections.MaxArrayLength : 1 << 24,
-                    "длина коллекции");
+                    T("длина коллекции", "collection length"));
                 Variant h;
                 switch (kind)
                 {
@@ -614,7 +627,7 @@ namespace Dsl.Runtime
             for (int i = 0; i < _prog.Listeners.Length; i++)
                 listenerByName[_prog.Listeners[i].Name ?? ""] = i;
 
-            int attCount = ReadCount(r, 1 << 20, "число подписок");
+            int attCount = ReadCount(r, 1 << 20, T("число подписок", "subscription count"));
             var attOrder = new (Attachment att, string[] savedFields, bool dropped)[attCount];
             var attByOldIndex = new Dictionary<int, Attachment>();
             for (int i = 0; i < attCount; i++)
@@ -623,7 +636,7 @@ namespace Dsl.Runtime
                 long stable = r.ReadInt64();
                 int oldIdx = r.ReadInt32();
                 int oldVer = r.ReadInt32();
-                int fieldCount = ReadCount(r, 1 << 16, "число полей подписки");
+                int fieldCount = ReadCount(r, 1 << 16, T("число полей подписки", "subscription field count"));
                 var savedFields = new string[fieldCount];
                 for (int k = 0; k < fieldCount; k++) savedFields[k] = r.ReadString();
 
@@ -668,7 +681,7 @@ namespace Dsl.Runtime
             }
 
             // --- шапки файберов: материализуем, строим ремап ---
-            int fibCount = ReadCount(r, 1 << 20, "число файберов");
+            int fibCount = ReadCount(r, 1 << 20, T("число файберов", "fiber count"));
             var fibOrder = new (Fiber f, bool dropped, int[] iterCounts)[fibCount];
             var fibMinStack = new int[fibCount];   // Base + LocalCount самого высокого кадра
             for (int i = 0; i < fibCount; i++)
@@ -678,12 +691,13 @@ namespace Dsl.Runtime
                 var state = (FiberState)r.ReadByte();
                 int triggerId = r.ReadInt32();
                 int budgetHits = r.ReadInt32();
-                double wakeTime = ReadFiniteTime(r, "время пробуждения файбера");
+                double wakeTime = ReadFiniteTime(r, T("время пробуждения файбера", "fiber wake-up time"));
                 float pendingWait = r.ReadSingle();
                 if (float.IsNaN(pendingWait) || float.IsInfinity(pendingWait))
-                    throw new SaveStateException("Сейв повреждён: длительность wait не является конечным числом.");
+                    throw new SaveStateException(T("Сейв повреждён: длительность wait не является конечным числом.",
+                        "The save is corrupted: the wait duration is not a finite number."));
                 int attachOld = r.ReadInt32();
-                int frameCount = ReadCount(r, MaxCallDepth, "глубина стека вызовов");
+                int frameCount = ReadCount(r, MaxCallDepth, T("глубина стека вызовов", "call stack depth"));
 
                 Attachment att = null;
                 // файбер не восстанавливается, если изменился код (позиция в байткоде
@@ -695,9 +709,9 @@ namespace Dsl.Runtime
                 {
                     // кадры и шапку итераций прочитать и выбросить (выравнивание потока)
                     for (int k = 0; k < frameCount; k++) { r.ReadInt32(); r.ReadInt32(); r.ReadInt32(); }
-                    int dDepth = ReadCount(r, 1 << 10, "глубина вложенных for-in");
+                    int dDepth = ReadCount(r, 1 << 10, T("глубина вложенных for-in", "nested for-in depth"));
                     var dCounts = new int[dDepth];
-                    for (int k = 0; k < dDepth; k++) dCounts[k] = ReadCount(r, 1 << 24, "размер снапшота for-in");
+                    for (int k = 0; k < dDepth; k++) dCounts[k] = ReadCount(r, 1 << 24, T("размер снапшота for-in", "for-in snapshot size"));
                     fibOrder[i] = (null, true, dCounts);
                     NoteDroppedFiber(report, triggerId);
                     continue;
@@ -706,7 +720,8 @@ namespace Dsl.Runtime
                 // сохраняются только приостановленные файберы; Free/Running в сейве
                 // означают порчу, а Free ещё и оставил бы арендованный слот вне пула
                 if (state != FiberState.Ready && state != FiberState.Sleeping && state != FiberState.YieldedTick)
-                    throw new SaveStateException($"Сейв повреждён: недопустимое состояние файбера {(byte)state}.");
+                    throw new SaveStateException(T($"Сейв повреждён: недопустимое состояние файбера {(byte)state}.",
+                        $"The save is corrupted: invalid fiber state {(byte)state}."));
 
                 var f = _fibers.Rent();
                 f.State = state;
@@ -732,12 +747,15 @@ namespace Dsl.Runtime
                     // крафтовый сейв входит в произвольную функцию, в середину чанка
                     // или адресует локали мимо стека
                     if ((uint)fn >= (uint)_prog.Functions.Length)
-                        throw new SaveStateException($"Сейв повреждён: индекс функции {fn} вне программы.");
+                        throw new SaveStateException(T($"Сейв повреждён: индекс функции {fn} вне программы.",
+                            $"The save is corrupted: function index {fn} is outside the program."));
                     var callee = _prog.Functions[fn];
                     if (ipv < 0 || ipv > callee.Code.Length)
-                        throw new SaveStateException($"Сейв повреждён: позиция {ipv} вне кода функции '{callee.Name}'.");
+                        throw new SaveStateException(T($"Сейв повреждён: позиция {ipv} вне кода функции '{callee.Name}'.",
+                            $"The save is corrupted: position {ipv} is outside the code of function '{callee.Name}'."));
                     if (bas < 0 || bas > (1 << 22))
-                        throw new SaveStateException($"Сейв повреждён: база локалей {bas} вне допустимого диапазона.");
+                        throw new SaveStateException(T($"Сейв повреждён: база локалей {bas} вне допустимого диапазона.",
+                            $"The save is corrupted: locals base {bas} is out of the valid range."));
                     f.Frames[k].Func = fn;
                     f.Frames[k].Ip = ipv;
                     f.Frames[k].Base = bas;
@@ -746,9 +764,16 @@ namespace Dsl.Runtime
                 }
                 fibMinStack[i] = minStack;
 
-                int iterDepth = ReadCount(r, 1 << 10, "глубина вложенных for-in");
+                // не начатый action Do синхронного триггера (ActivateTrigger с хоста
+                // между тиками) — флаг в сейве не хранится, восстанавливаем по коду
+                if (state == FiberState.Ready && frameCount == 1 && f.Frames[0].Ip == 0
+                    && (uint)triggerId < (uint)_prog.Triggers.Length
+                    && _prog.Triggers[triggerId].ActionFuncIndex == f.Frames[0].Func)
+                    f.Synchronous = IsModuleSync(_prog.Triggers[triggerId].ModuleIndex);
+
+                int iterDepth = ReadCount(r, 1 << 10, T("глубина вложенных for-in", "nested for-in depth"));
                 var iterCounts = new int[iterDepth];
-                for (int k = 0; k < iterDepth; k++) iterCounts[k] = ReadCount(r, 1 << 24, "размер снапшота for-in");
+                for (int k = 0; k < iterDepth; k++) iterCounts[k] = ReadCount(r, 1 << 24, T("размер снапшота for-in", "for-in snapshot size"));
 
                 ctx.FiberMap[Pack(oldIdx, oldVer)] = f.Handle;
                 fibOrder[i] = (f, false, iterCounts);
@@ -766,7 +791,7 @@ namespace Dsl.Runtime
                 else keyToSlot[progKeys[i] ?? ""] = i;
             }
 
-            int stCount = ReadCount(r, 1 << 22, "число статических полей");
+            int stCount = ReadCount(r, 1 << 22, T("число статических полей", "static field count"));
             var seenKeys = new HashSet<string>(StringComparer.Ordinal);
             for (int i = 0; i < stCount; i++)
             {
@@ -832,7 +857,7 @@ namespace Dsl.Runtime
             for (int fi = 0; fi < fibOrder.Length; fi++)
             {
                 var (f, dropped, iterCounts) = fibOrder[fi];
-                int sp = ReadCount(r, 1 << 22, "размер стека файбера");
+                int sp = ReadCount(r, 1 << 22, T("размер стека файбера", "fiber stack size"));
                 if (dropped)
                 {
                     for (int i = 0; i < sp; i++) ReadVariant(r, ctx);
@@ -855,22 +880,22 @@ namespace Dsl.Runtime
             }
 
             // --- очереди/таймеры (дропнутые файберы не разрезолвятся и просто выпадут) ---
-            int timerCount = ReadCount(r, 1 << 20, "число таймеров");
+            int timerCount = ReadCount(r, 1 << 20, T("число таймеров", "timer count"));
             for (int i = 0; i < timerCount; i++)
             {
-                double t = ReadFiniteTime(r, "время таймера");
+                double t = ReadFiniteTime(r, T("время таймера", "timer time"));
                 var h = RemapFiber(r, ctx);
                 var tf = _fibers.ResolveHandle(h);
                 if (tf != null) PushTimer(t, FiberPool.Pack(tf));
             }
-            int rqCount = ReadCount(r, 1 << 20, "длина очереди запуска");
+            int rqCount = ReadCount(r, 1 << 20, T("длина очереди запуска", "run queue length"));
             for (int i = 0; i < rqCount; i++)
             {
                 var h = RemapFiber(r, ctx);
                 var f = _fibers.ResolveHandle(h);
                 if (f != null) _runQueue.Enqueue(FiberPool.Pack(f));
             }
-            int ntCount = ReadCount(r, 1 << 20, "длина очереди следующего тика");
+            int ntCount = ReadCount(r, 1 << 20, T("длина очереди следующего тика", "next-tick queue length"));
             for (int i = 0; i < ntCount; i++)
             {
                 var h = RemapFiber(r, ctx);
@@ -879,7 +904,7 @@ namespace Dsl.Runtime
             }
 
             if (r.ReadInt32() != SaveEndMarker)
-                throw new SaveStateException("Сейв повреждён (нет завершающего маркера).");
+                throw new SaveStateException(T("Сейв повреждён (нет завершающего маркера).", "The save is corrupted (no end marker)."));
 
             return report;
         }
@@ -887,9 +912,12 @@ namespace Dsl.Runtime
         private void NoteDroppedFiber(SaveMigrationReport report, int triggerId)
         {
             report.DroppedFibers++;
-            string name = (uint)triggerId < (uint)_prog.Triggers.Length
+            string name = T((uint)triggerId < (uint)_prog.Triggers.Length
                 ? _prog.Triggers[triggerId].Name
-                : "(без триггера)";
+                : "(без триггера)",
+                (uint)triggerId < (uint)_prog.Triggers.Length
+                ? _prog.Triggers[triggerId].Name
+                : "(no trigger)");
             if (!report.DroppedFiberTriggers.Contains(name)) report.DroppedFiberTriggers.Add(name);
         }
 

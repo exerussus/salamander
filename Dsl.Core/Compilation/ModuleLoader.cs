@@ -1,4 +1,5 @@
 using System;
+using Dsl.Text;
 using System.Collections.Generic;
 using System.IO;
 
@@ -19,12 +20,13 @@ namespace Dsl.Compilation
         public static ModuleSourceSet LoadModuleDir(
             string dir,
             Action<string, string> onError,
-            Dictionary<string, string> logicalToAbsolute = null)
+            Dictionary<string, string> logicalToAbsolute = null,
+            Language language = Language.Ru)
         {
             string manifestPath = Path.Combine(dir, "module.json");
             if (!File.Exists(manifestPath))
             {
-                onError?.Invoke(dir, "в папке нет module.json — это не модуль.");
+                onError?.Invoke(dir, Loc.T(language, "в папке нет module.json — это не модуль.", "the folder has no module.json — it is not a module."));
                 return null;
             }
 
@@ -35,7 +37,7 @@ namespace Dsl.Compilation
             }
             catch (Exception ex)
             {
-                onError?.Invoke(manifestPath, "некорректный JSON манифеста — " + ex.Message);
+                onError?.Invoke(manifestPath, Loc.T(language, "некорректный JSON манифеста — " + ex.Message, "invalid manifest JSON — " + ex.Message));
                 return null;
             }
 
@@ -43,7 +45,7 @@ namespace Dsl.Compilation
             {
                 // JsonConvert возвращает null на содержимом "null" — без этой
                 // проверки следующий же manifest.Sources даёт NullReferenceException
-                onError?.Invoke(manifestPath, "манифест пуст или содержит null.");
+                onError?.Invoke(manifestPath, Loc.T(language, "манифест пуст или содержит null.", "the manifest is empty or contains null."));
                 return null;
             }
 
@@ -61,12 +63,14 @@ namespace Dsl.Compilation
                 if (!TryResolveSource(moduleRoot, rel, out string full))
                 {
                     onError?.Invoke(manifestPath,
-                        $"модуль '{moduleName}': путь '{rel}' ведёт за пределы папки модуля — отклонён.");
+                        Loc.T(language, $"модуль '{moduleName}': путь '{rel}' ведёт за пределы папки модуля — отклонён.",
+                            $"module '{moduleName}': the path '{rel}' leads outside the module folder — rejected."));
                     continue;
                 }
                 if (!File.Exists(full))
                 {
-                    onError?.Invoke(manifestPath, $"модуль '{moduleName}': файл из манифеста не найден: {rel}");
+                    onError?.Invoke(manifestPath, Loc.T(language, $"модуль '{moduleName}': файл из манифеста не найден: {rel}",
+                        $"module '{moduleName}': file from the manifest not found: {rel}"));
                     continue;
                 }
                 string logical = $"{moduleName}/{rel.Replace('\\', '/')}";
@@ -107,12 +111,13 @@ namespace Dsl.Compilation
         public static List<ModuleSourceSet> LoadFromList(
             IEnumerable<string> moduleDirs,
             Action<string, string> onError,
-            Dictionary<string, string> logicalToAbsolute = null)
+            Dictionary<string, string> logicalToAbsolute = null,
+            Language language = Language.Ru)
         {
             var result = new List<ModuleSourceSet>();
             foreach (var dir in moduleDirs ?? Array.Empty<string>())
             {
-                var set = LoadModuleDir(dir, onError, logicalToAbsolute);
+                var set = LoadModuleDir(dir, onError, logicalToAbsolute, language);
                 if (set != null) result.Add(set);
             }
             return result;
@@ -279,7 +284,8 @@ namespace Dsl.Compilation
             string rootPath,
             Action<string, string> onError,
             Dictionary<string, string> logicalToAbsolute = null,
-            int maxDepth = DefaultScanDepth)
+            int maxDepth = DefaultScanDepth,
+            Language language = Language.Ru)
         {
             var result = new List<ModuleSourceSet>();
             if (!Directory.Exists(rootPath)) return result;
@@ -311,7 +317,7 @@ namespace Dsl.Compilation
             moduleDirs.Sort(StringComparer.Ordinal);
             foreach (var dir in moduleDirs)
             {
-                var set = LoadModuleDir(dir, onError, logicalToAbsolute);
+                var set = LoadModuleDir(dir, onError, logicalToAbsolute, language);
                 if (set != null) result.Add(set);
             }
             return result;
@@ -326,7 +332,8 @@ namespace Dsl.Compilation
         public static List<ModuleSourceSet> LoadFromFolder(
             string rootPath,
             Action<string, string> onError,
-            Dictionary<string, string> logicalToAbsolute = null)
+            Dictionary<string, string> logicalToAbsolute = null,
+            Language language = Language.Ru)
         {
             var result = new List<ModuleSourceSet>();
             if (!Directory.Exists(rootPath)) return result;
@@ -337,7 +344,7 @@ namespace Dsl.Compilation
             foreach (var dir in dirs)
             {
                 if (!File.Exists(Path.Combine(dir, "module.json"))) continue; // не модуль — молча пропускаем
-                var set = LoadModuleDir(dir, onError, logicalToAbsolute);
+                var set = LoadModuleDir(dir, onError, logicalToAbsolute, language);
                 if (set != null) result.Add(set);
             }
             return result;

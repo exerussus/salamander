@@ -20,17 +20,20 @@ namespace Dsl.Tools.Lsp
                 System.Console.OpenStandardError(),
                 new System.Text.UTF8Encoding(false)) { AutoFlush = true });
 
-            System.Console.Error.WriteLine("salamander-lsp: запущен, жду initialize по stdio");
+            var lang = Server.EnvLanguage();
+            System.Console.Error.WriteLine(Dsl.Text.Loc.T(lang, "salamander-lsp: запущен, жду initialize по stdio",
+                "salamander-lsp: started, waiting for initialize over stdio"));
             try
             {
                 var server = new Server(new Rpc());
                 server.Run();
-                System.Console.Error.WriteLine("salamander-lsp: клиент закрыл поток, выходим");
+                lang = server.Language;
+                System.Console.Error.WriteLine(Dsl.Text.Loc.T(lang, "salamander-lsp: клиент закрыл поток, выходим", "salamander-lsp: the client closed the stream, exiting"));
                 return 0;
             }
             catch (System.Exception ex)
             {
-                System.Console.Error.WriteLine("salamander-lsp: фатальная ошибка: " + ex);
+                System.Console.Error.WriteLine(Dsl.Text.Loc.T(lang, "salamander-lsp: фатальная ошибка: " + ex, "salamander-lsp: fatal error: " + ex));
                 return 1;
             }
         }

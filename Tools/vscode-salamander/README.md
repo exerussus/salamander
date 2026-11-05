@@ -83,6 +83,7 @@ C:\Exerussus\Programs\SalamanderDSL\Tools\DslLsp\publish\DslLsp.dll
 | `salamander.modulesRoot` | папка, под которой искать модули (`module.json`) и `*.sal`; по умолчанию — корень воркспейса |
 | `salamander.apiManifest` | точный путь к манифесту API игры |
 | `salamander.buildFile` | точный путь к `salamander-build.json`; пути внутри него — относительно его же папки |
+| `salamander.language` | язык ошибок и подсказок: `ru` / `en`; пусто — из `salamander-build.json` (ключ `language`), иначе `ru` |
 | `salamander.server.path` | путь к `DslLsp.dll` (см. шаг 3) |
 
 Эти три пути применяются без перезагрузки окна. Если сборщик проекта

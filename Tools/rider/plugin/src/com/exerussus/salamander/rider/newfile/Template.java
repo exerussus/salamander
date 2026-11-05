@@ -53,13 +53,6 @@ final class Template {
         return kind == Kind.ARCHETYPE ? archetype.consts() : List.of();
     }
 
-    /** Нужно ли хотя бы одно событие: триггер без него не компилируется, архетип — если вид не разрешил пустые. */
-    boolean needsEvent() {
-        if (kind == Kind.TRIGGER) return !events().isEmpty();
-        if (kind == Kind.ARCHETYPE) return !archetype.eventsOptional() && !archetype.events().isEmpty();
-        return false;
-    }
-
     record Result(String text, int caret) {
     }
 
@@ -108,8 +101,10 @@ final class Template {
             sb.append("\n    }\n");
             first = false;
         }
+        // ТРИГГЕР БЕЗ СОБЫТИЙ ЗАКОНЕН (события необязательны ни у кого): это
+        // состояние и точка входа, которую запускает Engine.ActivateTrigger
         if (events.isEmpty() && kind == Kind.TRIGGER) {
-            sb.append(consts.isEmpty() ? "" : "\n").append("    event OnEvent()\n    {\n        ");
+            sb.append(consts.isEmpty() ? "" : "\n").append("    action Do()\n    {\n        ");
             caret = sb.length();
             sb.append("\n    }\n");
         }

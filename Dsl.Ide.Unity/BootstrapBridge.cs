@@ -36,7 +36,7 @@ namespace Dsl.Ide
             if (reg == null || ReferenceEquals(reg, _seen)) return false;
             try
             {
-                Current = ApiModel.FromRegistry(reg, _bootstrap.ApiVersion, "API игры (живой реестр)");
+                Current = ApiModel.FromRegistry(reg, _bootstrap.ApiVersion, IdeText.T("API игры (живой реестр)", "Game API (live registry)"));
                 Error = null;
                 // только после успеха: иначе один сбой (хост дорегистрировал API прямо
                 // в этот кадр) навсегда оставил бы IDE без API — реестр-то тот же самый
@@ -48,7 +48,7 @@ namespace Dsl.Ide
                 // живой реестр отдавать нельзя: он принадлежит игре и меняется на
                 // главном потоке, а читал бы его поток компиляции. Держим прежнюю
                 // модель и пробуем снова на следующем опросе.
-                Error = "экспорт API для подсказок не удался: " + e.Message;
+                Error = IdeText.T("экспорт API для подсказок не удался: " + e.Message, "exporting the API for hints failed: " + e.Message);
                 return false;
             }
         }
@@ -93,11 +93,11 @@ namespace Dsl.Ide
 
         public bool CanApply => _bootstrap != null && _bootstrap.Engine != null;
 
-        public string ApplyLabel => "Применить в игре";
+        public string ApplyLabel => IdeText.T("Применить в игре", "Apply in game");
 
         public void Apply()
         {
-            if (!CanApply) { _log?.Invoke(IdeLogKind.Warning, "Движок скриптов не запущен — применять некуда."); return; }
+            if (!CanApply) { _log?.Invoke(IdeLogKind.Warning, IdeText.T("Движок скриптов не запущен — применять некуда.", "The script engine is not running — nowhere to apply.")); return; }
             SubscribeEngine();
             var ws = _workspace?.Invoke();
 
@@ -115,7 +115,8 @@ namespace Dsl.Ide
             var overrides = LoadWorkspaceModules(ws, out var addable);
             if (overrides == null)
             {
-                _log?.Invoke(IdeLogKind.Error, "Правки не применены: модули воркспейса не прочитались.");
+                _log?.Invoke(IdeLogKind.Error, IdeText.T("Правки не применены: модули воркспейса не прочитались.",
+                    "Edits not applied: the workspace modules could not be read."));
                 return;
             }
 
@@ -123,7 +124,8 @@ namespace Dsl.Ide
             try { baseSet = _bootstrap.CollectModules(); }
             catch (Exception e)
             {
-                _log?.Invoke(IdeLogKind.Error, "Правки не применены: модули игры не прочитались — " + e.Message);
+                _log?.Invoke(IdeLogKind.Error, IdeText.T("Правки не применены: модули игры не прочитались — " + e.Message,
+                    "Edits not applied: the game modules could not be read — " + e.Message));
                 return;
             }
 
@@ -145,11 +147,15 @@ namespace Dsl.Ide
             var hs = _bootstrap.LastHotSwap;
             if (hs == null) return;
             if (hs.Applied)
-                _log?.Invoke(IdeLogKind.Info, hs.NoChanges
+                _log?.Invoke(IdeLogKind.Info, IdeText.T(hs.NoChanges
                     ? "Код не изменился — программа в игре не тронута."
-                    : "Применено без перезагрузки — " + hs + ".");
+                    : "Применено без перезагрузки — " + hs + ".",
+                    hs.NoChanges
+                    ? "The code has not changed — the program in the game is untouched."
+                    : "Applied without reload — " + hs + "."));
             else
-                _log?.Invoke(IdeLogKind.Info, "Полная перезагрузка (состояние скриптов сброшено): " + hs.Reason + ".");
+                _log?.Invoke(IdeLogKind.Info, IdeText.T("Полная перезагрузка (состояние скриптов сброшено): " + hs.Reason + ".",
+                    "Full reload (script state reset): " + hs.Reason + "."));
         }
 
         /// <summary>Сказать вслух про модули воркспейса, которые в игру не поехали.</summary>
@@ -168,7 +174,8 @@ namespace Dsl.Ide
                 (skipped ??= new List<string>()).Add(name);
             }
             if (skipped != null)
-                _log(IdeLogKind.Warning, "Не применены (их нет в игре и они вне папки модулей игры): " + string.Join(", ", skipped));
+                _log(IdeLogKind.Warning, IdeText.T("Не применены (их нет в игре и они вне папки модулей игры): " + string.Join(", ", skipped),
+                    "Not applied (they are not in the game and are outside the game modules folder): " + string.Join(", ", skipped)));
         }
 
         /// <summary>IDE правит ровно ту папку, из которой грузится бутстрап?</summary>
@@ -209,7 +216,8 @@ namespace Dsl.Ide
             try { loaded = ws.Load(); }
             catch (Exception e)
             {
-                _log?.Invoke(IdeLogKind.Error, "Модули воркспейса не прочитались: " + e.Message);
+                _log?.Invoke(IdeLogKind.Error, IdeText.T("Модули воркспейса не прочитались: " + e.Message,
+                    "The workspace modules could not be read: " + e.Message));
                 return null;
             }
             if (loaded == null) return null;
@@ -270,13 +278,15 @@ namespace Dsl.Ide
             if (!string.IsNullOrEmpty(root) && CanUseFiles() && Directory.Exists(root) && IsWritable(root))
                 return new FileSystemWorkspace(root);
             if (!string.IsNullOrEmpty(rootOverride) && CanUseFiles() && !Directory.Exists(rootOverride))
-                Debug.LogWarning("[salamander-ide] Указанной папки модулей нет, правки останутся в памяти: " + rootOverride);
+                Debug.LogWarning(IdeText.T("[salamander-ide] Указанной папки модулей нет, правки останутся в памяти: " + rootOverride,
+                    "[salamander-ide] The specified modules folder does not exist, edits stay in memory: " + rootOverride));
 
-            var mem = new MemoryWorkspace { DisplayName = "модули игры (в памяти)" };
+            var mem = new MemoryWorkspace { DisplayName = IdeText.T("модули игры (в памяти)", "game modules (in memory)") };
             if (bootstrap != null)
             {
                 try { mem.Replace(bootstrap.CollectModules() ?? new List<ModuleSourceSet>()); }
-                catch (Exception e) { Debug.LogWarning("[salamander-ide] модули игры не прочитались: " + e.Message); }
+                catch (Exception e) { Debug.LogWarning(IdeText.T("[salamander-ide] модули игры не прочитались: " + e.Message,
+                    "[salamander-ide] the game modules could not be read: " + e.Message)); }
             }
             return mem;
         }
@@ -307,7 +317,8 @@ namespace Dsl.Ide
             catch
             {
                 try { if (File.Exists(probe)) File.Delete(probe); } catch { }
-                Debug.LogWarning("[salamander-ide] Папка модулей только для чтения — правки живут в памяти: " + dir);
+                Debug.LogWarning(IdeText.T("[salamander-ide] Папка модулей только для чтения — правки живут в памяти: " + dir,
+                    "[salamander-ide] The modules folder is read-only — edits live in memory: " + dir));
                 return false;
             }
         }

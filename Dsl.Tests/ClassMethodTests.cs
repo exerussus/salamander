@@ -289,7 +289,7 @@ namespace Dsl.Tests
             Assert.AreEqual(2, cls.Methods.Count);
             Assert.IsTrue(cls.TryGetMethod("AddPerk", out var add));
             Assert.AreEqual(1, add.Params.Length, "приёмник в сигнатуру скрипта не входит");
-            Assert.AreEqual("Добавить перк.", add.Summary);
+            Assert.AreEqual("Добавить перк.", add.Summary?.Ru);
             Assert.AreEqual("id", add.ParamNames[0]);
 
             var r = ScriptCompiler.Compile(imported, 1, new List<ModuleSourceSet>

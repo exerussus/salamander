@@ -1,4 +1,5 @@
 using System;
+using Dsl.Text;
 using System.Collections.Generic;
 using Dsl.Runtime;
 
@@ -59,7 +60,7 @@ namespace Dsl.Hosting
         /// <param name="name">Имя поля в блоке.</param>
         /// <param name="required">true — блок без этого поля не компилируется.</param>
         /// <param name="doc">Описание для манифеста и подсказок редактора.</param>
-        public ArchetypeBuilder Const<T>(string name, bool required = false, string doc = null)
+        public ArchetypeBuilder Const<T>(string name, bool required = false, DocText doc = null)
         {
             _host.Registry.DefineArchetypeConst(KindId, name, _host.Types.RefOf<T>(), required, doc);
             return this;
@@ -74,7 +75,7 @@ namespace Dsl.Hosting
         /// Отдельное имя метода, а не перегрузка Const: у Const&lt;bool&gt;("flag", true)
         /// «дефолт true» и «required: true» были бы неразличимы.
         /// </summary>
-        public ArchetypeBuilder ConstOr<T>(string name, T value, string doc = null)
+        public ArchetypeBuilder ConstOr<T>(string name, T value, DocText doc = null)
         {
             var type = _host.Types.RefOf<T>();
             EncodeDefault(type, value, out var variant, out var str);
@@ -87,21 +88,26 @@ namespace Dsl.Hosting
         /// отдельным полем: их id раздаёт StringTable уже при загрузке программы,
         /// а на регистрации никакого движка ещё нет.
         /// </summary>
-        private static void EncodeDefault<T>(Semantics.TypeRef type, T value, out Variant variant, out string str)
+        private void EncodeDefault<T>(Semantics.TypeRef type, T value, out Variant variant, out string str)
         {
             if (HostLiteral.TryEncode(type, value, out variant, out str)) return;
             throw new ArgumentException(
-                $"Дефолт для константы типа '{typeof(T).Name}' не поддержан: " +
+                _host.T($"Дефолт для константы типа '{typeof(T).Name}' не поддержан: " +
                 HostLiteral.Supported +
                 " Сущности и коллекции константами быть не могут; у структуры литерала нет — " +
-                "объявляйте её как Const<T>(name, required: ...), без дефолта.");
+                "объявляйте её как Const<T>(name, required: ...), без дефолта.",
+                    $"A default for a constant of type '{typeof(T).Name}' is not supported: " +
+                    HostLiteral.SupportedEn +
+                    " Entities and collections cannot be constants; a struct has no literal — " +
+                    "declare it as Const<T>(name, required: ...), without a default."));
         }
 
         private int Define(string name, MethodDoc doc, params Semantics.TypeRef[] ps)
         {
             if (doc != null && doc.Names.Count != ps.Length)
                 throw new ArgumentException(
-                    $"У события '{name}' {ps.Length} параметров, а в Sig.Doc описано {doc.Names.Count}.");
+                    _host.T($"У события '{name}' {ps.Length} параметров, а в Sig.Doc описано {doc.Names.Count}.",
+                        $"Event '{name}' has {ps.Length} parameters, but Sig.Doc describes {doc.Names.Count}."));
             return _host.Registry.DefineArchetypeEvent(
                 KindId, name, ps, doc?.Summary,
                 doc?.Names.ToArray(), doc?.Docs.ToArray());
@@ -176,7 +182,7 @@ namespace Dsl.Hosting
         /// <summary>Горячий путь: хэндл из engine.ResolveArchetype — чистая индексация.</summary>
         public void Raise(ScriptEngine engine, int archetype, T1 a1)
         {
-            if (_w1 == null) throw EventRef<T1>.NotInitialized();
+            if (_w1 == null) throw EventRef<T1>.NotInitialized(engine);
             engine.RaiseBegin();
             engine.RaiseAdd(_w1(engine, a1));
             engine.RaiseCommitArch(KindId, archetype, LocalId);
@@ -203,7 +209,7 @@ namespace Dsl.Hosting
         /// <summary>Горячий путь: хэндл из engine.ResolveArchetype — чистая индексация.</summary>
         public void Raise(ScriptEngine engine, int archetype, T1 a1, T2 a2)
         {
-            if (_w1 == null) throw EventRef<T1>.NotInitialized();
+            if (_w1 == null) throw EventRef<T1>.NotInitialized(engine);
             engine.RaiseBegin();
             engine.RaiseAdd(_w1(engine, a1));
             engine.RaiseAdd(_w2(engine, a2));
@@ -232,7 +238,7 @@ namespace Dsl.Hosting
         /// <summary>Горячий путь: хэндл из engine.ResolveArchetype — чистая индексация.</summary>
         public void Raise(ScriptEngine engine, int archetype, T1 a1, T2 a2, T3 a3)
         {
-            if (_w1 == null) throw EventRef<T1>.NotInitialized();
+            if (_w1 == null) throw EventRef<T1>.NotInitialized(engine);
             engine.RaiseBegin();
             engine.RaiseAdd(_w1(engine, a1));
             engine.RaiseAdd(_w2(engine, a2));
@@ -263,7 +269,7 @@ namespace Dsl.Hosting
         /// <summary>Горячий путь: хэндл из engine.ResolveArchetype — чистая индексация.</summary>
         public void Raise(ScriptEngine engine, int archetype, T1 a1, T2 a2, T3 a3, T4 a4)
         {
-            if (_w1 == null) throw EventRef<T1>.NotInitialized();
+            if (_w1 == null) throw EventRef<T1>.NotInitialized(engine);
             engine.RaiseBegin();
             engine.RaiseAdd(_w1(engine, a1));
             engine.RaiseAdd(_w2(engine, a2));
@@ -296,7 +302,7 @@ namespace Dsl.Hosting
         /// <summary>Горячий путь: хэндл из engine.ResolveArchetype — чистая индексация.</summary>
         public void Raise(ScriptEngine engine, int archetype, T1 a1, T2 a2, T3 a3, T4 a4, T5 a5)
         {
-            if (_w1 == null) throw EventRef<T1>.NotInitialized();
+            if (_w1 == null) throw EventRef<T1>.NotInitialized(engine);
             engine.RaiseBegin();
             engine.RaiseAdd(_w1(engine, a1));
             engine.RaiseAdd(_w2(engine, a2));
@@ -331,7 +337,7 @@ namespace Dsl.Hosting
         /// <summary>Горячий путь: хэндл из engine.ResolveArchetype — чистая индексация.</summary>
         public void Raise(ScriptEngine engine, int archetype, T1 a1, T2 a2, T3 a3, T4 a4, T5 a5, T6 a6)
         {
-            if (_w1 == null) throw EventRef<T1>.NotInitialized();
+            if (_w1 == null) throw EventRef<T1>.NotInitialized(engine);
             engine.RaiseBegin();
             engine.RaiseAdd(_w1(engine, a1));
             engine.RaiseAdd(_w2(engine, a2));
@@ -368,7 +374,7 @@ namespace Dsl.Hosting
         /// <summary>Горячий путь: хэндл из engine.ResolveArchetype — чистая индексация.</summary>
         public void Raise(ScriptEngine engine, int archetype, T1 a1, T2 a2, T3 a3, T4 a4, T5 a5, T6 a6, T7 a7)
         {
-            if (_w1 == null) throw EventRef<T1>.NotInitialized();
+            if (_w1 == null) throw EventRef<T1>.NotInitialized(engine);
             engine.RaiseBegin();
             engine.RaiseAdd(_w1(engine, a1));
             engine.RaiseAdd(_w2(engine, a2));
@@ -407,7 +413,7 @@ namespace Dsl.Hosting
         /// <summary>Горячий путь: хэндл из engine.ResolveArchetype — чистая индексация.</summary>
         public void Raise(ScriptEngine engine, int archetype, T1 a1, T2 a2, T3 a3, T4 a4, T5 a5, T6 a6, T7 a7, T8 a8)
         {
-            if (_w1 == null) throw EventRef<T1>.NotInitialized();
+            if (_w1 == null) throw EventRef<T1>.NotInitialized(engine);
             engine.RaiseBegin();
             engine.RaiseAdd(_w1(engine, a1));
             engine.RaiseAdd(_w2(engine, a2));

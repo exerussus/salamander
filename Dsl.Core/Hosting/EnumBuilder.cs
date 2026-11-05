@@ -1,4 +1,5 @@
 using System;
+using Dsl.Text;
 
 namespace Dsl.Hosting
 {
@@ -28,15 +29,20 @@ namespace Dsl.Hosting
         }
 
         /// <summary>Пояснение к элементу: уходит в манифест и в подсказку редактора.</summary>
-        public EnumBuilder<TEnum> Member(TEnum value, string doc)
+        public EnumBuilder<TEnum> Member(TEnum value, DocText doc)
         {
-            if (string.IsNullOrWhiteSpace(doc))
+            if (doc == null || string.IsNullOrWhiteSpace(doc.Ru) && string.IsNullOrWhiteSpace(doc.En))
                 throw new ArgumentException(
-                    $"Пустое пояснение к элементу '{typeof(TEnum).Name}.{value}': " +
-                    "либо напишите текст, либо не вызывайте Member.", nameof(doc));
+                    _host.T($"Пустое пояснение к элементу '{typeof(TEnum).Name}.{value}': " +
+                    "либо напишите текст, либо не вызывайте Member.",
+                        $"Empty description for member '{typeof(TEnum).Name}.{value}': " +
+                        "either write the text or do not call Member."), nameof(doc));
             _host.Registry.SetEnumMemberDoc(_id, Convert.ToInt32(value), doc);
             return this;
         }
+
+        /// <summary>Пояснение к элементу на двух языках.</summary>
+        public EnumBuilder<TEnum> Member(TEnum value, string ru, string en) => Member(value, new DocText(ru, en));
 
         /// <summary>Назад к общему построителю: host.Enum&lt;A&gt;().Member(...).Host.Class&lt;Unit&gt;()</summary>
         public HostBuilder Host => _host;
@@ -45,7 +51,7 @@ namespace Dsl.Hosting
         /// Следующий енум — чтобы привычная цепочка Enum&lt;A&gt;().Enum&lt;B&gt;()
         /// продолжала работать после того, как Enum стал возвращать построитель.
         /// </summary>
-        public EnumBuilder<TNext> Enum<TNext>(string name = null, string summary = null)
+        public EnumBuilder<TNext> Enum<TNext>(string name = null, DocText summary = null)
             where TNext : struct, Enum
             => _host.Enum<TNext>(name, summary);
     }

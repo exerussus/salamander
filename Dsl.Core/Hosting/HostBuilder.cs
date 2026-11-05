@@ -1,4 +1,5 @@
 using System;
+using Dsl.Text;
 using Dsl.Semantics;
 
 namespace Dsl.Hosting
@@ -41,8 +42,20 @@ namespace Dsl.Hosting
         public HostBuilder(HostRegistry registry)
         {
             Registry = registry ?? throw new ArgumentNullException(nameof(registry));
-            Types = new TypeMap();
+            Types = new TypeMap { Owner = registry };
         }
+
+        /// <summary>
+        /// Язык ошибок регистрации и язык по умолчанию для компиляции и движков на этом
+        /// хосте (<see cref="HostRegistry.Language"/>). По умолчанию — ru.
+        /// </summary>
+        public HostBuilder UseLanguage(Language language)
+        {
+            Registry.Language = language;
+            return this;
+        }
+
+        internal string T(string ru, string en) => Loc.T(Registry.Language, ru, en);
 
         // ===================================================================
         // Енумы
@@ -61,7 +74,7 @@ namespace Dsl.Hosting
         ///     .Member(Slot.AttackSpeed, "Множитель времён оружия. Меньше — быстрее.");
         /// </code>
         /// </summary>
-        public EnumBuilder<TEnum> Enum<TEnum>(string name = null, string summary = null) where TEnum : struct, Enum
+        public EnumBuilder<TEnum> Enum<TEnum>(string name = null, DocText summary = null) where TEnum : struct, Enum
         {
             name ??= typeof(TEnum).Name;
 
@@ -71,9 +84,12 @@ namespace Dsl.Hosting
             {
                 if (Convert.ToInt32(values[i]) != i)
                     throw new ArgumentException(
-                        $"Енум {typeof(TEnum).Name} нельзя открыть скриптам: значения должны идти " +
+                        T($"Енум {typeof(TEnum).Name} нельзя открыть скриптам: значения должны идти " +
                         $"строго 0..{values.Length - 1} без пропусков (нарушает '{names[i]}'). " +
-                        "Либо перенумеруйте енум, либо оберните его вручную через сырой HostRegistry.");
+                        "Либо перенумеруйте енум, либо оберните его вручную через сырой HostRegistry.",
+                            $"Enum {typeof(TEnum).Name} cannot be exposed to scripts: values must go " +
+                            $"strictly 0..{values.Length - 1} without gaps (violated by '{names[i]}'). " +
+                            "Either renumber the enum or wrap it manually via the raw HostRegistry."));
             }
 
             int id = Registry.DefineEnum(name, summary, names);
@@ -88,7 +104,7 @@ namespace Dsl.Hosting
         // ===================================================================
 
         /// <summary>Регистрирует хостовый класс. Имя по умолчанию — имя типа; summary → в манифест.</summary>
-        public ClassBuilder<T> Class<T>(string name = null, string summary = null) where T : class
+        public ClassBuilder<T> Class<T>(string name = null, DocText summary = null) where T : class
         {
             name ??= typeof(T).Name;
             Registry.DefineClass(name, summary);
@@ -111,7 +127,7 @@ namespace Dsl.Hosting
         /// из .Build(...)) и отдавать скрипту — из метода, свойства или события
         /// (нужны геттеры полей, см. перегрузку Field с getter).
         /// </summary>
-        public StructBuilder<T> Struct<T>(string name = null, string summary = null)
+        public StructBuilder<T> Struct<T>(string name = null, DocText summary = null)
         {
             name ??= typeof(T).Name;
             int id = Registry.DefineStruct(name, summary);
@@ -135,7 +151,7 @@ namespace Dsl.Hosting
         /// Узел — не API-класс: у него нет методов, и вызвать его нельзя. Порядок
         /// свободный, узла может ещё не быть — он создастся.
         /// </summary>
-        public HostBuilder DescribeApiNamespace(string name, string summary)
+        public HostBuilder DescribeApiNamespace(string name, DocText summary)
         {
             Registry.DescribeApiNamespace(name, summary);
             return this;
@@ -164,8 +180,20 @@ namespace Dsl.Hosting
         /// механики блоками «вид id { event ... }», хост поднимает события адресно
         /// по (вид, id). Виды — данные, а не ключевые слова языка.
         /// </summary>
-        public ArchetypeBuilder Archetype(string name, string summary = null) =>
+        public ArchetypeBuilder Archetype(string name, DocText summary = null) =>
             new ArchetypeBuilder(this, Registry.DefineArchetypeKind(name, summary));
+
+        /// <summary>
+        /// Вид архетипа из C#-типа: имя вида — [SalamanderKind], константы вида —
+        /// поля с [KindField] (Const/ConstOr регистрируются сами, описывать поля
+        /// второй раз не нужно). Данные потом забирает engine.Bake&lt;T&gt;().
+        /// Возвращает обычный построитель вида — события объявляются как раньше:
+        /// <code>
+        /// var onCast = host.Kind&lt;SpellDef&gt;().Event&lt;Unit, Unit&gt;("OnCast");
+        /// </code>
+        /// Енумы и структуры, которые встречаются в полях, регистрируйте раньше.
+        /// </summary>
+        public ArchetypeBuilder Kind<T>() => ArchetypeBaking.RegisterKind<T>(this);
 
         // ===================================================================
         // Регистрация по атрибутам (рефлексия только при регистрации)
@@ -265,7 +293,8 @@ namespace Dsl.Hosting
         {
             if (doc != null && doc.Names.Count != paramTypes.Length)
                 throw new ArgumentException(
-                    $"Событие '{name}': в описании {doc.Names.Count} параметров, а в сигнатуре {paramTypes.Length}.");
+                    T($"Событие '{name}': в описании {doc.Names.Count} параметров, а в сигнатуре {paramTypes.Length}.",
+                        $"Event '{name}': the description has {doc.Names.Count} parameters, the signature has {paramTypes.Length}."));
             return Registry.DefineEvent(name, paramTypes, doc?.Summary, doc?.NameArray(), doc?.DocArray());
         }
 

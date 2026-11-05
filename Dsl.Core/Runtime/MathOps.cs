@@ -76,7 +76,8 @@ namespace Dsl.Runtime
                             // |int.MinValue| в int не помещается: Math.Abs бросил бы
                             // OverflowException, и отчёт вышел бы «внутренней ошибкой»
                             if (x.AsInt == int.MinValue)
-                                throw new ScriptError("Math.Abs: модуль -2147483648 не помещается в int.");
+                                throw new ScriptError("Math.Abs: модуль -2147483648 не помещается в int.",
+                                    "Math.Abs: the absolute value of -2147483648 does not fit in int.");
                             return Variant.Int(Math.Abs(x.AsInt));
                         case VariantType.Double:
                             return Variant.Double(Math.Abs(x.AsDouble));
@@ -109,7 +110,8 @@ namespace Dsl.Runtime
                              : Math.Round(d, MidpointRounding.AwayFromZero);
                     if (double.IsNaN(r) || r < int.MinValue || r > int.MaxValue)
                         throw new ScriptError(
-                            $"Math.{Name(op)}: значение {Str(x)} не помещается в int.");
+                            $"Math.{Name(op)}: значение {Str(x)} не помещается в int.",
+                                $"Math.{Name(op)}: the value {Str(x)} does not fit in int.");
                     return Variant.Int((int)r);
                 }
 
@@ -118,7 +120,8 @@ namespace Dsl.Runtime
                     var x = A(0);
                     double d = x.Type == VariantType.Double ? x.AsDouble : x.AsFloat;
                     if (d < 0 || double.IsNaN(d))
-                        throw new ScriptError($"Math.Sqrt: корень из отрицательного числа {Str(x)}.");
+                        throw new ScriptError($"Math.Sqrt: корень из отрицательного числа {Str(x)}.",
+                            $"Math.Sqrt: square root of the negative number {Str(x)}.");
                     return Result(x.Type, Math.Sqrt(d), "Sqrt");
                 }
 
@@ -148,7 +151,7 @@ namespace Dsl.Runtime
                 }
 
                 default:
-                    throw new ScriptError($"Неизвестная операция Math: {op}.");
+                    throw new ScriptError($"Неизвестная операция Math: {op}.", $"Unknown Math operation: {op}.");
             }
         }
 
@@ -158,12 +161,14 @@ namespace Dsl.Runtime
             if (type == VariantType.Double)
             {
                 if (double.IsNaN(r) || double.IsInfinity(r))
-                    throw new ScriptError($"Math.{name}: результат не является конечным числом.");
+                    throw new ScriptError($"Math.{name}: результат не является конечным числом.",
+                        $"Math.{name}: the result is not a finite number.");
                 return Variant.Double(r);
             }
             float f = (float)r;
             if (float.IsNaN(f) || float.IsInfinity(f))
-                throw new ScriptError($"Math.{name}: результат не является конечным числом (или не помещается во float).");
+                throw new ScriptError($"Math.{name}: результат не является конечным числом (или не помещается во float).",
+                    $"Math.{name}: the result is not a finite number (or does not fit in float).");
             return Variant.Float(f);
         }
 
@@ -172,7 +177,8 @@ namespace Dsl.Runtime
         private static double Clamp01(double t) => t < 0 ? 0 : t > 1 ? 1 : t; // NaN проходит как есть — как и в арифметике
 
         private static ScriptError ClampOrder(string lo, string hi) =>
-            new ScriptError($"Math.Clamp: нижняя граница {lo} больше верхней {hi}.");
+            new ScriptError($"Math.Clamp: нижняя граница {lo} больше верхней {hi}.",
+                $"Math.Clamp: the lower bound {lo} is greater than the upper bound {hi}.");
 
         private static string Name(EngineOp op) =>
             op == EngineOp.MathFloor ? "Floor" : op == EngineOp.MathCeil ? "Ceil" : "Round";

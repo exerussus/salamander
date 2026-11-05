@@ -1,4 +1,5 @@
 using System;
+using Dsl.Text;
 using System.Collections.Generic;
 using Dsl.Runtime;
 using Dsl.Semantics;
@@ -33,7 +34,7 @@ namespace Dsl.Hosting
         /// Такое поле объявлено «только для скрипта»: собрать структуру из
         /// C#-значения движок не сможет — для этого нужна перегрузка с геттером.
         /// </summary>
-        public StructBuilder<T> Field<TF>(string name, TF @default = default, string doc = null)
+        public StructBuilder<T> Field<TF>(string name, TF @default = default, DocText doc = null)
         {
             DefineField<TF>(name, @default, doc);
             _io.AddFieldWithoutGetter(name);
@@ -47,7 +48,7 @@ namespace Dsl.Hosting
         /// метода, положить в свойство, передать аргументом события.
         /// </summary>
         public StructBuilder<T> Field<TF>(string name, Func<T, TF> getter,
-                                          TF @default = default, string doc = null)
+                                          TF @default = default, DocText doc = null)
         {
             if (getter == null) throw new ArgumentNullException(nameof(getter));
             DefineField<TF>(name, @default, doc);
@@ -56,7 +57,7 @@ namespace Dsl.Hosting
             return this;
         }
 
-        private void DefineField<TF>(string name, TF @default, string doc)
+        private void DefineField<TF>(string name, TF @default, DocText doc)
         {
             var type = _host.Types.RefOf<TF>();
             EncodeDefault(type, @default, out var v, out var str);
@@ -78,13 +79,16 @@ namespace Dsl.Hosting
 
         // Значение по умолчанию хранится так же, как у констант вида и у констант
         // API, — общим кодировщиком (HostLiteral).
-        private static void EncodeDefault<TF>(TypeRef type, TF value, out Variant variant, out string str)
+        private void EncodeDefault<TF>(TypeRef type, TF value, out Variant variant, out string str)
         {
             if (HostLiteral.TryEncode(type, value, out variant, out str)) return;
             throw new ArgumentException(
-                $"Поле структуры типа '{type?.ToString() ?? "?"}' не поддержано: " +
+                _host.T($"Поле структуры типа '{type?.ToString() ?? "?"}' не поддержано: " +
                 HostLiteral.Supported +
-                " Сущности, коллекции и другие структуры полями быть не могут.");
+                " Сущности, коллекции и другие структуры полями быть не могут.",
+                    $"A struct field of type '{type?.ToString() ?? "?"}' is not supported: " +
+                    HostLiteral.SupportedEn +
+                    " Entities, collections and other structs cannot be fields."));
         }
     }
 }

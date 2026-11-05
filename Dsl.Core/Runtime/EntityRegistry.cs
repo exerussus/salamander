@@ -81,10 +81,10 @@ namespace Dsl.Runtime
         {
             if (v.IsNil) return null;
             if (v.Type != VariantType.Entity)
-                throw new ScriptError("Ожидалась сущность.");
+                throw new ScriptError("Ожидалась сущность.", "Expected an entity.");
             int idx = v.Index;
             if ((uint)idx >= (uint)_count || _versions[idx] != v.Version || _objs[idx] == null)
-                throw new ScriptError("Обращение к уничтоженной сущности (протухший хэндл).");
+                throw new ScriptError("Обращение к уничтоженной сущности (протухший хэндл).", "Access to a destroyed entity (stale handle).");
             return _objs[idx];
         }
 

@@ -652,7 +652,7 @@ namespace Dsl.Tests
             Assert.AreEqual("damage", kind.Consts[0].Name);
             Assert.IsTrue(kind.Consts[0].Required);
             Assert.AreEqual(TypeKind.Float, kind.Consts[0].Type.Kind);
-            Assert.AreEqual("урон удара", kind.Consts[0].Doc);
+            Assert.AreEqual("урон удара", kind.Consts[0].Doc?.Ru);
 
             Assert.IsFalse(kind.Consts[1].Required);
             Assert.AreEqual(TypeKind.Int, kind.Consts[1].Type.Kind);

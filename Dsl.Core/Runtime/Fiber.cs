@@ -43,6 +43,7 @@ namespace Dsl.Runtime
         public bool KillRequested;        // самоубийство через Engine.Kill(self)
         public int BudgetHits;            // сколько тиков подряд файбер упирался в бюджет
         public long InstrSinceYield;      // инструкций с последней КООПЕРАТИВНОЙ точки (wait/yield); ловит спин
+        public bool Synchronous;          // корень из модуля execution: synchronous — исполняется целиком, без переноса
 
         // снапшоты активных for-in (map/list/array): цикл видит коллекцию на
         // момент входа, менять её в теле безопасно. Буферы принадлежат файберу
@@ -84,6 +85,7 @@ namespace Dsl.Runtime
             KillRequested = false;
             BudgetHits = 0;
             InstrSinceYield = 0;
+            Synchronous = false;
             AttachIndex = -1;
             AttachFields = null;
             AttachSelf = Variant.Nil;

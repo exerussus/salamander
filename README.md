@@ -713,6 +713,58 @@ host.Archetype("weapon")
 режим атрибутов). Объявленный контракт уезжает в `salamander-api.json`, так что
 CLI-чекер и LSP ловят ту же ошибку вне игры.
 
+### Запекание: вид из C#-типа (`Kind<T>` / `Bake<T>`)
+
+Когда данные вида игра держит в своих таблицах (сервер, клиентский блоб),
+описывать поля дважды — в C#-структуре и в `Const<T>(name)` — не нужно. Вид
+объявляется типом, данные забираются одной таблицей:
+
+```csharp
+[SalamanderKind("spell", "Заклинание.")]
+public struct SpellDef
+{
+    [KindField(doc: "Стоимость в ОД", required: true)] public int Cost;      // cost
+    [KindField(defaultValue: 1)]                         public int Range;     // ConstOr
+    [KindField(name: "visual_key")]                      public string Visual;
+    [KindField(refKind: "spell")]                        public int Upgrade;   // id → индекс, -1 — пусто
+    [KindField(side: Side.Server, defaultValue: 0)]      public int LootChance;
+}
+
+host.Enum<School>();                                       // енумы и структуры — раньше
+var onCast = host.Kind<SpellDef>().Event<Unit>("OnCast");  // обычный построитель вида
+
+// после LoadProgram / TryHotSwap:
+ArchetypeTable<SpellDef> table  = engine.Bake<SpellDef>();
+ArchetypeTable<SpellDef> client = engine.Bake<SpellDef>(BakeSide.SharedOnly);
+ref readonly var fb = ref table[table.IndexOf("fireball")];
+```
+
+- Имя в скрипте — `name`, иначе имя поля с маленькой буквы (`Cost` → `cost`).
+  Поля без `[KindField]` в вид не входят. Типы: `int`, `float`, `double`,
+  `bool`, `string`, енум, структура хоста; ссылка — `int` с `refKind`.
+- Индекс в таблице — тот же хэндл, что `ResolveArchetype` и адресный `Raise`;
+  порядок — порядок объявления блоков (модули по зависимостям, затем по имени).
+- Запекаются только константы вида — они readonly по определению, поэтому
+  таблица не расходится с тем, что видят скрипты. Значение — итог мержа.
+- Ссылка проверяется при запекании: неизвестный id — `BakeException` со списком
+  ВСЕХ проблем. Проверки ссылок компилятором нет (это строка).
+- Необязательное поле без дефолта, не объявленное блоком, — `default` поля
+  (`0`/`false`/`null`), ссылка — `-1`. Нужно различать «не задано» — задайте дефолт.
+- `Side.Server` — поле только для сервера: в `BakeSide.SharedOnly` оно не читается
+  и остаётся `default`. Сторона задаётся объявлением, а не модулем значения:
+  серверный патч общего поля остаётся общим полем.
+- `LayoutHash` — вид, набор и порядок id, поля; совпал у клиента и сервера —
+  индексы значат одно и то же (карантин мода на одной машине его меняет).
+  `ContentHash` — плюс все запечённые значения (версия блоба). Хэши стабильны
+  между машинами (FNV-1a по строкам и битам значений).
+- `ArchetypeTable<T>.Diff(old, new)` — что изменилось по id: `Added`/`Removed`/
+  `Changed` с именами полей, плюс `IndicesShifted`. Работает и после
+  `TryHotSwap` (readonly пересчитаны), и после `LoadProgram` (новые сущности —
+  горячая замена их не принимает): запеките до, запеките после, сравните.
+- Запекание — на загрузке контента, не в игровом цикле: значения пишутся
+  рефлексией с упаковкой. Инициализатор поля может звать хост — тогда значения
+  зависят от хоста, на котором запекали.
+
 ### Константы API: именованные значения игры
 
 Игре нужно отдавать скриптам не только вызовы, но и **именованные значения** —
@@ -1001,7 +1053,8 @@ host.Quarantine(QuarantineScope.File);   // то же: registry.Quarantine = Qua
 инструментов — зовут их они, не движок. Инструменты (чекер, LSP) едят то же:
 если сборщик экспортировал `salamander-build.json` (упорядоченный список папок
 модулей — `{"modules": ["mods/base", "mods/patch"]}`), берётся РОВНО он; обход
-папки — дев-режим без сборщика.
+папки — дев-режим без сборщика. Необязательный ключ `"language": "ru" | "en"`
+задаёт язык сообщений и подсказок инструментов.
 
 **Свой формат пака — раскрытым build-файлом.** Если `module.json` игры не в
 апстримном формате (свои ключи, маски), внешние процессы (LSP, чекер) не
@@ -1016,6 +1069,8 @@ host.Quarantine(QuarantineScope.File);   // то же: registry.Quarantine = Qua
     "files": [ { "logical": "core.magic/content/a.sal", "path": "C:/…/a.sal" } ] } ] }
 ```
 
+Манифест переносится целиком — включая `execution` и `state`: без них инструменты
+проверят модуль как обычный.
 Файлы берутся ровно эти и в этом порядке; строки и объекты можно смешивать.
 Пустой `"files": []` — пак без скриптов намеренно (без W0300); нет ключа
 `files` — пак пуст подозрительно (W0300). Пути — абсолютные или от папки
@@ -1027,6 +1082,60 @@ build-файла.
 в гите и не в билде; редактор игры переписывает файл там при каждой правке
 `.sal`/`module.json`, и VS Code, Rider и чекер видят паки глазами игры без
 единой настройки.
+
+## Язык сообщений и справки: `ru` / `en`
+
+Ошибки компилятора, сообщения движка, подсказки LSP/IDE и справка бывают на двух
+языках: **английский** — база для международных команд, **русский** — для удобства.
+Других языков нет и не планируется. По умолчанию — `ru`, так что проекты без
+настройки ведут себя как раньше. **Коды** (`E0101`, `W0300`…) от языка не
+зависят — фильтры и тесты на коды не ломаются.
+
+Язык задаётся на каждом уровне отдельно:
+
+| Где | Как |
+|---|---|
+| Хост (по умолчанию для всего ниже) | `host.UseLanguage(Language.En)` или `registry.Language = Language.En` |
+| Компиляция | `ScriptCompiler.Compile(host, apiVersion, modules, quarantine, Language.En)`; без параметра — язык хоста |
+| Движок | `engine.Language = Language.En` (начальное — язык хоста); можно менять на лету |
+| Unity | поле «Язык / Language» у `ScriptHostBootstrap`; встроенная IDE берёт его же |
+| LSP, DslCheck | `"language": "en"` в `salamander-build.json`; в VS Code — настройка `salamander.language` (важнее build-файла); у чекера — `--language en` |
+
+Ошибка исполнения из хоста тоже может быть двуязычной:
+`throw new ScriptError("сломалось", "it broke")` — движок покажет текст на своём языке.
+
+### Справка хоста на двух языках
+
+Везде, где регистрация принимала строку справки, теперь принимается `DocText`.
+Обычная строка превращается в текст без языка и показывается при любой
+настройке — старый код компилируется без правок. Если нужного языка нет,
+показывается другой.
+
+```csharp
+host.Api("Unit")
+    .Fn("Heal", (Unit u, int hp) => u.Heal(hp),
+        Sig.Doc(ru: "Лечит юнита.", en: "Heals the unit.")
+           .P("u")
+           .P("hp", ru: "сколько HP вернуть", en: "HP to restore"))
+    .Const("MaxLevel", 60, DocText.Of(ru: "Максимальный уровень", en: "Max level"));
+
+host.Enum<Slot>("Slot", DocText.Of(ru: "Слоты.", en: "Slots."))
+    .Member(Slot.Speed, ru: "м/с", en: "m/s");
+
+// атрибуты: английский — именованным свойством (после позиционных аргументов)
+[SalamanderMethod("Лечит цель.", En = "Heals the target.")]
+[SalamanderMember("Скорость", En = "Speed")]
+[SalamanderKind("spell", "Заклинание.", SummaryEn = "Spell.")]
+[KindField(doc: "Стоимость в ОД", required: true, DocEn = "AP cost")]
+```
+
+В `salamander-api.json` двуязычная справка пишется объектом
+`{"ru": "…", "en": "…"}`, одноязычная — строкой, как раньше; старые манифесты
+читаются без изменений. Справка встроенных `Engine.*` и `Math.*` — на обоих языках.
+
+Сырой `HostRegistry` хранит справку как `DocText` (`Summary`, `Doc`, `ParamDocs`…);
+текст на нужном языке — `doc?.Get(Language.En)`. Массив пояснений в
+`DefineEnum(..., docs)` теперь `DocText[]` (`DocText.FromArray(strings)`).
 
 ## LSP: одна поддержка для VS Code, Rider, Sublime Text и любого редактора
 
@@ -1086,7 +1195,10 @@ hover, ссылки на них не дают ложного «зависит о
   (`CollectModules()`), подключаются сами. Свой хост IDE задаёт их через
   `IdeOptions.ReferenceModules` или `SalIdeView.SetReferenceModules(...)`.
 
-- Сборка (один раз): `dotnet publish Tools/DslLsp -c Release -o Tools/DslLsp/publish`
+- Сборка (один раз): `dotnet publish Tools/DslLsp -c Release -o Tools/DslLsp/publish`.
+  На Windows всё сразу — `build-tools.bat` из корня: LSP-сервер, CLI-чекер, плагин
+  Rider и расширение VS Code (цели `lsp`, `check`, `rider`, `vscode`; `-Tests` —
+  ещё и тесты; `-InstallRider` / `-InstallVsCode` — сразу установить).
 - **VS Code**: расширение — тонкий клиент, находит сервер само (или настройка
   `salamander.server.path`).
 - **Rider**: плагин `Tools/rider/plugin` (ставится с диска, нужен LSP4IJ) —
@@ -1148,8 +1260,8 @@ hover, ссылки на них не дают ложного «зависит о
 
 | Поле | По умолчанию | От чего защищает |
 |---|---|---|
-| `TickInstructionBudget` | 5 000 000 | суммарная работа скриптов за кадр |
-| `MaxInstructionsPerFiberRun` | 200 000 | один файбер не выедает весь кадр |
+| `TickInstructionBudget` | 5 000 000 | суммарная работа скриптов за кадр (синхронные модули не откладывает) |
+| `MaxInstructionsPerFiberRun` | 200 000 | один файбер не выедает весь кадр; для синхронного обработчика — предел запуска |
 | `StuckInstructionLimit` | 200 000 | цикл без эффективного `wait` |
 | `MaxFibersStartedPerTick` | 4096 | спавн-бомба |
 | `MaxCallDepth` | 512 | бесконечная рекурсия (память кончается раньше бюджета) |
@@ -1203,6 +1315,7 @@ hover, ссылки на них не дают ложного «зависит о
   рецепта спрашивает про единицы; json-манифест API для оффлайн-чекера и IDE.
 - **Модули**: манифесты, зависимости (топологический порядок),
   `Enable/DisableModule`, синхронный режим (`execution: synchronous`),
+  модули без состояния (`state: none`, см. INTEGRATION.md),
   **карантин**: в игре сбойный модуль исключается вместе с зависимыми, а не
   выключает все моды и базовые скрипты разом (`ScriptCompiler.Compile(...,
   quarantineBrokenModules: true)`, список — в `CompilationResult.Excluded`);

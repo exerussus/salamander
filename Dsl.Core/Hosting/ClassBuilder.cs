@@ -1,4 +1,5 @@
 using System;
+using Dsl.Text;
 using Dsl.Runtime;
 using Dsl.Semantics;
 
@@ -36,7 +37,7 @@ namespace Dsl.Hosting
         }
 
         /// <summary>Свойство только для чтения.</summary>
-        public ClassBuilder<T> Prop<TV>(string name, Func<T, TV> getter, string doc = null)
+        public ClassBuilder<T> Prop<TV>(string name, Func<T, TV> getter, DocText doc = null)
         {
             if (getter == null) throw new ArgumentNullException(nameof(getter));
             var write = _b.Types.Writer<TV>();
@@ -48,7 +49,7 @@ namespace Dsl.Hosting
         }
 
         /// <summary>Свойство на чтение и запись.</summary>
-        public ClassBuilder<T> Prop<TV>(string name, Func<T, TV> getter, Action<T, TV> setter, string doc = null)
+        public ClassBuilder<T> Prop<TV>(string name, Func<T, TV> getter, Action<T, TV> setter, DocText doc = null)
         {
             if (getter == null) throw new ArgumentNullException(nameof(getter));
             if (setter == null) throw new ArgumentNullException(nameof(setter));
@@ -71,8 +72,10 @@ namespace Dsl.Hosting
         {
             if (doc != null && doc.Names.Count != args.Length)
                 throw new ArgumentException(
-                    $"Метод '{_className}.{name}': в описании {doc.Names.Count} параметров, а у метода " +
-                    $"{args.Length}. Приёмник в описании не участвует — он не аргумент скрипта.");
+                    _b.T($"Метод '{_className}.{name}': в описании {doc.Names.Count} параметров, а у метода " +
+                    $"{args.Length}. Приёмник в описании не участвует — он не аргумент скрипта.",
+                        $"Method '{_className}.{name}': the description has {doc.Names.Count} parameters, the method has " +
+                        $"{args.Length}. The receiver is not part of the description — it is not a script argument."));
             _b.Registry.DefineClassMethod(_className, name, args, ret, fn,
                 doc?.Summary, doc?.NameArray(), doc?.DocArray());
         }
@@ -86,7 +89,8 @@ namespace Dsl.Hosting
         {
             var o = h.ResolveObject(v);
             if (o == null)
-                throw new ScriptError($"'{_className}.{method}' вызван на пустой ссылке.");
+                throw new ScriptError($"'{_className}.{method}' вызван на пустой ссылке.",
+                    $"'{_className}.{method}' was called on a null reference.");
             return (T)o;
         }
 

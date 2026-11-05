@@ -14,6 +14,8 @@ namespace Dsl.Text
         private readonly int _fileId;
         private readonly DiagnosticBag _diag;
 
+        private string T(string ru, string en) => Loc.T(_diag?.Language ?? Language.Ru, ru, en);
+
         private int _pos;
         private int _line;
         private int _col;
@@ -140,7 +142,8 @@ namespace Dsl.Text
                     else
                         // молча проглотить остаток файла — худший из вариантов:
                         // код «исчезает», а компилятор не жалуется
-                        _diag?.Error("E0218", "Незакрытый блочный комментарий '/*' — остаток файла не разобран.", open);
+                        _diag?.Error("E0218", T("Незакрытый блочный комментарий '/*' — остаток файла не разобран.",
+                            "Unclosed block comment '/*' — the rest of the file was not parsed."), open);
                     continue;
                 }
                 break;
@@ -240,7 +243,7 @@ namespace Dsl.Text
 
             if (End)
             {
-                _diag?.Error("E0002", "Незакрытая строковая литеральная константа.", start);
+                _diag?.Error("E0002", T("Незакрытая строковая литеральная константа.", "Unterminated string literal."), start);
             }
             else
             {
@@ -274,8 +277,10 @@ namespace Dsl.Text
                     // неизвестный escape молча превращался в сам символ, поэтому
                     // "C:\data" читалось как "C:data" — обратный слэш исчезал без следа
                     _diag?.Warning("W0100",
-                        $"Неизвестная escape-последовательность '\\{e}' — взята как символ '{e}'. " +
-                        "Обратный слэш пишется как '\\\\'.", at);
+                        T($"Неизвестная escape-последовательность '\\{e}' — взята как символ '{e}'. " +
+                        "Обратный слэш пишется как '\\\\'.",
+                            $"Unknown escape sequence '\\{e}' — taken as the character '{e}'. " +
+                            "A backslash is written as '\\\\'."), at);
                     return e.ToString();
             }
         }
@@ -334,7 +339,7 @@ namespace Dsl.Text
                 case '!': return Tk(TokenKind.Not, "!", start);
             }
 
-            _diag?.Error("E0001", $"Неожиданный символ '{c}'.", start);
+            _diag?.Error("E0001", T($"Неожиданный символ '{c}'.", $"Unexpected character '{c}'."), start);
             return Tk(TokenKind.Invalid, c.ToString(), start);
         }
 

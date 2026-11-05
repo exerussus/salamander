@@ -1,3 +1,4 @@
+using Dsl.Text;
 namespace Dsl.Runtime
 {
     /// <summary>
@@ -6,6 +7,9 @@ namespace Dsl.Runtime
     /// </summary>
     public interface IHostContext
     {
+        /// <summary>Язык сообщений движка (для текстов ошибок хоста).</summary>
+        Language Language { get; }
+
         int InternString(string s);
         string ResolveString(Variant v);        // Nil -> null
         Variant WrapObject(object o);            // зарегистрировать/найти хэндл сущности
@@ -83,9 +87,21 @@ namespace Dsl.Runtime
         public void ReturnNil() { Result = Variant.Nil; HasResult = true; }
     }
 
-    /// <summary>Ошибка исполнения скрипта. Убивает текущий файбер, но не игру.</summary>
+    /// <summary>
+    /// Ошибка исполнения скрипта. Убивает текущий файбер, но не игру.
+    /// Текст можно дать на двух языках — движок покажет тот, что выбран у него
+    /// (<see cref="ScriptEngine.Language"/>); <see cref="System.Exception.Message"/> — русский.
+    /// </summary>
     public sealed class ScriptError : System.Exception
     {
-        public ScriptError(string message) : base(message) { }
+        /// <summary>Английский текст (у ошибки с одним текстом совпадает с Message).</summary>
+        public string MessageEn { get; }
+
+        public ScriptError(string message) : base(message) { MessageEn = message; }
+
+        public ScriptError(string ru, string en) : base(ru ?? en) { MessageEn = en ?? ru; }
+
+        /// <summary>Текст на языке <paramref name="lang"/>.</summary>
+        public string MessageFor(Language lang) => lang == Language.En ? MessageEn : Message;
     }
 }

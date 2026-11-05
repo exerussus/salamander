@@ -1,4 +1,5 @@
 using System;
+using Dsl.Text;
 using System.Collections.Generic;
 using Dsl.Runtime;
 using Dsl.Semantics;
@@ -28,6 +29,9 @@ namespace Dsl.Hosting
         }
 
         private readonly Dictionary<Type, Entry> _entries = new Dictionary<Type, Entry>();
+
+        /// <summary>Реестр-владелец: из него берётся язык сообщений (может быть null).</summary>
+        public HostRegistry Owner { get; set; }
 
         public TypeMap()
         {
@@ -98,7 +102,8 @@ namespace Dsl.Hosting
                 {
                     int i = v.EnumValue;
                     if ((uint)i >= (uint)byValue.Length)
-                        throw new ScriptError($"Значение {i} вне диапазона енума {typeof(TEnum).Name}.");
+                        throw new ScriptError($"Значение {i} вне диапазона енума {typeof(TEnum).Name}.",
+                            $"Value {i} is out of range of enum {typeof(TEnum).Name}.");
                     return byValue[i];
                 }),
                 (VariantWriter<TEnum>)((h, x) => Variant.Enum(enumId, IndexOf(byValue, x))));
@@ -109,7 +114,8 @@ namespace Dsl.Hosting
             var cmp = EqualityComparer<TEnum>.Default;
             for (int i = 0; i < values.Length; i++)
                 if (cmp.Equals(values[i], x)) return i;
-            throw new ScriptError($"Значение {x} не входит в зарегистрированный енум {typeof(TEnum).Name}.");
+            throw new ScriptError($"Значение {x} не входит в зарегистрированный енум {typeof(TEnum).Name}.",
+                $"Value {x} is not in the registered enum {typeof(TEnum).Name}.");
         }
 
         // ===== доступ (бросают понятные ошибки на этапе регистрации) =======
@@ -132,9 +138,12 @@ namespace Dsl.Hosting
             throw NotRegistered(typeof(T));
         }
 
-        private static Exception NotRegistered(Type t) => new InvalidOperationException(
-            $"Тип {t.Name} не зарегистрирован в скриптовом API. " +
+        private Exception NotRegistered(Type t) => new InvalidOperationException(
+            Loc.T(Owner?.Language ?? Language.Ru, $"Тип {t.Name} не зарегистрирован в скриптовом API. " +
             $"Вызовите host.Class<{t.Name}>() или host.Enum<{t.Name}>() ДО использования типа " +
-            "в свойствах, методах и событиях (или спуститесь на сырой HostRegistry).");
+            "в свойствах, методах и событиях (или спуститесь на сырой HostRegistry).",
+                $"Type {t.Name} is not registered in the script API. " +
+                $"Call host.Class<{t.Name}>() or host.Enum<{t.Name}>() BEFORE using the type " +
+                "in properties, methods and events (or drop down to the raw HostRegistry)."));
     }
 }

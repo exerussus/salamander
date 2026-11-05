@@ -1,4 +1,5 @@
 using System;
+using Dsl.Text;
 using System.Collections.Generic;
 using Dsl.Codegen;
 
@@ -17,6 +18,9 @@ namespace Dsl.Runtime
     public sealed class HotSwapReport
     {
         /// <summary>Замена применена. false — программа несовместима, в движке всё как было.</summary>
+        /// <summary>Язык <see cref="ToString"/> (берётся у движка, создавшего отчёт).</summary>
+        public Language Language;
+
         public bool Applied;
         /// <summary>Почему не применено (null, если применено).</summary>
         public string Reason;
@@ -33,19 +37,21 @@ namespace Dsl.Runtime
         /// <summary>Ничего не поменялось вовсе (тот же код) — замена ничего не делала.</summary>
         public bool NoChanges => Applied && ChangedFunctions.Count == 0 && LinesOnlyUpdated == 0;
 
-        internal static HotSwapReport Reject(string reason) => new HotSwapReport { Applied = false, Reason = reason };
+        internal static HotSwapReport Reject(string reason, Language language) => new HotSwapReport { Applied = false, Reason = reason, Language = language };
 
         public override string ToString()
         {
-            if (!Applied) return "горячая замена невозможна: " + Reason;
-            if (NoChanges) return "код не изменился";
+            if (!Applied) return Loc.T(Language, "горячая замена невозможна: " + Reason, "hot swap is impossible: " + Reason);
+            if (NoChanges) return Loc.T(Language, "код не изменился", "the code has not changed");
             var sb = new System.Text.StringBuilder();
-            sb.Append("горячая замена: ");
-            sb.Append(ChangedFunctions.Count == 0 ? "тела не менялись" : string.Join(", ", ChangedFunctions));
-            if (LinesOnlyUpdated > 0) sb.Append($"; строк сдвинуто у {LinesOnlyUpdated} функций");
-            if (FramesOnOldCode > 0) sb.Append($"; дорабатывают старую версию: {FramesOnOldCode} кадров");
-            if (FibersKilled > 0) sb.Append($"; убито файберов: {FibersKilled}");
-            if (ReadOnlyFieldsReinitialized) sb.Append("; readonly-поля пересчитаны");
+            sb.Append(Loc.T(Language, "горячая замена: ", "hot swap: "));
+            sb.Append(Loc.T(Language, ChangedFunctions.Count == 0 ? "тела не менялись" : string.Join(", ", ChangedFunctions),
+                ChangedFunctions.Count == 0 ? "no bodies changed" : string.Join(", ", ChangedFunctions)));
+            if (LinesOnlyUpdated > 0) sb.Append(Loc.T(Language, $"; строк сдвинуто у {LinesOnlyUpdated} функций", $"; lines shifted in {LinesOnlyUpdated} functions"));
+            if (FramesOnOldCode > 0) sb.Append(Loc.T(Language, $"; дорабатывают старую версию: {FramesOnOldCode} кадров",
+                $"; finishing on the old version: {FramesOnOldCode} frames"));
+            if (FibersKilled > 0) sb.Append(Loc.T(Language, $"; убито файберов: {FibersKilled}", $"; fibers killed: {FibersKilled}"));
+            if (ReadOnlyFieldsReinitialized) sb.Append(Loc.T(Language, "; readonly-поля пересчитаны", "; readonly fields recomputed"));
             return sb.ToString();
         }
     }
@@ -88,14 +94,14 @@ namespace Dsl.Runtime
         /// </summary>
         public HotSwapReport TryHotSwap(CompiledProgram next, HotSwapFiberPolicy policy = HotSwapFiberPolicy.FinishOnOldCode)
         {
-            if (next == null) return HotSwapReport.Reject("нет новой программы");
-            if (_prog == null) return HotSwapReport.Reject("программа ещё не загружена");
-            if (_current != null) return HotSwapReport.Reject("замена изнутри исполняющегося скрипта");
+            if (next == null) return HotSwapReport.Reject(T("нет новой программы", "no new program"), Language);
+            if (_prog == null) return HotSwapReport.Reject(T("программа ещё не загружена", "no program is loaded yet"), Language);
+            if (_current != null) return HotSwapReport.Reject(T("замена изнутри исполняющегося скрипта", "swap from inside an executing script"), Language);
 
             string why = LayoutMismatch(_prog, next);
-            if (why != null) return HotSwapReport.Reject(why);
+            if (why != null) return HotSwapReport.Reject(why, Language);
 
-            var report = new HotSwapReport { Applied = true };
+            var report = new HotSwapReport { Applied = true, Language = Language };
             var old = _prog;
             int live = old.LiveFunctions;
 
@@ -288,75 +294,91 @@ namespace Dsl.Runtime
         /// null — раскладка совпадает (меняться могут только тела функций);
         /// иначе — что именно изменилось, человеческим языком.
         /// </summary>
-        private static string LayoutMismatch(CompiledProgram o, CompiledProgram n)
+        private string LayoutMismatch(CompiledProgram o, CompiledProgram n)
         {
             int live = o.LiveFunctions;
             if (n.LiveFunctions != live || n.Functions.Length != n.LiveFunctions)
-                return $"изменился набор функций ({live} → {n.LiveFunctions}): добавлен или удалён член, слой или обработчик";
+                return T($"изменился набор функций ({live} → {n.LiveFunctions}): добавлен или удалён член, слой или обработчик",
+                    $"the set of functions changed ({live} → {n.LiveFunctions}): a member, layer or handler was added or removed");
             for (int i = 0; i < live; i++)
             {
                 var a = o.Functions[i];
                 var b = n.Functions[i];
                 if (!string.Equals(a.Name, b.Name, StringComparison.Ordinal))
-                    return $"изменился набор функций: на месте '{a.Name}' теперь '{b.Name}'";
+                    return T($"изменился набор функций: на месте '{a.Name}' теперь '{b.Name}'",
+                        $"the set of functions changed: '{a.Name}' is now '{b.Name}'");
                 if (a.ParamCount != b.ParamCount)
-                    return $"у '{a.Name}' изменилось число параметров ({a.ParamCount} → {b.ParamCount})";
+                    return T($"у '{a.Name}' изменилось число параметров ({a.ParamCount} → {b.ParamCount})",
+                        $"'{a.Name}' changed its parameter count ({a.ParamCount} → {b.ParamCount})");
             }
 
-            if (o.StaticCount != n.StaticCount) return "изменился набор полей";
+            if (o.StaticCount != n.StaticCount) return T("изменился набор полей", "the set of fields changed");
             if (!SameSeq(o.StaticKeys, n.StaticKeys, out int si))
-                return $"изменились поля (ключ '{At(o.StaticKeys, si)}' → '{At(n.StaticKeys, si)}')";
-            if (!SameSeq(o.StaticReadOnly, n.StaticReadOnly, out si)) return $"поле '{At(o.StaticKeys, si)}' стало/перестало быть readonly";
-            if (!SameSeq(o.StaticDeclared, n.StaticDeclared, out si)) return $"поле '{At(o.StaticKeys, si)}' объявлено/убрано в скрипте";
+                return T($"изменились поля (ключ '{At(o.StaticKeys, si)}' → '{At(n.StaticKeys, si)}')",
+                    $"the fields changed (key '{At(o.StaticKeys, si)}' → '{At(n.StaticKeys, si)}')");
+            if (!SameSeq(o.StaticReadOnly, n.StaticReadOnly, out si)) return T($"поле '{At(o.StaticKeys, si)}' стало/перестало быть readonly",
+                $"field '{At(o.StaticKeys, si)}' became or stopped being readonly");
+            if (!SameSeq(o.StaticDeclared, n.StaticDeclared, out si)) return T($"поле '{At(o.StaticKeys, si)}' объявлено/убрано в скрипте",
+                $"field '{At(o.StaticKeys, si)}' was declared or removed in the script");
             int dn = Math.Max(o.StaticDefaults?.Length ?? 0, n.StaticDefaults?.Length ?? 0);
             for (int i = 0; i < dn; i++)
-                if (!SameDefault(o, n, i)) return $"изменился дефолт вида у поля '{At(o.StaticKeys, i)}'";
+                if (!SameDefault(o, n, i)) return T($"изменился дефолт вида у поля '{At(o.StaticKeys, i)}'",
+                    $"the kind default of field '{At(o.StaticKeys, i)}' changed");
 
-            if (!SameSeq(o.Modules, n.Modules, out _)) return "изменился набор модулей";
+            if (!SameSeq(o.Modules, n.Modules, out _)) return T("изменился набор модулей", "the set of modules changed");
+            if (!SameSeq(o.ModuleSynchronous, n.ModuleSynchronous, out si))
+                return T($"у модуля '{At(o.Modules, si)}' изменился режим исполнения (execution)",
+                    $"module '{At(o.Modules, si)}' changed its execution mode (execution)");
+            if (!SameSeq(o.ModuleStateless, n.ModuleStateless, out si))
+                return T($"у модуля '{At(o.Modules, si)}' изменился режим состояния (state)",
+                    $"module '{At(o.Modules, si)}' changed its state mode (state)");
 
-            if (o.Triggers.Length != n.Triggers.Length) return "изменился набор триггеров";
+            if (o.Triggers.Length != n.Triggers.Length) return T("изменился набор триггеров", "the set of triggers changed");
             for (int i = 0; i < o.Triggers.Length; i++)
             {
                 var a = o.Triggers[i]; var b = n.Triggers[i];
                 if (a.Name != b.Name || a.Module != b.Module || a.ModuleIndex != b.ModuleIndex || a.ActionFuncIndex != b.ActionFuncIndex)
-                    return $"изменился триггер '{a.Name}'";
+                    return T($"изменился триггер '{a.Name}'", $"trigger '{a.Name}' changed");
             }
             if (!SameTable(o.EventHandlers, n.EventHandlers, (x, y) => x.TriggerId == y.TriggerId && x.FuncIndex == y.FuncIndex))
-                return "изменились обработчики событий (добавлен или удалён event)";
+                return T("изменились обработчики событий (добавлен или удалён event)",
+                    "event handlers changed (an event was added or removed)");
 
-            if (o.Listeners.Length != n.Listeners.Length) return "изменился набор listener";
+            if (o.Listeners.Length != n.Listeners.Length) return T("изменился набор listener", "the set of listeners changed");
             for (int i = 0; i < o.Listeners.Length; i++)
             {
                 var a = o.Listeners[i]; var b = n.Listeners[i];
                 if (a.Name != b.Name || a.Module != b.Module || a.FieldCount != b.FieldCount
                     || a.InitFuncIndex != b.InitFuncIndex || a.OnSubscribeFunc != b.OnSubscribeFunc
                     || a.OnUnsubscribeFunc != b.OnUnsubscribeFunc || !SameSeq(a.FieldNames, b.FieldNames, out _))
-                    return $"изменился listener '{a.Name}'";
+                    return T($"изменился listener '{a.Name}'", $"listener '{a.Name}' changed");
             }
             if (!SameTable(o.ListenerHandlerFunc, n.ListenerHandlerFunc, (x, y) => x == y))
-                return "изменились обработчики listener";
+                return T("изменились обработчики listener", "listener handlers changed");
             if (!SameSeq(o.EventHasListenerHandlers, n.EventHasListenerHandlers, out _))
-                return "изменились обработчики listener";
+                return T("изменились обработчики listener", "listener handlers changed");
 
-            if (o.ArchetypeKinds.Length != n.ArchetypeKinds.Length) return "изменились виды архетипов";
+            if (o.ArchetypeKinds.Length != n.ArchetypeKinds.Length) return T("изменились виды архетипов", "archetype kinds changed");
             for (int k = 0; k < o.ArchetypeKinds.Length; k++)
             {
                 var a = o.ArchetypeKinds[k]; var b = n.ArchetypeKinds[k];
                 if (a.Name != b.Name || a.EventCount != b.EventCount || !SameSeq(a.EventNames, b.EventNames, out _))
-                    return $"изменился вид архетипа '{a.Name}'";
+                    return T($"изменился вид архетипа '{a.Name}'", $"archetype kind '{a.Name}' changed");
                 if (!SameSeq(a.Ids, b.Ids, out int ii))
-                    return $"изменился набор сущностей вида '{a.Name}' (id '{At(a.Ids, ii)}' → '{At(b.Ids, ii)}')";
+                    return T($"изменился набор сущностей вида '{a.Name}' (id '{At(a.Ids, ii)}' → '{At(b.Ids, ii)}')",
+                        $"the set of entities of kind '{a.Name}' changed (id '{At(a.Ids, ii)}' → '{At(b.Ids, ii)}')");
                 if (!SameTable(a.Handlers, b.Handlers, (x, y) => x.Func == y.Func && x.ModuleIndex == y.ModuleIndex))
-                    return $"изменились обработчики у сущностей вида '{a.Name}' (добавлен или удалён event)";
+                    return T($"изменились обработчики у сущностей вида '{a.Name}' (добавлен или удалён event)",
+                        $"handlers of entities of kind '{a.Name}' changed (an event was added or removed)");
             }
 
             int en = o.ScriptEnums?.Length ?? 0;
-            if (en != (n.ScriptEnums?.Length ?? 0)) return "изменился набор енумов";
+            if (en != (n.ScriptEnums?.Length ?? 0)) return T("изменился набор енумов", "the set of enums changed");
             for (int i = 0; i < en; i++)
             {
                 var a = o.ScriptEnums[i]; var b = n.ScriptEnums[i];
                 if (a.Id != b.Id || a.Name != b.Name || !SameSeq(a.Members, b.Members, out _))
-                    return $"изменился енум '{a.Name}'";
+                    return T($"изменился енум '{a.Name}'", $"enum '{a.Name}' changed");
             }
             return null;
         }

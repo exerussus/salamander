@@ -40,5 +40,10 @@ namespace Dsl.Hosting
         public const string Supported =
             "значением может быть только литерал (bool/int/float/double/string) " +
             "или элемент енума.";
+
+        /// <summary>То же по-английски.</summary>
+        public const string SupportedEn =
+            "the value can only be a literal (bool/int/float/double/string) " +
+            "or an enum member.";
     }
 }

@@ -2,7 +2,7 @@
     <!-- id прежний (был плагин только со значком): установка поверх заменяет его, а не ставит второй -->
     <id>com.exerussus.salamander.icon</id>
     <name>Salamander</name>
-    <version>2.0.1</version>
+    <version>2.0.2</version>
     <vendor>Exerussus</vendor>
     <description><![CDATA[
     Support for <b>Salamander</b> scripts (<code>.sal</code>) in JetBrains Rider:

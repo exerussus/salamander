@@ -1,0 +1,14 @@
+{
+  "displayName": "Salamander (game scripting language)",
+  "description": "Syntax highlighting, compile errors and completion for .sal — triggers, events, fibers.",
+  "command.check": "Salamander: check scripts (compile)",
+  "config.server.path": "Full path to DslLsp.dll (the LSP server). Empty — search the workspace (Tools/DslLsp/publish, then bin/...). Absolute or relative to the workspace root; ${workspaceFolder} is supported. It must be the .dll, not the .exe: the server is started as «dotnet <path>». Reload the window after changing it.",
+  "config.apiManifest": "Path to salamander-api.json. Empty — search the workspace root, then the nearest one in subfolders. Absolute or relative to the root; ${workspaceFolder} is supported.",
+  "config.modulesRoot": "Folder under which to look for modules (module.json) and .sal files. Empty — the workspace root. In a Unity project set it to, for example, Assets/StreamingAssets/Core.",
+  "config.referencePaths": "Folders with reference modules — those the game sees but the workspace does not contain (the game's base scripts, mod dependencies). They are compiled together with the workspace only for references and hints: classes, fields, methods with signatures and «///» descriptions, go to definition. Their errors are not shown. Only modules the workspace depends on are taken. Absolute paths or relative to the root; ${workspaceFolder} is supported.",
+  "config.buildFile": "Path to salamander-build.json (an ordered list of module folders). Empty — search the modules root. If the file exists, EXACTLY the modules listed in it are taken.",
+  "config.language.auto": "From salamander-build.json (the \"language\" key), otherwise Russian.",
+  "config.language.ru": "Russian.",
+  "config.language.en": "English.",
+  "config.language": "Language of compiler errors, hints and documentation (including the game's documentation when it is given in two languages). Empty — from salamander-build.json, otherwise Russian."
+}

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Text;
 using Dsl.Compilation;
+using Dsl.Text;
 
 namespace Dsl.Tooling
 {
@@ -19,28 +20,32 @@ namespace Dsl.Tooling
             return $"{owner}.{m.Name}({string.Join(", ", ps)}) -> {m.Returns}";
         }
 
-        public static string MethodDocMd(ApiManifest.MethodDef m)
+        public static string MethodDocMd(ApiManifest.MethodDef m, Language lang = Language.Ru)
         {
             var sb = new StringBuilder();
-            if (!string.IsNullOrEmpty(m.Summary)) sb.AppendLine(m.Summary);
+            string summary = m.Summary?.Get(lang);
+            if (!string.IsNullOrEmpty(summary)) sb.AppendLine(summary);
             foreach (var pd in m.Params)
-                if (!string.IsNullOrEmpty(pd.Doc)) sb.AppendLine($"- `{pd.Name}` — {pd.Doc}");
+            {
+                string doc = pd.Doc?.Get(lang);
+                if (!string.IsNullOrEmpty(doc)) sb.AppendLine($"- `{pd.Name}` — {doc}");
+            }
             return sb.Length == 0 ? null : sb.ToString();
         }
 
         /// <summary>Описание узла составного имени API, если игра его задала.</summary>
-        public static string NamespaceSummary(ApiManifest api, string name)
+        public static string NamespaceSummary(ApiManifest api, string name, Language lang = Language.Ru)
         {
             if (api?.ApiNamespaces == null) return null;
             foreach (var ns in api.ApiNamespaces)
-                if (ns.Name == name) return string.IsNullOrEmpty(ns.Summary) ? null : ns.Summary;
+                if (ns.Name == name) return ns.Summary?.Get(lang);
             return null;
         }
 
         /// <summary>Пояснение к элементу енума: параллельный массив, может отсутствовать.</summary>
-        public static string MemberDoc(ApiManifest.EnumDef en, int index)
+        public static string MemberDoc(ApiManifest.EnumDef en, int index, Language lang = Language.Ru)
             => en.MemberDocs != null && (uint)index < (uint)en.MemberDocs.Length
-                ? en.MemberDocs[index]
+                ? en.MemberDocs[index]?.Get(lang)
                 : null;
 
         public static string ConstSig(string owner, ApiManifest.ApiConstDef c)
@@ -82,10 +87,10 @@ namespace Dsl.Tooling
             return sb.Append(")$0").ToString();
         }
 
-        public static List<string> ParamLabels(EngineMethod em)
+        public static List<string> ParamLabels(EngineMethod em, Language lang = Language.Ru)
         {
             var r = new List<string>();
-            foreach (var (name, type) in em.Params) r.Add($"{type} {name}");
+            foreach (var (name, type) in em.Params) r.Add($"{EngineDocs.TypeLabel(type, lang)} {name}");
             return r;
         }
 

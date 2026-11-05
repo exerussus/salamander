@@ -1,4 +1,5 @@
 using System;
+using Dsl.Text;
 
 namespace Dsl.Hosting
 {
@@ -17,6 +18,12 @@ namespace Dsl.Hosting
     [AttributeUsage(AttributeTargets.Class | AttributeTargets.Struct | AttributeTargets.Enum, Inherited = false)]
     public sealed class SalamanderClassAttribute : Attribute
     {
+        /// <summary>Английский текст справки (необязательно). Без него <c>Summary</c> показывается на обоих языках.</summary>
+        public string En { get; set; }
+
+        /// <summary>Справка на двух языках (null — нет).</summary>
+        public DocText Text => DocText.Maybe(Summary, En);
+
         public string Summary { get; }
         public SalamanderClassAttribute(string summary = null) => Summary = summary;
     }
@@ -35,6 +42,12 @@ namespace Dsl.Hosting
     [AttributeUsage(AttributeTargets.Class, Inherited = false)]
     public sealed class SalamanderApiAttribute : Attribute
     {
+        /// <summary>Английский текст справки (необязательно). Без него <c>Summary</c> показывается на обоих языках.</summary>
+        public string En { get; set; }
+
+        /// <summary>Справка на двух языках (null — нет).</summary>
+        public DocText Text => DocText.Maybe(Summary, En);
+
         public string Summary { get; }
 
         /// <summary>
@@ -56,6 +69,12 @@ namespace Dsl.Hosting
     [AttributeUsage(AttributeTargets.Property, Inherited = false)]
     public sealed class SalamanderPropertyAttribute : Attribute
     {
+        /// <summary>Английский текст справки (необязательно). Без него <c>Summary</c> показывается на обоих языках.</summary>
+        public string En { get; set; }
+
+        /// <summary>Справка на двух языках (null — нет).</summary>
+        public DocText Text => DocText.Maybe(Summary, En);
+
         public string Summary { get; }
         public SalamanderPropertyAttribute(string summary = null) => Summary = summary;
     }
@@ -69,6 +88,12 @@ namespace Dsl.Hosting
     [AttributeUsage(AttributeTargets.Method, Inherited = false)]
     public sealed class SalamanderMethodAttribute : Attribute
     {
+        /// <summary>Английский текст справки (необязательно). Без него <c>Summary</c> показывается на обоих языках.</summary>
+        public string En { get; set; }
+
+        /// <summary>Справка на двух языках (null — нет).</summary>
+        public DocText Text => DocText.Maybe(Summary, En);
+
         public string Summary { get; }
         public SalamanderMethodAttribute(string summary = null) => Summary = summary;
     }
@@ -89,6 +114,12 @@ namespace Dsl.Hosting
     [AttributeUsage(AttributeTargets.Field, Inherited = false)]
     public sealed class SalamanderMemberAttribute : Attribute
     {
+        /// <summary>Английский текст справки (необязательно). Без него <c>Doc</c> показывается на обоих языках.</summary>
+        public string En { get; set; }
+
+        /// <summary>Справка на двух языках (null — нет).</summary>
+        public DocText Text => DocText.Maybe(Doc, En);
+
         public string Doc { get; }
         public SalamanderMemberAttribute(string doc) => Doc = doc;
     }
@@ -100,6 +131,12 @@ namespace Dsl.Hosting
     [AttributeUsage(AttributeTargets.Parameter, Inherited = false)]
     public sealed class SalamanderParamAttribute : Attribute
     {
+        /// <summary>Английский текст справки (необязательно). Без него <c>Doc</c> показывается на обоих языках.</summary>
+        public string En { get; set; }
+
+        /// <summary>Справка на двух языках (null — нет).</summary>
+        public DocText Text => DocText.Maybe(Doc, En);
+
         public string Doc { get; }
         public SalamanderParamAttribute(string doc) => Doc = doc;
     }

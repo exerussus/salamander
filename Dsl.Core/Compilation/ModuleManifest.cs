@@ -32,14 +32,34 @@ namespace Dsl.Compilation
         /// Режим исполнения модуля:
         ///  "cooperative" (по умолчанию) — файберы, wait/spawn разрешены (стратегия);
         ///  "synchronous" — без файберов: обработчик исполняется целиком до конца,
-        ///  wait/wait until/spawn запрещены компилятором (карточная игра).
-        /// Синхронный модуль не может зависеть от кооперативного (иначе гарантия
-        /// «всё до конца» протекла бы через чужую wait-функцию).
+        ///  wait/wait until/spawn запрещены компилятором (карточная игра), бюджет
+        ///  тика его не откладывает и не режет.
+        /// Синхронный модуль не может зависеть от кооперативного (E0306), а
+        /// кооперативный не может ждать внутри сущности синхронного (E0252) —
+        /// иначе гарантия «всё до конца» протекла бы через чужую wait-функцию.
         /// </summary>
         [JsonProperty("execution")] public string Execution = "cooperative";
 
         public bool IsSynchronous =>
             string.Equals(Execution, "synchronous", System.StringComparison.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// Состояние скриптов модуля (необязательно, по умолчанию — как раньше):
+        ///  "full" / не указано — поля, коллекции в полях, Engine.Enable/Disable/Attach разрешены;
+        ///  "none" — модуль без состояния: всё состояние живёт у хоста (ECS), поэтому
+        ///  откат хода на стороне хоста полный. Компилятор отклоняет изменяемые поля
+        ///  (E0253), поля-коллекции даже readonly (E0253), операции Engine, меняющие
+        ///  состояние движка (E0254), члены от модулей с состоянием в его сущностях
+        ///  (E0255). Требует execution: synchronous (E0308) и зависимостей тоже "none"
+        ///  (E0309): иначе состояние протекло бы через приостановленный файбер или чужой код.
+        /// </summary>
+        [JsonProperty("state")] public string State;
+
+        public bool IsStateless =>
+            string.Equals(State, "none", System.StringComparison.OrdinalIgnoreCase);
+
+        internal bool HasValidState =>
+            State == null || IsStateless || string.Equals(State, "full", System.StringComparison.OrdinalIgnoreCase);
 
         public static ModuleManifest Parse(string json) =>
             JsonConvert.DeserializeObject<ModuleManifest>(json);
@@ -136,9 +156,20 @@ namespace Dsl.Compilation
                                                 List<ModuleSourceSet> modules)
             => Compile(host, hostApiVersion, modules, quarantineBrokenModules: false);
 
+        /// <summary>Язык сообщений — <see cref="HostRegistry.Language"/> хоста (по умолчанию ru).</summary>
         public static CompilationResult Compile(HostRegistry host, int hostApiVersion,
                                                 List<ModuleSourceSet> modules,
                                                 bool quarantineBrokenModules)
+            => Compile(host, hostApiVersion, modules, quarantineBrokenModules, host?.Language ?? Language.Ru);
+
+        /// <summary>
+        /// Компиляция с явным языком сообщений (<paramref name="language"/>): тексты
+        /// диагностик, причины карантина. Коды (E0101…) от языка не зависят.
+        /// </summary>
+        public static CompilationResult Compile(HostRegistry host, int hostApiVersion,
+                                                List<ModuleSourceSet> modules,
+                                                bool quarantineBrokenModules,
+                                                Language language)
         {
             var excluded = new List<ExcludedModule>();
 
@@ -162,9 +193,10 @@ namespace Dsl.Compilation
             if (quarantineBrokenModules)
             {
                 for (int i = 0; i < namelessCount; i++)
-                    excluded.Add(new ExcludedModule { Name = "<без имени>", Reason = "в module.json нет поля name (E0300)" });
+                    excluded.Add(new ExcludedModule { Name = Loc.T(language, "<без имени>", "<unnamed>"), Reason = Loc.T(language, "в module.json нет поля name (E0300)", "module.json has no name field (E0300)") });
                 foreach (var d in duplicates)
-                    excluded.Add(new ExcludedModule { Name = d, Reason = "модуль с таким именем уже загружен — лишний экземпляр пропущен (E0301)" });
+                    excluded.Add(new ExcludedModule { Name = d, Reason = Loc.T(language, "модуль с таким именем уже загружен — лишний экземпляр пропущен (E0301)",
+                        "a module with this name is already loaded — the extra copy was skipped (E0301)") });
                 namelessCount = 0;
                 duplicates.Clear();
             }
@@ -216,12 +248,12 @@ namespace Dsl.Compilation
             for (int guard = byName.Count + fileOwner.Count + 1; guard >= 0; guard--)
             {
                 var files = new List<SourceText>();
-                var diag = new DiagnosticBag(files);
+                var diag = new DiagnosticBag(files, language);
 
                 for (int i = 0; i < namelessCount; i++)
-                    diag.Error("E0300", "Манифест модуля без имени.", SourcePos.None);
+                    diag.Error("E0300", Loc.T(language, "Манифест модуля без имени.", "Module manifest without a name."), SourcePos.None);
                 foreach (var d in duplicates)
-                    diag.Error("E0301", $"Модуль '{d}' загружен дважды.", SourcePos.None);
+                    diag.Error("E0301", Loc.T(language, $"Модуль '{d}' загружен дважды.", $"Module '{d}' is loaded twice."), SourcePos.None);
 
                 // ----- проверка манифестов над ЖИВЫМ множеством -----
                 var bad = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -235,10 +267,13 @@ namespace Dsl.Compilation
                     var man = byName[name].Manifest;
                     if (man.ApiVersion != hostApiVersion)
                     {
-                        MarkBad(name, $"apiVersion {man.ApiVersion}, у игры {hostApiVersion}");
+                        MarkBad(name, Loc.T(language, $"apiVersion {man.ApiVersion}, у игры {hostApiVersion}",
+                            $"apiVersion {man.ApiVersion}, the game has {hostApiVersion}"));
                         diag.Error("E0302",
-                            $"Модуль '{name}': apiVersion {man.ApiVersion}, у игры {hostApiVersion}. " +
-                            "Обновите модуль под текущее API.", SourcePos.None);
+                            Loc.T(language, $"Модуль '{name}': apiVersion {man.ApiVersion}, у игры {hostApiVersion}. " +
+                            "Обновите модуль под текущее API.",
+                                $"Module '{name}': apiVersion {man.ApiVersion}, the game has {hostApiVersion}. " +
+                                "Update the module to the current API."), SourcePos.None);
                     }
                 }
 
@@ -248,8 +283,9 @@ namespace Dsl.Compilation
                     foreach (var dep in man.Dependencies ?? System.Array.Empty<string>())
                         if (!alive.Contains(dep))
                         {
-                            MarkBad(name, $"зависимость '{dep}' не загружена");
-                            diag.Error("E0303", $"Модуль '{name}' зависит от '{dep}', который не загружен.", SourcePos.None);
+                            MarkBad(name, Loc.T(language, $"зависимость '{dep}' не загружена", $"dependency '{dep}' is not loaded"));
+                            diag.Error("E0303", Loc.T(language, $"Модуль '{name}' зависит от '{dep}', который не загружен.",
+                                $"Module '{name}' depends on '{dep}', which is not loaded."), SourcePos.None);
                         }
                 }
 
@@ -263,10 +299,54 @@ namespace Dsl.Compilation
                     foreach (var dep in man.Dependencies ?? System.Array.Empty<string>())
                         if (alive.Contains(dep) && !byName[dep].Manifest.IsSynchronous)
                         {
-                            MarkBad(name, $"синхронный модуль зависит от кооперативного '{dep}'");
+                            MarkBad(name, Loc.T(language, $"синхронный модуль зависит от кооперативного '{dep}'",
+                                $"synchronous module depends on the cooperative '{dep}'"));
                             diag.Error("E0306",
-                                $"Синхронный модуль '{name}' не может зависеть от кооперативного '{dep}': " +
+                                Loc.T(language, $"Синхронный модуль '{name}' не может зависеть от кооперативного '{dep}': " +
                                 "его функции могут содержать wait. Сделайте зависимость тоже синхронной.",
+                                    $"The synchronous module '{name}' cannot depend on the cooperative '{dep}': " +
+                                    "its functions may contain wait. Make the dependency synchronous too."),
+                                SourcePos.None);
+                        }
+                }
+
+                // модуль без состояния ("state": "none"): неизвестное значение — ошибка, а не
+                // молчаливое «как раньше» (опечатка "stateless" иначе выключила бы все проверки);
+                // ждать нельзя (файбер в wait держит локали между ходами), зависеть — только
+                // от таких же (иначе состояние протекло бы через чужие функции)
+                foreach (var name in alive)
+                {
+                    var man = byName[name].Manifest;
+                    if (!man.HasValidState)
+                    {
+                        MarkBad(name, Loc.T(language, $"неизвестное значение state '{man.State}'", $"unknown state value '{man.State}'"));
+                        diag.Error("E0307",
+                            Loc.T(language, $"Модуль '{name}': неизвестное значение \"state\": \"{man.State}\". Допустимо \"full\" или \"none\".",
+                                $"Module '{name}': unknown value \"state\": \"{man.State}\". Allowed: \"full\" or \"none\"."),
+                            SourcePos.None);
+                        continue;
+                    }
+                    if (!man.IsStateless) continue;
+                    if (!man.IsSynchronous)
+                    {
+                        MarkBad(name, Loc.T(language, "модуль без состояния не синхронный", "stateless module is not synchronous"));
+                        diag.Error("E0308",
+                            Loc.T(language, $"Модуль '{name}': \"state\": \"none\" требует \"execution\": \"synchronous\" — " +
+                            "файбер в wait хранит локали между ходами, а это состояние вне хоста.",
+                                $"Module '{name}': \"state\": \"none\" requires \"execution\": \"synchronous\" — " +
+                                "a fiber in wait keeps its locals between turns, and that is state outside the host."),
+                            SourcePos.None);
+                    }
+                    foreach (var dep in man.Dependencies ?? System.Array.Empty<string>())
+                        if (alive.Contains(dep) && !byName[dep].Manifest.IsStateless)
+                        {
+                            MarkBad(name, Loc.T(language, $"модуль без состояния зависит от модуля с состоянием '{dep}'",
+                                $"stateless module depends on the stateful module '{dep}'"));
+                            diag.Error("E0309",
+                                Loc.T(language, $"Модуль '{name}' (\"state\": \"none\") не может зависеть от '{dep}' с состоянием: " +
+                                "его функции могут менять поля. Объявите у зависимости тоже \"state\": \"none\".",
+                                    $"Module '{name}' (\"state\": \"none\") cannot depend on the stateful '{dep}': " +
+                                    "its functions may change fields. Declare \"state\": \"none\" in the dependency too."),
                                 SourcePos.None);
                         }
                 }
@@ -276,14 +356,14 @@ namespace Dsl.Compilation
                 if (bad.Count == 0)
                 {
                     order = TopoSort(byName, alive, diag, out var cyclic);
-                    foreach (var name in cyclic) MarkBad(name, "циклическая зависимость модулей");
+                    foreach (var name in cyclic) MarkBad(name, Loc.T(language, "циклическая зависимость модулей", "cyclic module dependency"));
                 }
 
                 if (bad.Count > 0)
                 {
                     if (!quarantineBrokenModules)
                         return Finish(null, diag.Items);
-                    if (!ExcludeAndContinue(byName, alive, bad, excluded))
+                    if (!ExcludeAndContinue(byName, alive, bad, excluded, language))
                         return Finish(null, diag.Items);
                     continue;
                 }
@@ -295,15 +375,17 @@ namespace Dsl.Compilation
                     var visible = new HashSet<string> { m.Manifest.Name };
                     foreach (var dep in m.Manifest.Dependencies ?? System.Array.Empty<string>()) visible.Add(dep);
 
-                    var ast = new ModuleAst { Name = m.Manifest.Name, Visible = visible, Synchronous = m.Manifest.IsSynchronous };
+                    var ast = new ModuleAst { Name = m.Manifest.Name, Visible = visible, Synchronous = m.Manifest.IsSynchronous, Stateless = m.Manifest.IsStateless };
                     // Модуль без единого исходника компилируется «успешно» и молча ничего не
                     // делает. Самая частая причина — опечатка в ключе манифеста: неизвестные
                     // ключи JSON игнорируются, список файлов остаётся пустым, а чекер
                     // отвечает «OK». Это не ошибка (пустой модуль законен), но и не тишина.
                     if (m.Files.Count == 0 && !m.EmptyIsIntended)
                         diag.Warning("W0300",
-                            $"Модуль '{m.Manifest.Name}' не содержит ни одного исходника: список \"sources\" в module.json " +
+                            Loc.T(language, $"Модуль '{m.Manifest.Name}' не содержит ни одного исходника: список \"sources\" в module.json " +
                             "пуст или отсутствует (проверьте имя ключа и пути) — модуль ничего не делает.",
+                                $"Module '{m.Manifest.Name}' has no source files: the \"sources\" list in module.json " +
+                                "is empty or missing (check the key name and paths) — the module does nothing."),
                             SourcePos.None);
                     foreach (var (name, text) in m.Files)
                     {
@@ -335,7 +417,7 @@ namespace Dsl.Compilation
                     // ----- байткод -----
                     if (!diag.HasErrors)
                     {
-                        var program = new BytecodeCompiler(host, sem, files).Compile(moduleAsts);
+                        var program = new BytecodeCompiler(host, sem, files) { Language = language }.Compile(moduleAsts);
                         return Finish(program, diag.Items);
                     }
                 }
@@ -347,7 +429,7 @@ namespace Dsl.Compilation
                 // Синтаксическая ошибка останавливает проход до чекера, поэтому
                 // сначала выпадают файлы с ошибками парсера, следующим проходом —
                 // семантические, в том числе у тех, кто ссылался на выкинутое.
-                if (fileScope && DropBrokenFiles(diag.Items, fileOwner, alive, dropped, carried, excludedFiles))
+                if (fileScope && DropBrokenFiles(diag.Items, fileOwner, alive, dropped, carried, excludedFiles, language))
                     continue;
 
                 // ошибки в исходниках: виновника определяем по имени файла
@@ -359,10 +441,11 @@ namespace Dsl.Compilation
                     string mod = ModuleOfFile(d.File);
                     if (mod == null || !alive.Contains(mod)) continue;
                     if (!guilty.ContainsKey(mod))
-                        guilty[mod] = $"ошибка компиляции {d.Code} ({d.File}:{d.Line})";
+                        guilty[mod] = Loc.T(language, $"ошибка компиляции {d.Code} ({d.File}:{d.Line})",
+                            $"compilation error {d.Code} ({d.File}:{d.Line})");
                 }
 
-                if (guilty.Count == 0 || !ExcludeAndContinue(byName, alive, guilty, excluded))
+                if (guilty.Count == 0 || !ExcludeAndContinue(byName, alive, guilty, excluded, language))
                     return Finish(null, diag.Items);
             }
 
@@ -380,7 +463,8 @@ namespace Dsl.Compilation
                                             HashSet<string> alive,
                                             HashSet<string> dropped,
                                             List<Diagnostic> carried,
-                                            List<ExcludedFile> excludedFiles)
+                                            List<ExcludedFile> excludedFiles,
+                                            Language language)
         {
             var reasons = new Dictionary<string, string>(StringComparer.Ordinal);
             var order = new List<string>();
@@ -389,7 +473,7 @@ namespace Dsl.Compilation
                 if (d.Severity != Severity.Error || d.File == null) continue;
                 if (dropped.Contains(d.File) || reasons.ContainsKey(d.File)) continue;
                 if (!fileOwner.TryGetValue(d.File, out var owner) || !alive.Contains(owner)) continue;
-                reasons[d.File] = $"ошибка компиляции {d.Code} ({d.File}:{d.Line})";
+                reasons[d.File] = Loc.T(language, $"ошибка компиляции {d.Code} ({d.File}:{d.Line})", $"compilation error {d.Code} ({d.File}:{d.Line})");
                 order.Add(d.File);
             }
             if (order.Count == 0) return false;
@@ -419,7 +503,8 @@ namespace Dsl.Compilation
         private static bool ExcludeAndContinue(Dictionary<string, ModuleSourceSet> byName,
                                                HashSet<string> alive,
                                                Dictionary<string, string> bad,
-                                               List<ExcludedModule> excluded)
+                                               List<ExcludedModule> excluded,
+                                               Language language)
         {
             var toDrop = new Dictionary<string, string>(StringComparer.Ordinal);
             foreach (var kv in bad)
@@ -439,7 +524,7 @@ namespace Dsl.Compilation
                     foreach (var dep in deps)
                         if (toDrop.ContainsKey(dep))
                         {
-                            toDrop[name] = $"зависит от исключённого модуля '{dep}'";
+                            toDrop[name] = Loc.T(language, $"зависит от исключённого модуля '{dep}'", $"depends on the excluded module '{dep}'");
                             grown = true;
                             break;
                         }
@@ -500,7 +585,7 @@ namespace Dsl.Compilation
                 {
                     if (s == 1)
                     {
-                        diag.Error("E0304", $"Циклическая зависимость модулей через '{name}'.", SourcePos.None);
+                        diag.Error("E0304", diag.T($"Циклическая зависимость модулей через '{name}'.", $"Cyclic module dependency via '{name}'."), SourcePos.None);
                         if (!cycles.Contains(name)) cycles.Add(name);
                         return false;
                     }

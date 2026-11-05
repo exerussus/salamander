@@ -1,4 +1,5 @@
 using System;
+using Dsl.Text;
 using System.IO;
 using Dsl.Compilation;
 using Dsl.Semantics;
@@ -33,14 +34,14 @@ namespace Dsl.Ide
         }
 
         /// <summary>Без API: язык и Engine.* проверяются, события и API игры — нет.</summary>
-        public static ApiModel Empty => new ApiModel(null, new HostRegistry(), 1, "API игры не задан");
+        public static ApiModel Empty => new ApiModel(null, new HostRegistry(), 1, IdeText.T("API игры не задан", "Game API not set"));
 
         public bool IsEmpty => Manifest == null;
 
         /// <summary>Из текста salamander-api.json. Бросает на битом манифесте.</summary>
         public static ApiModel FromJson(string json, string label)
         {
-            var registry = ApiManifest.Import(json, out int version);
+            var registry = ApiManifest.Import(json, out int version, IdeText.Language);
             var manifest = JsonConvert.DeserializeObject<ApiManifest>(json);
             return new ApiModel(manifest, registry, version, label);
         }
@@ -55,7 +56,7 @@ namespace Dsl.Ide
         public static ApiModel FromRegistry(HostRegistry registry, int apiVersion, string label)
         {
             string json = ApiManifest.Export(registry, apiVersion);
-            var stub = ApiManifest.Import(json, out _);
+            var stub = ApiManifest.Import(json, out _, IdeText.Language);
             var manifest = JsonConvert.DeserializeObject<ApiManifest>(json);
             return new ApiModel(manifest, stub, apiVersion, label);
         }
@@ -129,14 +130,14 @@ namespace Dsl.Ide
                     {
                         try
                         {
-                            Current = ApiModel.FromJson(cached, name + " (копия — оригинал не найден)");
-                            Error = "оригинал манифеста не найден: " + Path;
+                            Current = ApiModel.FromJson(cached, IdeText.T(name + " (копия — оригинал не найден)", name + " (copy — the original was not found)"));
+                            Error = IdeText.T("оригинал манифеста не найден: " + Path, "the original manifest was not found: " + Path);
                             return true;
                         }
-                        catch (Exception e) { Error = "копия манифеста битая: " + e.Message; }
+                        catch (Exception e) { Error = IdeText.T("копия манифеста битая: " + e.Message, "the manifest copy is broken: " + e.Message); }
                     }
                 }
-                Error = "манифест не найден: " + Path;
+                Error = IdeText.T("манифест не найден: " + Path, "manifest not found: " + Path);
                 return false;
             }
             try
@@ -151,7 +152,7 @@ namespace Dsl.Ide
             catch (Exception e)
             {
                 // битый файл не затирает рабочую модель; повтор — только после следующей правки файла
-                Error = "манифест не читается: " + e.Message;
+                Error = IdeText.T("манифест не читается: " + e.Message, "the manifest cannot be read: " + e.Message);
                 return false;
             }
         }

@@ -69,6 +69,7 @@
 | `salamander.modulesRoot` | папка, под которой искать модули и `*.sal`; по умолчанию — корень проекта |
 | `salamander.apiManifest` | точный путь к манифесту API игры |
 | `salamander.buildFile` | точный путь к `salamander-build.json`; пути внутри него — относительно его же папки |
+| `salamander.language` | язык ошибок и подсказок: `ru` / `en`; пусто — из `salamander-build.json`, иначе `ru` |
 | `salamander.referencePaths` | список папок со **справочными модулями** — массив строк (или одна строка, пути через `;`) |
 | `salamander.server.path` | свой `DslLsp.dll` вместо встроенного (настройка клиента, серверу не уходит) |
 
@@ -111,7 +112,14 @@
 
 ## Обновление
 
-После обновления движка пересоберите плагин (`build.sh`), поставьте zip поверх и перезапустите Rider: сервер едет внутри плагина.
+После обновления движка пересоберите плагин и поставьте его поверх: сервер едет внутри плагина. Одной командой из корня репозитория (Windows):
+
+```
+build-tools.bat rider                 :: сервер + плагин → Tools/rider/plugin/build/Salamander-<версия>.zip
+build-tools.bat rider -InstallRider   :: то же и сразу установка (Rider должен быть закрыт)
+```
+
+Без `-InstallRider` — Settings → Plugins → ⚙ → Install Plugin from Disk → свежий zip, затем перезапуск Rider. Нужны .NET SDK 8, Rider с LSP4IJ и Git for Windows (сам `build.sh` — bash-скрипт).
 
 Если вы разрабатываете сам движок и открыли его репозиторий, пересоберите сервер: `dotnet publish Tools/DslLsp -c Release -o Tools/DslLsp/publish`. Плагин сам берёт эту сборку, достаточно перезапустить сервер в LSP4IJ.
 

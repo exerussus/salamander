@@ -12,6 +12,8 @@ namespace Dsl.Syntax
         private readonly List<Token> _t;
         private readonly int _fileId;
         private readonly DiagnosticBag _diag;
+
+        private string T(string ru, string en) => Loc.T(_diag?.Language ?? Language.Ru, ru, en);
         private int _i;
 
         /// <summary>
@@ -61,7 +63,8 @@ namespace Dsl.Syntax
             if (_depthReported) return;   // одного сообщения достаточно, дальше только шум
             _depthReported = true;
             _diag.Error("E0220",
-                $"Слишком глубокая вложенность (предел {MaxNestingDepth}) — разбор файла прерван.", pos);
+                T($"Слишком глубокая вложенность (предел {MaxNestingDepth}) — разбор файла прерван.",
+                    $"Nesting is too deep (limit {MaxNestingDepth}) — parsing of the file aborted."), pos);
         }
 
         private Token Cur => _t[_i];
@@ -83,7 +86,7 @@ namespace Dsl.Syntax
         private Token Expect(TokenKind k, string code, string what)
         {
             if (Cur.Kind == k) return Advance();
-            _diag.Error(code, $"Ожидалось {what}, встречено '{Cur.Text}'.", Cur.Pos);
+            _diag.Error(code, T($"Ожидалось {what}, встречено '{Cur.Text}'.", $"Expected {what}, found '{Cur.Text}'."), Cur.Pos);
             return Cur; // не двигаемся, чтобы верхний уровень мог восстановиться
         }
 
@@ -109,7 +112,7 @@ namespace Dsl.Syntax
         {
             var e = ParseExpr();
             if (!Is(TokenKind.Eof))
-                _diag.Error("E0003", "Лишние символы в выражении интерполяции.", Cur.Pos);
+                _diag.Error("E0003", T("Лишние символы в выражении интерполяции.", "Unexpected characters in the interpolation expression."), Cur.Pos);
             return e;
         }
 
@@ -129,7 +132,8 @@ namespace Dsl.Syntax
             string path = ParseNamespacePath();
             if (path == null)
             {
-                _diag.Error("E0310", $"Ожидалось имя пространства имён, встречено '{Cur.Text}'.", Cur.Pos);
+                _diag.Error("E0310", T($"Ожидалось имя пространства имён, встречено '{Cur.Text}'.",
+                    $"Expected a namespace name, found '{Cur.Text}'."), Cur.Pos);
                 // без имени блок не разобрать осмысленно — но '{' съедим как пространство без имени,
                 // чтобы объявления внутри не посыпались каскадом ошибок
                 if (!Is(TokenKind.LBrace)) return;
@@ -139,7 +143,8 @@ namespace Dsl.Syntax
 
             if (!Is(TokenKind.LBrace))
             {
-                _diag.Error("E0007", $"Ожидалось '{{' после 'namespace {path}', встречено '{Cur.Text}'.", Cur.Pos);
+                _diag.Error("E0007", T($"Ожидалось '{{' после 'namespace {path}', встречено '{Cur.Text}'.",
+                    $"Expected '{{' after 'namespace {path}', found '{Cur.Text}'."), Cur.Pos);
                 return;
             }
             Advance(); // '{'
@@ -164,8 +169,10 @@ namespace Dsl.Syntax
                         // архетип адресуется хостом по (вид, id) из контента игры —
                         // пространству имён там места нет; блок оставляем глобальным
                         _diag.Error("E0311",
-                            $"'{ad.Kind} {ad.Name}' нельзя объявлять внутри namespace: хост находит архетипы " +
+                            T($"'{ad.Kind} {ad.Name}' нельзя объявлять внутри namespace: хост находит архетипы " +
                             "по виду и id, пространство имён в этот адрес не входит. Вынесите блок наружу.",
+                                $"'{ad.Kind} {ad.Name}' cannot be declared inside a namespace: the host finds archetypes " +
+                                "by kind and id, and the namespace is not part of that address. Move the block outside."),
                             ad.Pos);
                     }
                     else
@@ -178,7 +185,7 @@ namespace Dsl.Syntax
             }
             finally { _depth--; }
 
-            Expect(TokenKind.RBrace, "E0009", $"'}}', закрывающая namespace {full}");
+            Expect(TokenKind.RBrace, "E0009", T($"'}}', закрывающая namespace {full}", $"'}}' closing namespace {full}"));
         }
 
         /// <summary>A или A.B.C; null, если имени нет. Позицию двигает только по успеху.</summary>
@@ -206,7 +213,7 @@ namespace Dsl.Syntax
                     Advance();
                     if (!Is(TokenKind.KwTrigger))
                     {
-                        _diag.Error("E0004", "После 'disabled' ожидался 'trigger'.", Cur.Pos);
+                        _diag.Error("E0004", T("После 'disabled' ожидался 'trigger'.", "Expected 'trigger' after 'disabled'."), Cur.Pos);
                         return null;
                     }
                     return ParseTrigger(true);
@@ -218,7 +225,8 @@ namespace Dsl.Syntax
 
                 default:
                     _diag.Error("E0005",
-                        $"Ожидалось объявление class / trigger / enum, встречено '{Cur.Text}'.", Cur.Pos);
+                        T($"Ожидалось объявление class / trigger / enum, встречено '{Cur.Text}'.",
+                            $"Expected a class / trigger / enum declaration, found '{Cur.Text}'."), Cur.Pos);
                     return null;
             }
         }
@@ -226,12 +234,12 @@ namespace Dsl.Syntax
         private EnumDecl ParseEnum()
         {
             var pos = Advance().Pos; // 'enum'
-            var name = Expect(TokenKind.Ident, "E0006", "имя енума").Text;
+            var name = Expect(TokenKind.Ident, "E0006", T("имя енума", "an enum name")).Text;
             var e = new EnumDecl { Name = name, Pos = pos };
             Expect(TokenKind.LBrace, "E0007", "'{'");
             while (!Is(TokenKind.RBrace) && !Is(TokenKind.Eof))
             {
-                var m = Expect(TokenKind.Ident, "E0008", "имя элемента енума").Text;
+                var m = Expect(TokenKind.Ident, "E0008", T("имя элемента енума", "an enum member name")).Text;
                 e.Members.Add(m);
                 if (!Match(TokenKind.Comma)) break;
             }
@@ -242,7 +250,7 @@ namespace Dsl.Syntax
         private ClassDecl ParseClass()
         {
             var pos = Advance().Pos; // 'class'
-            var name = Expect(TokenKind.Ident, "E0010", "имя класса").Text;
+            var name = Expect(TokenKind.Ident, "E0010", T("имя класса", "a class name")).Text;
             var c = new ClassDecl { Name = name, Pos = pos };
             Expect(TokenKind.LBrace, "E0011", "'{'");
             ParseMembers(c.Members);
@@ -253,7 +261,7 @@ namespace Dsl.Syntax
         private TriggerDecl ParseTrigger(bool disabled)
         {
             var pos = Advance().Pos; // 'trigger'
-            var name = Expect(TokenKind.Ident, "E0013", "имя триггера").Text;
+            var name = Expect(TokenKind.Ident, "E0013", T("имя триггера", "a trigger name")).Text;
             var tr = new TriggerDecl { Name = name, StartDisabled = disabled, Pos = pos };
             Expect(TokenKind.LBrace, "E0014", "'{'");
             ParseMembers(tr.Members);
@@ -264,7 +272,7 @@ namespace Dsl.Syntax
         private ListenerDecl ParseListener()
         {
             var pos = Advance().Pos; // 'listener'
-            var name = Expect(TokenKind.Ident, "E0013", "имя listener").Text;
+            var name = Expect(TokenKind.Ident, "E0013", T("имя listener", "a listener name")).Text;
             var l = new ListenerDecl { Name = name, Pos = pos };
             Expect(TokenKind.LBrace, "E0014", "'{'");
             ParseMembers(l.Members);
@@ -277,7 +285,7 @@ namespace Dsl.Syntax
             var kindTok = Advance(); // вид (spell/item/...)
             string id;
             if (Is(TokenKind.String)) id = (string)Advance().Value; // у строкового токена значение в Value
-            else id = Expect(TokenKind.Ident, "E0069", "id сущности (идентификатор или строка)").Text;
+            else id = Expect(TokenKind.Ident, "E0069", T("id сущности (идентификатор или строка)", "an entity id (identifier or string)")).Text;
 
             var a = new ArchetypeDecl { Kind = kindTok.Text, Name = id, Pos = kindTok.Pos };
             Expect(TokenKind.LBrace, "E0014", "'{'");
@@ -310,8 +318,10 @@ namespace Dsl.Syntax
                 if (_i != before) continue;
 
                 _diag.Error("E0219",
-                    $"Ожидалось объявление члена (поле, const, func, action или event), встречено '{Cur.Text}'. " +
-                    "Операторы допустимы только внутри func/action/event.", Cur.Pos);
+                    T($"Ожидалось объявление члена (поле, const, func, action или event), встречено '{Cur.Text}'. " +
+                    "Операторы допустимы только внутри func/action/event.",
+                        $"Expected a member declaration (field, const, func, action or event), found '{Cur.Text}'. " +
+                        "Statements are allowed only inside func/action/event."), Cur.Pos);
                 SyncMember();
             }
         }
@@ -372,8 +382,10 @@ namespace Dsl.Syntax
                 case TokenKind.Ident when TryMergeMode(Cur.Text, out _) && LooksLikeFieldAfterModifier():
                 {
                     _diag.Error("E0241",
-                        $"'{Cur.Text}' ставится только перед event, func или action. У полей слоёв нет: " +
-                        "поздний блок просто перезаписывает значение.", Cur.Pos);
+                        T($"'{Cur.Text}' ставится только перед event, func или action. У полей слоёв нет: " +
+                        "поздний блок просто перезаписывает значение.",
+                            $"'{Cur.Text}' can only precede event, func or action. Fields have no layers: " +
+                            "a later block simply overwrites the value."), Cur.Pos);
                     Advance();
                     return ParseMember();
                 }
@@ -414,7 +426,7 @@ namespace Dsl.Syntax
         {
             var pos = Advance().Pos; // 'const'
             var ty = ParseType();
-            var name = Expect(TokenKind.Ident, "E0016", "имя константы").Text;
+            var name = Expect(TokenKind.Ident, "E0016", T("имя константы", "a constant name")).Text;
             Expect(TokenKind.Assign, "E0017", "'='");
             var init = ParseExpr();
             Expect(TokenKind.Semicolon, "E0018", "';'");
@@ -425,7 +437,7 @@ namespace Dsl.Syntax
         {
             var pos = Cur.Pos;
             var ty = ParseType();
-            var name = Expect(TokenKind.Ident, "E0019", "имя поля").Text;
+            var name = Expect(TokenKind.Ident, "E0019", T("имя поля", "a field name")).Text;
             Expr init = null;
             if (Match(TokenKind.Assign)) init = ParseExpr();
             Expect(TokenKind.Semicolon, "E0020", "';'");
@@ -439,7 +451,7 @@ namespace Dsl.Syntax
         private FuncMember ParseFunc(FuncKind kind)
         {
             var pos = Advance().Pos; // func/action/event
-            var name = Expect(TokenKind.Ident, "E0021", "имя").Text;
+            var name = Expect(TokenKind.Ident, "E0021", T("имя", "a name")).Text;
             var fn = new FuncMember { Name = name, Kind = kind, Pos = pos };
 
             Expect(TokenKind.LParen, "E0022", "'('");
@@ -448,7 +460,7 @@ namespace Dsl.Syntax
                 do
                 {
                     var pty = ParseType();
-                    var pname = Expect(TokenKind.Ident, "E0023", "имя параметра").Text;
+                    var pname = Expect(TokenKind.Ident, "E0023", T("имя параметра", "a parameter name")).Text;
                     fn.Params.Add(new Param { DeclType = pty, Name = pname, Pos = pty.Pos });
                 }
                 while (Match(TokenKind.Comma));
@@ -458,7 +470,7 @@ namespace Dsl.Syntax
             if (Match(TokenKind.Arrow))
             {
                 if (kind == FuncKind.Event)
-                    _diag.Error("E0025", "Обработчик event не может иметь возвращаемый тип.", Cur.Pos);
+                    _diag.Error("E0025", T("Обработчик event не может иметь возвращаемый тип.", "An event handler cannot have a return type."), Cur.Pos);
                 fn.RetType = ParseType();
             }
 
@@ -482,7 +494,7 @@ namespace Dsl.Syntax
         private TypeSyntax ParseTypeCore()
         {
             var pos = Cur.Pos;
-            var name = Expect(TokenKind.Ident, "E0026", "имя типа").Text;
+            var name = Expect(TokenKind.Ident, "E0026", T("имя типа", "a type name")).Text;
             name = ContinueDottedTypeName(name);
 
             TypeSyntax result;
@@ -648,7 +660,8 @@ namespace Dsl.Syntax
         {
             if (!(target is IdentExpr || target is MemberExpr || target is IndexExpr || target is QualifiedExpr))
                 _diag.Error("E0248",
-                    $"'{opTok.Text}' применяется к переменной, полю или элементу, а не к выражению.", opTok.Pos);
+                    T($"'{opTok.Text}' применяется к переменной, полю или элементу, а не к выражению.",
+                        $"'{opTok.Text}' applies to a variable, field or element, not to an expression."), opTok.Pos);
             RejectIncDecAfterValue(); // «x++++»
             Expect(TokenKind.Semicolon, "E0045", "';'");
             return new AssignStmt
@@ -670,7 +683,8 @@ namespace Dsl.Syntax
         {
             if (!Is(TokenKind.PlusPlus) && !Is(TokenKind.MinusMinus)) return;
             _diag.Error("E0248",
-                $"'{Cur.Text}' — отдельный стейтмент, значения у него нет: сначала «x{Cur.Text};», потом используйте x.",
+                T($"'{Cur.Text}' — отдельный стейтмент, значения у него нет: сначала «x{Cur.Text};», потом используйте x.",
+                    $"'{Cur.Text}' is a separate statement and has no value: write «x{Cur.Text};» first, then use x."),
                 Cur.Pos);
             Advance();
         }
@@ -678,8 +692,8 @@ namespace Dsl.Syntax
         private Stmt ParseVarDecl()
         {
             var pos = Advance().Pos; // 'var'
-            var name = Expect(TokenKind.Ident, "E0032", "имя переменной").Text;
-            Expect(TokenKind.Assign, "E0033", "'=' (var требует инициализатор)");
+            var name = Expect(TokenKind.Ident, "E0032", T("имя переменной", "a variable name")).Text;
+            Expect(TokenKind.Assign, "E0033", T("'=' (var требует инициализатор)", "'=' (var requires an initializer)"));
             var init = ParseExpr();
             RejectIncDecAfterValue();
             Expect(TokenKind.Semicolon, "E0034", "';'");
@@ -724,16 +738,17 @@ namespace Dsl.Syntax
         private Stmt ParseFor()
         {
             var pos = Advance().Pos; // 'for'
-            var varName = Expect(TokenKind.Ident, "E0039", "имя переменной цикла").Text;
+            var varName = Expect(TokenKind.Ident, "E0039", T("имя переменной цикла", "a loop variable name")).Text;
             string var2 = null;
             if (Match(TokenKind.Comma))
-                var2 = Expect(TokenKind.Ident, "E0071", "имя второй переменной цикла").Text;
+                var2 = Expect(TokenKind.Ident, "E0071", T("имя второй переменной цикла", "a second loop variable name")).Text;
             Expect(TokenKind.KwIn, "E0040", "'in'");
             var first = ParseExpr();
             if (Match(TokenKind.DotDot))
             {
                 if (var2 != null)
-                    _diag.Error("E0072", "Две переменные цикла допустимы только при обходе Map.", pos);
+                    _diag.Error("E0072", T("Две переменные цикла допустимы только при обходе Map.",
+                        "Two loop variables are allowed only when iterating a Map."), pos);
                 var to = ParseExpr();
                 var body = ParseBlock();
                 return new ForRangeStmt { Var = varName, From = first, To = to, Body = body, Pos = pos };
@@ -875,7 +890,8 @@ namespace Dsl.Syntax
             {
                 // «y = ++x;» — в выражении ++/-- нет (стейтмент-форма разбирается в ParseStmtCore)
                 _diag.Error("E0248",
-                    $"'{Cur.Text}' — отдельный стейтмент, значения у него нет: сначала «{Cur.Text}x;», потом используйте x.",
+                    T($"'{Cur.Text}' — отдельный стейтмент, значения у него нет: сначала «{Cur.Text}x;», потом используйте x.",
+                        $"'{Cur.Text}' is a separate statement and has no value: write «{Cur.Text}x;» first, then use x."),
                     Cur.Pos);
                 Advance();
                 return ParseUnary();
@@ -892,7 +908,7 @@ namespace Dsl.Syntax
                 var inner = ParsePostfix(ParsePrimary());
                 if (!(inner is CallExpr call))
                 {
-                    _diag.Error("E0047", "После 'spawn' ожидался вызов функции.", pos);
+                    _diag.Error("E0047", T("После 'spawn' ожидался вызов функции.", "Expected a function call after 'spawn'."), pos);
                     return inner;
                 }
                 return new SpawnExpr { Call = call, Pos = pos };
@@ -907,7 +923,7 @@ namespace Dsl.Syntax
                 if (Is(TokenKind.Dot))
                 {
                     var pos = Advance().Pos;
-                    var name = Expect(TokenKind.Ident, "E0048", "имя члена").Text;
+                    var name = Expect(TokenKind.Ident, "E0048", T("имя члена", "a member name")).Text;
                     e = new MemberExpr { Target = e, Name = name, Pos = pos };
                 }
                 else if (Is(TokenKind.LParen))
@@ -990,14 +1006,14 @@ namespace Dsl.Syntax
                     if (Is(TokenKind.ColonColon))
                     {
                         Advance();
-                        var member = Expect(TokenKind.Ident, "E0052", "имя после '::'").Text;
+                        var member = Expect(TokenKind.Ident, "E0052", T("имя после '::'", "a name after '::'")).Text;
                         return new QualifiedExpr { Module = t.Text, Name = member, Pos = t.Pos };
                     }
                     return new IdentExpr { Name = t.Text, Pos = t.Pos };
                 }
 
                 default:
-                    _diag.Error("E0053", $"Ожидалось выражение, встречено '{t.Text}'.", t.Pos);
+                    _diag.Error("E0053", T($"Ожидалось выражение, встречено '{t.Text}'.", $"Expected an expression, found '{t.Text}'."), t.Pos);
                     Advance();
                     return new LiteralExpr { LKind = LiteralKind.Null, Pos = t.Pos };
             }
@@ -1006,7 +1022,7 @@ namespace Dsl.Syntax
         private Expr ParseNew()
         {
             var pos = Advance().Pos; // 'new'
-            var name = Expect(TokenKind.Ident, "E0054", "имя типа после 'new'").Text;
+            var name = Expect(TokenKind.Ident, "E0054", T("имя типа после 'new'", "a type name after 'new'")).Text;
 
             if (name == "List")
             {
@@ -1040,9 +1056,10 @@ namespace Dsl.Syntax
                     do
                     {
                         var argPos = Cur.Pos;
-                        string field = Expect(TokenKind.Ident, "E0229", "имя поля").Text;
+                        string field = Expect(TokenKind.Ident, "E0229", T("имя поля", "a field name")).Text;
                         Expect(TokenKind.Colon, "E0230",
-                            "':' (поля структуры задаются по имени: new Damage(slash: 21))");
+                            T("':' (поля структуры задаются по имени: new Damage(slash: 21))",
+                                "':' (struct fields are set by name: new Damage(slash: 21))"));
                         ns.Args.Add(new NamedArg { Name = field, Value = ParseExpr(), Pos = argPos });
                     }
                     while (Match(TokenKind.Comma));
@@ -1053,7 +1070,7 @@ namespace Dsl.Syntax
 
             // массив: new T[size]
             TypeSyntax elemTy = new NameType { Name = name, Pos = pos };
-            Expect(TokenKind.LBracket, "E0064", "'[' (ожидался массив new T[size])");
+            Expect(TokenKind.LBracket, "E0064", T("'[' (ожидался массив new T[size])", "'[' (expected an array new T[size])"));
             var size = ParseExpr();
             Expect(TokenKind.RBracket, "E0065", "']'");
             return new NewArrayExpr { ElemType = elemTy, Size = size, Pos = pos };
@@ -1094,7 +1111,7 @@ namespace Dsl.Syntax
         private long ParseIntLiteral(string text, SourcePos pos)
         {
             if (long.TryParse(text, out var v)) return v;
-            _diag.Error("E0067", $"Некорректная целочисленная константа '{text}'.", pos);
+            _diag.Error("E0067", T($"Некорректная целочисленная константа '{text}'.", $"Invalid integer constant '{text}'."), pos);
             return 0;
         }
 
@@ -1102,7 +1119,7 @@ namespace Dsl.Syntax
         {
             if (double.TryParse(text, System.Globalization.NumberStyles.Float,
                     System.Globalization.CultureInfo.InvariantCulture, out var v)) return v;
-            _diag.Error("E0068", $"Некорректная вещественная константа '{text}'.", pos);
+            _diag.Error("E0068", T($"Некорректная вещественная константа '{text}'.", $"Invalid floating-point constant '{text}'."), pos);
             return 0;
         }
     }

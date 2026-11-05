@@ -1,4 +1,5 @@
 using System;
+using Dsl.Text;
 using Dsl.Semantics;
 
 namespace Dsl.Runtime
@@ -32,7 +33,7 @@ namespace Dsl.Runtime
         public Variant Get(string field)
         {
             if (_info == null || !_info.TryGetField(field, out var f))
-                throw new ArgumentException($"У структуры '{_info?.Name}' нет поля '{field}'.");
+                throw new ArgumentException(Loc.T(_ctx?.Language ?? Language.Ru, $"У структуры '{_info?.Name}' нет поля '{field}'.", $"Struct '{_info?.Name}' has no field '{field}'."));
             return _ctx.StructGet(_value, f.Index);
         }
 

@@ -41,6 +41,7 @@ namespace Dsl.Tools
             string root = null;
             string apiPath = null;
             bool json = false;
+            string langArg = null;
 
             for (int i = 0; i < args.Length; i++)
             {
@@ -52,6 +53,12 @@ namespace Dsl.Tools
                         break;
                     case "--json":
                         json = true;
+                        break;
+                    case "--language":
+                    case "--lang":
+                        if (++i >= args.Length) return Usage();
+                        langArg = args[i];
+                        if (!Loc.TryParse(langArg, out _)) return Usage();
                         break;
                     default:
                         if (root != null) return Usage();
@@ -66,6 +73,22 @@ namespace Dsl.Tools
 
             var extra = new List<JsonDiag>(); // load-level / manifest errors
 
+            // язык: --language > "language" в salamander-build.json > SALAMANDER_LANGUAGE > ru
+            string buildPath = Path.Combine(root, "salamander-build.json");
+            Language lang = Language.Ru;
+            if (Loc.TryParse(Environment.GetEnvironmentVariable("SALAMANDER_LANGUAGE"), out var envLang)) lang = envLang;
+            if (langArg != null) Loc.TryParse(langArg, out lang);
+            else if (File.Exists(buildPath))
+            {
+                try
+                {
+                    var b = Newtonsoft.Json.Linq.JObject.Parse(File.ReadAllText(buildPath));
+                    if (Loc.TryParse((string)(b["language"] as Newtonsoft.Json.Linq.JValue), out var fromBuild)) lang = fromBuild;
+                }
+                catch { /* ошибка формата сообщится ниже, при чтении модулей */ }
+            }
+            _lang = lang;
+
             // ----- API registry from the manifest -----
             Semantics.HostRegistry registry;
             int apiVersion;
@@ -73,21 +96,24 @@ namespace Dsl.Tools
             {
                 try
                 {
-                    registry = ApiManifest.Import(File.ReadAllText(apiPath), out apiVersion);
+                    registry = ApiManifest.Import(File.ReadAllText(apiPath), out apiVersion, lang);
                 }
                 catch (Exception ex)
                 {
-                    Emit(extra, apiPath, "E0400", "salamander-api.json could not be read: " + ex.Message);
+                    Emit(extra, apiPath, "E0400", T("salamander-api.json не читается: " + ex.Message,
+                                                    "salamander-api.json could not be read: " + ex.Message));
                     return Output(json, extra, null, null);
                 }
             }
             else
             {
-                registry = new Semantics.HostRegistry();
+                registry = new Semantics.HostRegistry { Language = lang };
                 apiVersion = 1;
                 Emit(extra, apiPath, "W0401",
-                    "salamander-api.json not found — host events and API are unknown " +
-                    "(run the game once in the editor so it gets exported).",
+                    T("salamander-api.json не найден — события и API хоста неизвестны " +
+                      "(запустите игру в редакторе один раз, манифест экспортируется).",
+                      "salamander-api.json not found — host events and API are unknown " +
+                      "(run the game once in the editor so it gets exported)."),
                     warning: true);
             }
 
@@ -97,7 +123,6 @@ namespace Dsl.Tools
             // «ешь то, что дал сборщик»: если он экспортировал salamander-build.json
             // (упорядоченный список папок модулей) — берём РОВНО его; обход папки
             // остаётся дев-режимом без сборщика
-            string buildPath = Path.Combine(root, "salamander-build.json");
             List<ModuleSourceSet> modules;
             if (File.Exists(buildPath))
             {
@@ -107,26 +132,32 @@ namespace Dsl.Tools
                     var dirs = new List<string>();
                     foreach (var t in build["modules"] ?? new Newtonsoft.Json.Linq.JArray())
                         dirs.Add(Path.GetFullPath(Path.Combine(root, (string)t)));
-                    modules = ModuleLoader.LoadFromList(dirs, onLoadError, logicalToAbs);
+                    modules = ModuleLoader.LoadFromList(dirs, onLoadError, logicalToAbs, lang);
                 }
                 catch (Exception ex)
                 {
-                    onLoadError(buildPath, "salamander-build.json не читается — " + ex.Message);
+                    onLoadError(buildPath, T("salamander-build.json не читается — " + ex.Message,
+                                             "salamander-build.json cannot be read — " + ex.Message));
                     modules = new List<ModuleSourceSet>();
                 }
             }
             else
             {
-                modules = ModuleLoader.LoadFromFolder(root, onLoadError, logicalToAbs);
+                modules = ModuleLoader.LoadFromFolder(root, onLoadError, logicalToAbs, lang);
             }
 
             if (modules.Count == 0)
-                Emit(extra, root, "W0402", "no modules found in the folder (a subfolder with module.json).", warning: true);
+                Emit(extra, root, "W0402", T("в папке не найдено модулей (подпапок с module.json).",
+                                             "no modules found in the folder (a subfolder with module.json)."), warning: true);
 
             // ----- compile -----
-            var result = ScriptCompiler.Compile(registry, apiVersion, modules);
+            var result = ScriptCompiler.Compile(registry, apiVersion, modules, false, lang);
             return Output(json, extra, result, logicalToAbs);
         }
+
+        private static Language _lang;
+
+        private static string T(string ru, string en) => Loc.T(_lang, ru, en);
 
         private static void Emit(List<JsonDiag> into, string file, string code, string message, bool warning = false)
         {
@@ -180,9 +211,9 @@ namespace Dsl.Tools
                 foreach (var d in all)
                     Console.WriteLine($"{d.File}:{d.Line}:{d.Column}: {d.Severity} {d.Code}: {d.Message}");
                 if (all.Count == 0)
-                    Console.WriteLine("OK: no errors.");
+                    Console.WriteLine(T("OK: ошибок нет.", "OK: no errors."));
                 else if (!hasErrors)
-                    Console.WriteLine("OK: warnings only.");
+                    Console.WriteLine(T("OK: только предупреждения.", "OK: warnings only."));
             }
 
             return hasErrors ? 1 : 0;
@@ -190,7 +221,7 @@ namespace Dsl.Tools
 
         private static int Usage()
         {
-            Console.Error.WriteLine("Usage: dslcheck <modules folder> [--api <salamander-api.json>] [--json]");
+            Console.Error.WriteLine("Usage: dslcheck <modules folder> [--api <salamander-api.json>] [--json] [--language en|ru]");
             return 2;
         }
     }

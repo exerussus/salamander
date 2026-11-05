@@ -30,6 +30,12 @@ namespace Dsl.Ide
         public bool ShowToolbar = true;
         /// <summary>Восстановить вкладки и несохранённые буферы прошлой сессии.</summary>
         public bool RestoreSession = true;
+
+        /// <summary>
+        /// Язык интерфейса, подсказок и сообщений компиляции (ru / en). Обычно — язык
+        /// бутстрапа игры (<c>ScriptHostBootstrap.Language</c>).
+        /// </summary>
+        public Language Language = Language.Ru;
     }
 
     /// <summary>
@@ -99,6 +105,20 @@ namespace Dsl.Ide
         /// <summary>Статус IDE (для хоста, у которого своя строка статуса).</summary>
         public event Action<string, IdeStatusKind> StatusChanged;
 
+        /// <summary>
+        /// Язык IDE. Смена на лету переключает подсказки, статусы, сообщения и следующую
+        /// компиляцию; подписи кнопок, созданных раньше, остаются — для них пересоздайте вид.
+        /// </summary>
+        public Language Language
+        {
+            get => IdeText.Language;
+            set
+            {
+                IdeText.Language = value;
+                _ls.Language = value;
+            }
+        }
+
         public IIdeHost Host => _host;
         public IScriptWorkspace Workspace => _workspace;
         public IReadOnlyList<IdeDocument> Documents => _docs;
@@ -121,6 +141,8 @@ namespace Dsl.Ide
         public SalIdeView(IdeOptions options)
         {
             options ??= new IdeOptions();
+            IdeText.Language = options.Language;
+            _ls.Language = options.Language;
             _host = options.Host ?? new DefaultIdeHost();
             _storage = options.Storage ?? new MemoryIdeStorage();
             _workspace = options.Workspace ?? new MemoryWorkspace();
@@ -131,30 +153,31 @@ namespace Dsl.Ide
             AddToClassList("sal-ide");
             var uss = options.StyleSheet != null ? options.StyleSheet : Resources.Load<StyleSheet>("SalamanderIde/SalIde");
             if (uss != null) styleSheets.Add(uss);
-            else _host.Log(IdeLogLevel.Warning, "ui", "SalIde.uss не найден (Resources/SalamanderIde/SalIde) — IDE без оформления");
+            else _host.Log(IdeLogLevel.Warning, "ui", IdeText.T("SalIde.uss не найден (Resources/SalamanderIde/SalIde) — IDE без оформления",
+                "SalIde.uss not found (Resources/SalamanderIde/SalIde) — the IDE has no styling"));
             _chrome.Register(this, ChromeSlot.Background, ChromeSlot.Text);
 
             // ── тулбар ──
             _toolbar = new VisualElement();
             _toolbar.AddToClassList("sal-ide-toolbar");
             _chrome.Register(_toolbar, ChromeSlot.Panel, ChromeSlot.Text, ChromeSlot.Border);
-            _toolbar.Add(ToolButton("Новый", "Новый файл в модуле (Ctrl+N)", () => NewFile(null)));
-            _toolbar.Add(ToolButton("Сохранить", "Сохранить (Ctrl+S)", () => Save(_active), primary: true));
-            _toolbar.Add(ToolButton("Всё", "Сохранить все (Ctrl+Shift+S)", SaveAll));
+            _toolbar.Add(ToolButton(IdeText.T("Новый", "New"), IdeText.T("Новый файл в модуле (Ctrl+N)", "New file in a module (Ctrl+N)"), () => NewFile(null)));
+            _toolbar.Add(ToolButton(IdeText.T("Сохранить", "Save"), IdeText.T("Сохранить (Ctrl+S)", "Save (Ctrl+S)"), () => Save(_active), primary: true));
+            _toolbar.Add(ToolButton(IdeText.T("Всё", "All"), IdeText.T("Сохранить все (Ctrl+Shift+S)", "Save all (Ctrl+Shift+S)"), SaveAll));
             _toolbar.Add(Separator());
-            _toolbar.Add(ToolButton("Компилировать", "Компилировать воркспейс (F7, Ctrl+B)", Compile));
-            _applyButton = ToolButton("Применить", "Сохранить и перезагрузить скрипты в игре", Apply, primary: true);
+            _toolbar.Add(ToolButton(IdeText.T("Компилировать", "Compile"), IdeText.T("Компилировать воркспейс (F7, Ctrl+B)", "Compile the workspace (F7, Ctrl+B)"), Compile));
+            _applyButton = ToolButton(IdeText.T("Применить", "Apply"), IdeText.T("Сохранить и перезагрузить скрипты в игре", "Save and reload the scripts in the game"), Apply, primary: true);
             _toolbar.Add(_applyButton);
             _toolbar.Add(Separator());
-            _toolbar.Add(ToolButton("Найти", "Поиск (Ctrl+F), замена (Ctrl+H)", () => _editor.ShowFind(false)));
-            _toolbar.Add(ToolButton("Строка…", "Перейти к строке (Ctrl+G)", GoToLinePrompt));
+            _toolbar.Add(ToolButton(IdeText.T("Найти", "Find"), IdeText.T("Поиск (Ctrl+F), замена (Ctrl+H)", "Find (Ctrl+F), replace (Ctrl+H)"), () => _editor.ShowFind(false)));
+            _toolbar.Add(ToolButton(IdeText.T("Строка…", "Line…"), IdeText.T("Перейти к строке (Ctrl+G)", "Go to line (Ctrl+G)"), GoToLinePrompt));
             _toolbarExtras = new VisualElement();
             _toolbarExtras.AddToClassList("sal-ide-toolbar-extras");
             _toolbar.Add(_toolbarExtras);
             var spacer = new VisualElement { style = { flexGrow = 1 } };
             _toolbar.Add(spacer);
-            _toolbar.Add(ToolButton("Файлы", "Показать/скрыть панель файлов", ToggleSidebar));
-            _toolbar.Add(ToolButton("Низ", "Показать/скрыть проблемы и консоль", ToggleBottom));
+            _toolbar.Add(ToolButton(IdeText.T("Файлы", "Files"), IdeText.T("Показать/скрыть панель файлов", "Show/hide the files panel"), ToggleSidebar));
+            _toolbar.Add(ToolButton(IdeText.T("Низ", "Bottom"), IdeText.T("Показать/скрыть проблемы и консоль", "Show/hide problems and console"), ToggleBottom));
             _toolbar.style.display = options.ShowToolbar ? DisplayStyle.Flex : DisplayStyle.None;
             Add(_toolbar);
 
@@ -164,12 +187,12 @@ namespace Dsl.Ide
             _chrome.Register(_sidebar, ChromeSlot.Panel, ChromeSlot.Text, ChromeSlot.Border);
             var sideHeader = new VisualElement();
             sideHeader.AddToClassList("sal-panel-header");
-            _sideFilesTab = HeaderTab("Файлы", () => ShowSidebarTab("files"));
-            _sideOutlineTab = HeaderTab("Структура", () => ShowSidebarTab("outline"));
+            _sideFilesTab = HeaderTab(IdeText.T("Файлы", "Files"), () => ShowSidebarTab("files"));
+            _sideOutlineTab = HeaderTab(IdeText.T("Структура", "Outline"), () => ShowSidebarTab("outline"));
             sideHeader.Add(_sideFilesTab);
             sideHeader.Add(_sideOutlineTab);
             sideHeader.Add(new VisualElement { style = { flexGrow = 1 } });
-            sideHeader.Add(SmallButton("Обновить", "Перечитать модули с диска", () => ReloadWorkspace(true)));
+            sideHeader.Add(SmallButton(IdeText.T("Обновить", "Refresh"), IdeText.T("Перечитать модули с диска", "Re-read modules from disk"), () => ReloadWorkspace(true)));
             _sidebar.Add(sideHeader);
             _explorer = new ExplorerPanel(_chrome);
             _explorer.OpenRequested += key => OpenFile(key);
@@ -207,7 +230,8 @@ namespace Dsl.Ide
             editorHost.Add(_editor);
             _emptyState = new VisualElement();
             _emptyState.AddToClassList("sal-empty-state");
-            _emptyState.Add(new Label("Нет открытых файлов.\nВыберите файл слева или создайте новый (Ctrl+N)."));
+            _emptyState.Add(new Label(IdeText.T("Нет открытых файлов.\nВыберите файл слева или создайте новый (Ctrl+N).",
+                "No open files.\nPick a file on the left or create a new one (Ctrl+N).")));
             editorHost.Add(_emptyState);
             center.Add(editorHost);
 
@@ -217,15 +241,15 @@ namespace Dsl.Ide
             _chrome.Register(_bottom, ChromeSlot.Panel, ChromeSlot.Text, ChromeSlot.Border);
             var bottomHeader = new VisualElement();
             bottomHeader.AddToClassList("sal-panel-header");
-            _problemsTab = HeaderTab("Проблемы", () => ShowBottomTab("problems"));
-            _consoleTab = HeaderTab("Консоль", () => ShowBottomTab("console"));
+            _problemsTab = HeaderTab(IdeText.T("Проблемы", "Problems"), () => ShowBottomTab("problems"));
+            _consoleTab = HeaderTab(IdeText.T("Консоль", "Console"), () => ShowBottomTab("console"));
             bottomHeader.Add(_problemsTab);
             bottomHeader.Add(_consoleTab);
             bottomHeader.Add(new VisualElement { style = { flexGrow = 1 } });
             _problemsFilters = new VisualElement();
             _problemsFilters.AddToClassList("sal-filters");
             bottomHeader.Add(_problemsFilters);
-            bottomHeader.Add(SmallButton("Очистить", "Очистить консоль", () => _console.ClearLines()));
+            bottomHeader.Add(SmallButton(IdeText.T("Очистить", "Clear"), IdeText.T("Очистить консоль", "Clear the console"), () => _console.ClearLines()));
             _bottom.Add(bottomHeader);
             _problems = new ProblemsPanel();
             _problems.Activated += OnProblem;
@@ -359,12 +383,12 @@ namespace Dsl.Ide
         public bool OpenFile(string pathOrKey, int line1 = 0, int col1 = 0)
         {
             string key = _workspace.NormalizeKey(pathOrKey);
-            if (key == null) { SetStatus("Не удалось открыть: " + pathOrKey, IdeStatusKind.Error); return false; }
+            if (key == null) { SetStatus(IdeText.T("Не удалось открыть: " + pathOrKey, "Could not open: " + pathOrKey), IdeStatusKind.Error); return false; }
             var doc = _docs.Find(d => string.Equals(d.Key, key, StringComparison.OrdinalIgnoreCase));
             if (doc == null)
             {
                 string text = ReadKey(key);
-                if (text == null) { SetStatus("Файл не найден: " + pathOrKey, IdeStatusKind.Error); return false; }
+                if (text == null) { SetStatus(IdeText.T("Файл не найден: " + pathOrKey, "File not found: " + pathOrKey), IdeStatusKind.Error); return false; }
                 doc = new IdeDocument(key, DisplayNameOf(key)) { Logical = LogicalOf(key) };
                 doc.LoadFromDisk(text, _workspace.GetStamp(key));
                 _docs.Add(doc);
@@ -384,7 +408,8 @@ namespace Dsl.Ide
             int saved = 0;
             foreach (var d in _docs.ToArray())
                 if (d.Dirty && Save(d, false, null)) saved++;
-            SetStatus(saved == 0 ? "Нечего сохранять." : $"Сохранено файлов: {saved}.", IdeStatusKind.Ok);
+            SetStatus(IdeText.T(saved == 0 ? "Нечего сохранять." : $"Сохранено файлов: {saved}.",
+                saved == 0 ? "Nothing to save." : $"Files saved: {saved}."), IdeStatusKind.Ok);
         }
 
         /// <summary>Отбросить все несохранённые правки (хост решил закрыть без сохранения).</summary>
@@ -422,7 +447,7 @@ namespace Dsl.Ide
         public void Compile()
         {
             _runner.ForceRequest(Now);
-            SetStatus("Компиляция…", IdeStatusKind.Info);
+            SetStatus(IdeText.T("Компиляция…", "Compiling…"), IdeStatusKind.Info);
         }
 
         /// <summary>Записать сессию и бэкапы буферов сейчас (перед перезагрузкой домена, выходом).</summary>
@@ -536,8 +561,8 @@ namespace Dsl.Ide
             if (doc == null) { done?.Invoke(true); return; }
             if (doc == _active) CaptureEditorState(doc);
             if (!doc.Dirty) { CloseNow(doc); done?.Invoke(true); return; }
-            _dialog.Ask("Несохранённые изменения", $"В «{doc.DisplayName}» есть несохранённые изменения.",
-                new[] { "Сохранить", "Не сохранять", "Отмена" }, 0, 2, r =>
+            _dialog.Ask(IdeText.T("Несохранённые изменения", "Unsaved changes"), IdeText.T($"В «{doc.DisplayName}» есть несохранённые изменения.", $"«{doc.DisplayName}» has unsaved changes."),
+                new[] { IdeText.T("Сохранить", "Save"), IdeText.T("Не сохранять", "Don't save"), IdeText.T("Отмена", "Cancel") }, 0, 2, r =>
                 {
                     if (r == 2) { done?.Invoke(false); return; }
                     if (r == 0)
@@ -586,15 +611,16 @@ namespace Dsl.Ide
             {
                 doc.ConflictText ??= ReadKey(doc.Key) ?? "";
                 RefreshBanner();
-                _dialog.Ask("Файл изменён на диске",
-                    $"«{doc.DisplayName}» изменён другой программой после открытия. Перезаписать его вашей версией?",
-                    new[] { "Перезаписать", "Отмена" }, 1, 1,
+                _dialog.Ask(IdeText.T("Файл изменён на диске", "File changed on disk"),
+                    IdeText.T($"«{doc.DisplayName}» изменён другой программой после открытия. Перезаписать его вашей версией?",
+                        $"«{doc.DisplayName}» was changed by another program after opening. Overwrite it with your version?"),
+                    new[] { IdeText.T("Перезаписать", "Overwrite"), IdeText.T("Отмена", "Cancel") }, 1, 1,
                     r => { if (r == 0) Save(doc, true, then); else then?.Invoke(false); });
                 return false;
             }
             if (!_workspace.Write(doc.Key, doc.TextForDisk(), out string err))
             {
-                SetStatus($"Не удалось сохранить {doc.DisplayName}: {err}", IdeStatusKind.Error);
+                SetStatus(IdeText.T($"Не удалось сохранить {doc.DisplayName}: {err}", $"Could not save {doc.DisplayName}: {err}"), IdeStatusKind.Error);
                 then?.Invoke(false);
                 return false;
             }
@@ -603,11 +629,11 @@ namespace Dsl.Ide
             if (path != null)
             {
                 try { _host.OnFileSaved(path); }
-                catch (Exception e) { _host.Log(IdeLogLevel.Warning, "save", "хост не обработал сохранение", e); }
+                catch (Exception e) { _host.Log(IdeLogLevel.Warning, "save", IdeText.T("хост не обработал сохранение", "the host did not handle the save"), e); }
             }
             RefreshTabs();
             RefreshBanner();
-            SetStatus("Сохранено: " + doc.DisplayName, IdeStatusKind.Ok);
+            SetStatus(IdeText.T("Сохранено: " + doc.DisplayName, "Saved: " + doc.DisplayName), IdeStatusKind.Ok);
             PersistSession();
             RequestCompile(immediate: true);
             then?.Invoke(true);
@@ -628,14 +654,15 @@ namespace Dsl.Ide
         /// <summary>Новый файл в модуле: имя спрашивается в диалоге.</summary>
         public void NewFile(string module)
         {
-            if (!_workspace.CanCreateFiles) { SetStatus("Этот воркспейс не умеет создавать файлы.", IdeStatusKind.Warning); return; }
-            if (_snapshot.Modules.Count == 0) { SetStatus("Нет модулей: создайте папку с module.json.", IdeStatusKind.Warning); return; }
+            if (!_workspace.CanCreateFiles) { SetStatus(IdeText.T("Этот воркспейс не умеет создавать файлы.", "This workspace cannot create files."), IdeStatusKind.Warning); return; }
+            if (_snapshot.Modules.Count == 0) { SetStatus(IdeText.T("Нет модулей: создайте папку с module.json.", "No modules: create a folder with module.json."), IdeStatusKind.Warning); return; }
             module ??= _active?.Logical != null ? _active.Logical.Split('/')[0] : _snapshot.Modules[0].Manifest?.Name;
-            _dialog.Prompt("Новый файл", $"Модуль «{module}». Путь внутри модуля (например src/new.sal):", "src/new.sal", rel =>
+            _dialog.Prompt(IdeText.T("Новый файл", "New file"), IdeText.T($"Модуль «{module}». Путь внутри модуля (например src/new.sal):",
+                $"Module «{module}». Path inside the module (e.g. src/new.sal):"), "src/new.sal", rel =>
             {
                 if (string.IsNullOrWhiteSpace(rel)) return;
                 string key = _workspace.CreateFile(module, rel, out string err);
-                if (key == null) { SetStatus("Файл не создан: " + err, IdeStatusKind.Error); return; }
+                if (key == null) { SetStatus(IdeText.T("Файл не создан: " + err, "File not created: " + err), IdeStatusKind.Error); return; }
                 if (err != null) SetStatus(err, IdeStatusKind.Warning);
                 ReloadWorkspace(true);
                 OpenFile(key);
@@ -645,7 +672,7 @@ namespace Dsl.Ide
         private void GoToLinePrompt()
         {
             if (_active == null) return;
-            _dialog.Prompt("Перейти к строке", "Строка[:колонка]", "", s =>
+            _dialog.Prompt(IdeText.T("Перейти к строке", "Go to line"), IdeText.T("Строка[:колонка]", "Line[:column]"), "", s =>
             {
                 if (string.IsNullOrWhiteSpace(s)) return;
                 var parts = s.Split(':');
@@ -682,24 +709,25 @@ namespace Dsl.Ide
             if (_apply == null) return;
             if (!_apply.CanApply)
             {
-                SetStatus("Применять некуда: движок скриптов не запущен.", IdeStatusKind.Warning);
+                SetStatus(IdeText.T("Применять некуда: движок скриптов не запущен.", "Nowhere to apply: the script engine is not running."), IdeStatusKind.Warning);
                 RefreshApplyButton();
                 return;
             }
             SaveAll();
             if (HasUnsavedChanges)
             {
-                SetStatus("Сначала сохраните изменения — применять нечего.", IdeStatusKind.Warning);
+                SetStatus(IdeText.T("Сначала сохраните изменения — применять нечего.",
+                    "Save your changes first — there is nothing to apply."), IdeStatusKind.Warning);
                 return;
             }
             try
             {
                 _apply.Apply();
-                SetStatus("Скрипты отправлены на перезагрузку.", IdeStatusKind.Info);
+                SetStatus(IdeText.T("Скрипты отправлены на перезагрузку.", "Scripts sent for reload."), IdeStatusKind.Info);
             }
             catch (Exception e)
             {
-                SetStatus("Не удалось применить: " + e.Message, IdeStatusKind.Error);
+                SetStatus(IdeText.T("Не удалось применить: " + e.Message, "Could not apply: " + e.Message), IdeStatusKind.Error);
             }
         }
 
@@ -715,7 +743,7 @@ namespace Dsl.Ide
             catch (Exception e)
             {
                 _snapshot = new WorkspaceModules();
-                _host.Log(IdeLogLevel.Error, "workspace", "модули не загрузились", e);
+                _host.Log(IdeLogLevel.Error, "workspace", IdeText.T("модули не загрузились", "modules failed to load"), e);
             }
             // логические имена открытых документов — по новому снимку
             foreach (var d in _docs) d.Logical = LogicalOf(d.Key);
@@ -723,7 +751,7 @@ namespace Dsl.Ide
             RebuildIndex();
             RefreshExplorer();
             RequestCompile(immediate: true);
-            if (announce) SetStatus($"Модули перечитаны: {_snapshot.Modules.Count}.", IdeStatusKind.Info);
+            if (announce) SetStatus(IdeText.T($"Модули перечитаны: {_snapshot.Modules.Count}.", $"Modules re-read: {_snapshot.Modules.Count}."), IdeStatusKind.Info);
         }
 
         private const string RefPrefix = "ref:";
@@ -741,7 +769,8 @@ namespace Dsl.Ide
             catch (Exception e)
             {
                 _refModules = new List<ModuleSourceSet>();
-                _host.Log(IdeLogLevel.Warning, "workspace", "справочные модули игры не прочитались — подсказки только по воркспейсу", e);
+                _host.Log(IdeLogLevel.Warning, "workspace", IdeText.T("справочные модули игры не прочитались — подсказки только по воркспейсу",
+                    "the game's reference modules could not be read — hints cover the workspace only"), e);
             }
         }
 
@@ -823,7 +852,7 @@ namespace Dsl.Ide
         {
             // API хоста поменялся (манифест переэкспортирован, игра перерегистрировала API)
             try { if (_api.Poll()) OnApiChanged(); }
-            catch (Exception e) { _host.Log(IdeLogLevel.Warning, "api", "опрос манифеста", e); }
+            catch (Exception e) { _host.Log(IdeLogLevel.Warning, "api", IdeText.T("опрос манифеста", "manifest polling"), e); }
 
             // набор модулей/файлов поменялся извне (git, другой редактор, игра)
             long token;
@@ -860,14 +889,15 @@ namespace Dsl.Ide
                 // перечитали по опросу — фокус не забираем (его мог держать поиск, диалог, игра)
                 if (d == _active) BindEditor(d, focus: _editor.HasFocus);
                 _ls.Index.Update(d.Key, d.Text);
-                SetStatus($"«{d.DisplayName}» обновлён с диска.", IdeStatusKind.Info);
+                SetStatus(IdeText.T($"«{d.DisplayName}» обновлён с диска.", $"«{d.DisplayName}» reloaded from disk."), IdeStatusKind.Info);
                 RequestCompile(immediate: true);
             }
             else
             {
                 d.ConflictText = disk;   // сырой текст: у файла может быть CRLF
                 d.DiskStamp = st;
-                SetStatus($"«{d.DisplayName}» изменён на диске, а у вас несохранённые правки.", IdeStatusKind.Warning);
+                SetStatus(IdeText.T($"«{d.DisplayName}» изменён на диске, а у вас несохранённые правки.",
+                    $"«{d.DisplayName}» changed on disk, and you have unsaved edits."), IdeStatusKind.Warning);
             }
             RefreshTabs();
             RefreshBanner();
@@ -903,6 +933,7 @@ namespace Dsl.Ide
             {
                 Registry = model.Registry,
                 ApiVersion = model.ApiVersion,
+                Language = IdeText.Language,
                 DocVersions = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase),
                 LogicalToKey = new Dictionary<string, string>(StringComparer.Ordinal),
             };
@@ -1036,9 +1067,9 @@ namespace Dsl.Ide
             RefreshOutline();
 
             int errors = _problems.Errors, warnings = _problems.Warnings;
-            if (result.Success && warnings == 0) SetStatus($"OK — компилируется ({job.Milliseconds:0} мс).", IdeStatusKind.Ok);
-            else if (result.Success) SetStatus($"Компилируется, предупреждений: {warnings}.", IdeStatusKind.Warning);
-            else SetStatus($"Ошибок: {errors}, предупреждений: {warnings}.", IdeStatusKind.Error);
+            if (result.Success && warnings == 0) SetStatus(IdeText.T($"OK — компилируется ({job.Milliseconds:0} мс).", $"OK — compiles ({job.Milliseconds:0} ms)."), IdeStatusKind.Ok);
+            else if (result.Success) SetStatus(IdeText.T($"Компилируется, предупреждений: {warnings}.", $"Compiles, warnings: {warnings}."), IdeStatusKind.Warning);
+            else SetStatus(IdeText.T($"Ошибок: {errors}, предупреждений: {warnings}.", $"Errors: {errors}, warnings: {warnings}."), IdeStatusKind.Error);
             UpdateStatusRight();
         }
 
@@ -1059,11 +1090,12 @@ namespace Dsl.Ide
             // индекс активного файла — по живому буферу, иначе строки деклараций врут
             _ls.Index.Update(_active.Key, _active.Text);
             var loc = _ls.Definition(_active.Key, line1, col1);
-            if (loc == null) { SetStatus("Определение не найдено.", IdeStatusKind.Info); return false; }
+            if (loc == null) { SetStatus(IdeText.T("Определение не найдено.", "Definition not found."), IdeStatusKind.Info); return false; }
             if (loc.File != null && loc.File.StartsWith(RefPrefix, StringComparison.Ordinal))
             {
                 // справочный модуль в воркспейс не входит — говорим, где искать
-                SetStatus($"Определение — в модуле игры: {loc.File.Substring(RefPrefix.Length)}:{loc.Line}.", IdeStatusKind.Info);
+                SetStatus(IdeText.T($"Определение — в модуле игры: {loc.File.Substring(RefPrefix.Length)}:{loc.Line}.",
+                    $"The definition is in a game module: {loc.File.Substring(RefPrefix.Length)}:{loc.Line}."), IdeStatusKind.Info);
                 return true;
             }
             if (string.Equals(loc.File, _active.Key, StringComparison.OrdinalIgnoreCase))
@@ -1112,7 +1144,8 @@ namespace Dsl.Ide
             if (active != null) Activate(active);
             else ShowEmpty();
             if (restored > 0)
-                SetStatus($"Восстановлены несохранённые правки: {restored}" + (conflicts > 0 ? $", конфликтов с диском: {conflicts}." : "."),
+                SetStatus(IdeText.T($"Восстановлены несохранённые правки: {restored}" + (conflicts > 0 ? $", конфликтов с диском: {conflicts}." : "."),
+                    $"Unsaved edits restored: {restored}" + (conflicts > 0 ? $", conflicts with disk: {conflicts}." : ".")),
                           conflicts > 0 ? IdeStatusKind.Warning : IdeStatusKind.Info);
         }
 
@@ -1148,8 +1181,9 @@ namespace Dsl.Ide
             if (d == null) { _banner.style.display = DisplayStyle.None; return; }
             if (d.HasConflict)
             {
-                _bannerText.text = "Файл изменён на диске, а в редакторе есть несохранённые правки.";
-                _bannerButtons.Add(SmallButton("Взять с диска", "Отбросить свои правки и загрузить версию с диска", () =>
+                _bannerText.text = IdeText.T("Файл изменён на диске, а в редакторе есть несохранённые правки.",
+                    "The file changed on disk, and the editor has unsaved edits.");
+                _bannerButtons.Add(SmallButton(IdeText.T("Взять с диска", "Take from disk"), IdeText.T("Отбросить свои правки и загрузить версию с диска", "Discard your edits and load the version from disk"), () =>
                 {
                     string disk = d.ConflictText;
                     d.LoadFromDisk(disk, _workspace.GetStamp(d.Key));
@@ -1158,7 +1192,7 @@ namespace Dsl.Ide
                     RefreshBanner();
                     RequestCompile(true);
                 }));
-                _bannerButtons.Add(SmallButton("Оставить мои", "Оставить правки; сохранение перезапишет файл", () =>
+                _bannerButtons.Add(SmallButton(IdeText.T("Оставить мои", "Keep mine"), IdeText.T("Оставить правки; сохранение перезапишет файл", "Keep the edits; saving will overwrite the file"), () =>
                 {
                     // «сохранённой» считаем версию диска, буфер остаётся изменённым —
                     // следующее сохранение перезапишет файл без повторного вопроса
@@ -1172,7 +1206,8 @@ namespace Dsl.Ide
             }
             if (d.Logical == null)
             {
-                _bannerText.text = "Файл не входит ни в один module.json воркспейса — в игре он не компилируется.";
+                _bannerText.text = IdeText.T("Файл не входит ни в один module.json воркспейса — в игре он не компилируется.",
+                    "The file is not part of any module.json in the workspace — the game does not compile it.");
                 _banner.EnableInClassList("sal-banner--warning", false);
                 _banner.style.display = DisplayStyle.Flex;
                 return;
@@ -1196,7 +1231,7 @@ namespace Dsl.Ide
             _problemsFilters.Add(FilterToggle("● ", () => _problems.ShowErrors, v => _problems.ShowErrors = v, "sal-sev-error", () => _problems.Errors));
             _problemsFilters.Add(FilterToggle("▲ ", () => _problems.ShowWarnings, v => _problems.ShowWarnings = v, "sal-sev-warning", () => _problems.Warnings));
             _problemsFilters.Add(FilterToggle("○ ", () => _problems.ShowInfos, v => _problems.ShowInfos = v, "sal-sev-info", () => _problems.Infos));
-            _problemsFilters.Add(FilterToggle("Текущий файл", () => _problems.CurrentOnly, v => _problems.CurrentOnly = v, null, null));
+            _problemsFilters.Add(FilterToggle(IdeText.T("Текущий файл", "Current file"), () => _problems.CurrentOnly, v => _problems.CurrentOnly = v, null, null));
         }
 
         private Button FilterToggle(string label, Func<bool> get, Action<bool> set, string cls, Func<int> count)
@@ -1230,9 +1265,12 @@ namespace Dsl.Ide
         private void RefreshProblemsHeader()
         {
             foreach (var r in _filterRefreshers) r();
-            _problemsTab.text = _problems.Errors + _problems.Warnings > 0
+            _problemsTab.text = IdeText.T(_problems.Errors + _problems.Warnings > 0
                 ? $"Проблемы ({_problems.Errors + _problems.Warnings})"
-                : "Проблемы";
+                : "Проблемы",
+                _problems.Errors + _problems.Warnings > 0
+                ? $"Problems ({_problems.Errors + _problems.Warnings})"
+                : "Problems");
         }
 
         private void ShowSidebarTab(string tab)
@@ -1278,13 +1316,14 @@ namespace Dsl.Ide
             bool has = _apply != null;
             _applyButton.style.display = has ? DisplayStyle.Flex : DisplayStyle.None;
             if (!has) return;
-            _applyButton.text = string.IsNullOrEmpty(_apply.ApplyLabel) ? "Применить" : _apply.ApplyLabel;
+            _applyButton.text = IdeText.T(string.IsNullOrEmpty(_apply.ApplyLabel) ? "Применить" : _apply.ApplyLabel,
+                string.IsNullOrEmpty(_apply.ApplyLabel) ? "Apply" : _apply.ApplyLabel);
             // движок может быть ещё не поднят или уже уничтожен — кнопка это показывает,
             // иначе нажатие молча ничего не делало
             bool can = false;
             try { can = _apply.CanApply; } catch { }
             _applyButton.SetEnabled(can);
-            _applyButton.tooltip = can ? "" : "Движок скриптов не запущен";
+            _applyButton.tooltip = IdeText.T(can ? "" : "Движок скриптов не запущен", can ? "" : "The script engine is not running");
         }
 
         private void UpdateStatusLeft()
@@ -1292,15 +1331,17 @@ namespace Dsl.Ide
             if (_active == null) { _statusLeft.text = ""; return; }
             int caret = _editor.CaretIndex, sel = _editor.SelectIndex;
             TextUtil.LineColAt(_editor.Text, caret, out int line, out int col);
-            _statusLeft.text = caret != sel ? $"Стр {line}, стлб {col} (выделено {Math.Abs(caret - sel)})" : $"Стр {line}, стлб {col}";
+            _statusLeft.text = IdeText.T(caret != sel ? $"Стр {line}, стлб {col} (выделено {Math.Abs(caret - sel)})" : $"Стр {line}, стлб {col}",
+                caret != sel ? $"Ln {line}, Col {col} ({Math.Abs(caret - sel)} selected)" : $"Ln {line}, Col {col}");
         }
 
         private void UpdateStatusRight()
         {
             var m = _api.Current ?? ApiModel.Empty;
-            string api = m.IsEmpty ? "API игры не задан" : $"API v{m.ApiVersion}: {m.Label}";
+            string api = IdeText.T(m.IsEmpty ? "API игры не задан" : $"API v{m.ApiVersion}: {m.Label}",
+                m.IsEmpty ? "Game API not set" : $"API v{m.ApiVersion}: {m.Label}");
             string ws = _workspace?.DisplayName ?? "";
-            string ms = _lastCompileMs > 0 ? $" · {_lastCompileMs:0} мс" : "";
+            string ms = IdeText.T(_lastCompileMs > 0 ? $" · {_lastCompileMs:0} мс" : "", _lastCompileMs > 0 ? $" · {_lastCompileMs:0} ms" : "");
             _statusRight.text = $"{ws} · {api}{ms}";
         }
 

@@ -1,4 +1,5 @@
 using System;
+using Dsl.Text;
 using System.Collections.Generic;
 using Dsl.Runtime;
 using Dsl.Semantics;
@@ -23,13 +24,13 @@ namespace Dsl.Compilation
         {
             [JsonProperty("name")] public string Name;
             [JsonProperty("type")] public string Type;
-            [JsonProperty("doc", NullValueHandling = NullValueHandling.Ignore)] public string Doc;
+            [JsonProperty("doc", NullValueHandling = NullValueHandling.Ignore)] public DocText Doc;
         }
 
         public sealed class EnumDef
         {
             [JsonProperty("name")] public string Name;
-            [JsonProperty("summary", NullValueHandling = NullValueHandling.Ignore)] public string Summary;
+            [JsonProperty("summary", NullValueHandling = NullValueHandling.Ignore)] public DocText Summary;
             [JsonProperty("members")] public string[] Members = Array.Empty<string>();
 
             /// <summary>
@@ -39,7 +40,7 @@ namespace Dsl.Compilation
             /// как раньше, и `members` остаётся простым списком имён.
             /// </summary>
             [JsonProperty("memberDocs", NullValueHandling = NullValueHandling.Ignore)]
-            public string[] MemberDocs;
+            public DocText[] MemberDocs;
         }
 
         public sealed class PropDef
@@ -47,13 +48,13 @@ namespace Dsl.Compilation
             [JsonProperty("name")] public string Name;
             [JsonProperty("type")] public string Type;
             [JsonProperty("readOnly")] public bool ReadOnly;
-            [JsonProperty("doc", NullValueHandling = NullValueHandling.Ignore)] public string Doc;
+            [JsonProperty("doc", NullValueHandling = NullValueHandling.Ignore)] public DocText Doc;
         }
 
         public sealed class ClassDef
         {
             [JsonProperty("name")] public string Name;
-            [JsonProperty("summary", NullValueHandling = NullValueHandling.Ignore)] public string Summary;
+            [JsonProperty("summary", NullValueHandling = NullValueHandling.Ignore)] public DocText Summary;
             [JsonProperty("props")] public PropDef[] Props = Array.Empty<PropDef>();
 
             /// <summary>
@@ -67,7 +68,7 @@ namespace Dsl.Compilation
         public sealed class MethodDef
         {
             [JsonProperty("name")] public string Name;
-            [JsonProperty("summary", NullValueHandling = NullValueHandling.Ignore)] public string Summary;
+            [JsonProperty("summary", NullValueHandling = NullValueHandling.Ignore)] public DocText Summary;
             [JsonProperty("params")] public ParamDef[] Params = Array.Empty<ParamDef>();
             [JsonProperty("returns")] public string Returns = "void";
         }
@@ -75,7 +76,7 @@ namespace Dsl.Compilation
         public sealed class ApiDef
         {
             [JsonProperty("name")] public string Name;
-            [JsonProperty("summary", NullValueHandling = NullValueHandling.Ignore)] public string Summary;
+            [JsonProperty("summary", NullValueHandling = NullValueHandling.Ignore)] public DocText Summary;
             [JsonProperty("methods")] public MethodDef[] Methods = Array.Empty<MethodDef>();
             [JsonProperty("consts", NullValueHandling = NullValueHandling.Ignore)] public ApiConstDef[] Consts;
         }
@@ -88,7 +89,7 @@ namespace Dsl.Compilation
         public sealed class ApiNamespaceDef
         {
             [JsonProperty("name")] public string Name;
-            [JsonProperty("summary")] public string Summary;
+            [JsonProperty("summary")] public DocText Summary;
         }
 
         /// <summary>Именованное значение у API-класса: читается без скобок.</summary>
@@ -97,7 +98,7 @@ namespace Dsl.Compilation
             [JsonProperty("name")] public string Name;
             [JsonProperty("type")] public string Type;
             [JsonProperty("value")] public object Value;
-            [JsonProperty("doc", NullValueHandling = NullValueHandling.Ignore)] public string Doc;
+            [JsonProperty("doc", NullValueHandling = NullValueHandling.Ignore)] public DocText Doc;
         }
 
         /// <summary>Поле структуры хоста.</summary>
@@ -106,13 +107,13 @@ namespace Dsl.Compilation
             [JsonProperty("name")] public string Name;
             [JsonProperty("type")] public string Type;
             [JsonProperty("default")] public object Default;
-            [JsonProperty("doc", NullValueHandling = NullValueHandling.Ignore)] public string Doc;
+            [JsonProperty("doc", NullValueHandling = NullValueHandling.Ignore)] public DocText Doc;
         }
 
         public sealed class StructDef
         {
             [JsonProperty("name")] public string Name;
-            [JsonProperty("summary", NullValueHandling = NullValueHandling.Ignore)] public string Summary;
+            [JsonProperty("summary", NullValueHandling = NullValueHandling.Ignore)] public DocText Summary;
             [JsonProperty("fields")] public StructFieldDef[] Fields = Array.Empty<StructFieldDef>();
         }
 
@@ -122,7 +123,7 @@ namespace Dsl.Compilation
             [JsonProperty("name")] public string Name;
             [JsonProperty("type")] public string Type;
             [JsonProperty("required")] public bool Required;
-            [JsonProperty("doc", NullValueHandling = NullValueHandling.Ignore)] public string Doc;
+            [JsonProperty("doc", NullValueHandling = NullValueHandling.Ignore)] public DocText Doc;
 
             /// <summary>
             /// Значение по умолчанию. Присутствие ключа = дефолт есть (в том числе
@@ -137,7 +138,7 @@ namespace Dsl.Compilation
         public sealed class ArchetypeKindDef
         {
             [JsonProperty("name")] public string Name;
-            [JsonProperty("summary", NullValueHandling = NullValueHandling.Ignore)] public string Summary;
+            [JsonProperty("summary", NullValueHandling = NullValueHandling.Ignore)] public DocText Summary;
             [JsonProperty("knownIds", NullValueHandling = NullValueHandling.Ignore)] public string[] KnownIds;
             [JsonProperty("consts", NullValueHandling = NullValueHandling.Ignore)] public ConstDef[] Consts;
             [JsonProperty("events")] public EventDef[] Events = Array.Empty<EventDef>();
@@ -154,7 +155,7 @@ namespace Dsl.Compilation
         public sealed class EventDef
         {
             [JsonProperty("name")] public string Name;
-            [JsonProperty("summary", NullValueHandling = NullValueHandling.Ignore)] public string Summary;
+            [JsonProperty("summary", NullValueHandling = NullValueHandling.Ignore)] public DocText Summary;
             [JsonProperty("params")] public ParamDef[] Params = Array.Empty<ParamDef>();
         }
 
@@ -237,7 +238,7 @@ namespace Dsl.Compilation
             // описанные узлы составных имён — перед apis, как и читаются
             var namespaces = new List<ApiNamespaceDef>();
             foreach (var ns in r.ApiNamespaces)
-                if (!string.IsNullOrEmpty(ns.Value))
+                if (ns.Value != null && !ns.Value.IsEmpty)
                     namespaces.Add(new ApiNamespaceDef { Name = ns.Key, Summary = ns.Value });
             if (namespaces.Count > 0)
             {
@@ -345,11 +346,11 @@ namespace Dsl.Compilation
                 m.Archetypes = kinds.ToArray();
             }
 
-            return JsonConvert.SerializeObject(m, Formatting.Indented);
+            return JsonConvert.SerializeObject(m, Formatting.Indented, DocTextJsonConverter.Instance);
         }
 
         /// <summary>Собирает описания параметров; имена синтезируются (argN), если не заданы.</summary>
-        private static ParamDef[] BuildParams(HostRegistry r, TypeRef[] types, string[] names, string[] docs)
+        private static ParamDef[] BuildParams(HostRegistry r, TypeRef[] types, string[] names, DocText[] docs)
         {
             if (types == null) return Array.Empty<ParamDef>();
             var result = new ParamDef[types.Length];
@@ -370,12 +371,20 @@ namespace Dsl.Compilation
         // ===================================================================
 
         public static HostRegistry Import(string json, out int apiVersion)
+            => Import(json, out apiVersion, Language.Ru);
+
+        /// <summary>
+        /// Импорт с языком: на нём сообщения об ошибках формата, и он же становится
+        /// <see cref="HostRegistry.Language"/> полученного реестра.
+        /// </summary>
+        public static HostRegistry Import(string json, out int apiVersion, Language language)
         {
-            var m = JsonConvert.DeserializeObject<ApiManifest>(json)
-                    ?? throw new FormatException("salamander-api.json: пустой или некорректный документ.");
+            var m = JsonConvert.DeserializeObject<ApiManifest>(json, DocTextJsonConverter.Instance)
+                    ?? throw new FormatException(Loc.T(language, "salamander-api.json: пустой или некорректный документ.",
+                        "salamander-api.json: empty or invalid document."));
             apiVersion = m.ApiVersion;
 
-            var r = new HostRegistry();
+            var r = new HostRegistry { Language = language };
 
             // порядок важен: сперва имена типов (енумы/классы), потом сигнатуры
             foreach (var e in m.Enums ?? Array.Empty<EnumDef>())
@@ -384,8 +393,10 @@ namespace Dsl.Compilation
                 var docs = e.MemberDocs;
                 if (docs != null && docs.Length != members.Length)
                     throw new FormatException(
-                        $"salamander-api.json: у енума '{e.Name}' {docs.Length} пояснений " +
-                        $"на {members.Length} элементов — массивы идут параллельно.");
+                        r.T($"salamander-api.json: у енума '{e.Name}' {docs.Length} пояснений " +
+                        $"на {members.Length} элементов — массивы идут параллельно.",
+                            $"salamander-api.json: enum '{e.Name}' has {docs.Length} descriptions " +
+                            $"for {members.Length} members — the arrays run in parallel."));
                 r.DefineEnum(e.Name, e.Summary, members, docs);
             }
 
@@ -440,7 +451,7 @@ namespace Dsl.Compilation
                 foreach (var c in a.Consts ?? Array.Empty<ApiConstDef>())
                 {
                     var ct = ParseType(r, c.Type);
-                    DecodeLiteral(r, c.Value, ct, $"константа '{a.Name}.{c.Name}'", out var cv, out var cs);
+                    DecodeLiteral(r, c.Value, ct, r.T($"константа '{a.Name}.{c.Name}'", $"constant '{a.Name}.{c.Name}'"), out var cv, out var cs);
                     r.DefineApiConst(a.Name, c.Name, ct, cv, cs, c.Doc);
                 }
             }
@@ -474,12 +485,12 @@ namespace Dsl.Compilation
         }
 
         private static void SplitParams(HostRegistry r, ParamDef[] ps,
-                                        out TypeRef[] types, out string[] names, out string[] docs)
+                                        out TypeRef[] types, out string[] names, out DocText[] docs)
         {
             ps ??= Array.Empty<ParamDef>();
             types = new TypeRef[ps.Length];
             names = new string[ps.Length];
-            docs = new string[ps.Length];
+            docs = new DocText[ps.Length];
             for (int i = 0; i < ps.Length; i++)
             {
                 types[i] = ParseType(r, ps[i].Type);
@@ -496,10 +507,10 @@ namespace Dsl.Compilation
         // поля структуры и значения константы API. Кодировщик поэтому тоже один:
         // три копии этой лестницы уже начинали расходиться.
 
-        private static bool HasAnyDoc(string[] docs)
+        private static bool HasAnyDoc(DocText[] docs)
         {
             if (docs == null) return false;
-            foreach (var d in docs) if (!string.IsNullOrEmpty(d)) return true;
+            foreach (var d in docs) if (d != null && !d.IsEmpty) return true;
             return false;
         }
 
@@ -545,18 +556,21 @@ namespace Dsl.Compilation
                 {
                     if (!r.TryGetEnumById(type.EnumId, out var en))
                         throw new FormatException(
-                            $"salamander-api.json: {what} ссылается на неизвестный енум.");
+                            r.T($"salamander-api.json: {what} ссылается на неизвестный енум.",
+                                $"salamander-api.json: {what} refers to an unknown enum."));
                     string member = raw as string;
                     if (member == null) { value = Variant.Enum(en.Id, 0); return; }
                     if (!en.Members.TryGetValue(member, out int v))
                         throw new FormatException(
-                            $"salamander-api.json: '{member}' не является элементом енума '{en.Name}' ({what}).");
+                            r.T($"salamander-api.json: '{member}' не является элементом енума '{en.Name}' ({what}).",
+                                $"salamander-api.json: '{member}' is not a member of enum '{en.Name}' ({what})."));
                     value = Variant.Enum(en.Id, v);
                     return;
                 }
                 default:
                     throw new FormatException(
-                        $"salamander-api.json: {what} не может быть типа '{type}'.");
+                        r.T($"salamander-api.json: {what} не может быть типа '{type}'.",
+                            $"salamander-api.json: {what} cannot be of type '{type}'."));
             }
         }
 
@@ -569,7 +583,7 @@ namespace Dsl.Compilation
             value = Variant.Nil;
             str = null;
             if (!c.HasDefault) return;
-            DecodeLiteral(r, c.Default, type, $"дефолт константы '{c.Name}'", out value, out str);
+            DecodeLiteral(r, c.Default, type, r.T($"дефолт константы '{c.Name}'", $"default of constant '{c.Name}'"), out value, out str);
         }
 
         private static object EncodeStructDefault(HostRegistry r, HostStructFieldInfo f)
@@ -577,7 +591,7 @@ namespace Dsl.Compilation
 
         private static void DecodeStructDefault(HostRegistry r, StructFieldDef f, TypeRef type,
                                                 out Variant value, out string str)
-            => DecodeLiteral(r, f.Default, type, $"поле структуры '{f.Name}'", out value, out str);
+            => DecodeLiteral(r, f.Default, type, r.T($"поле структуры '{f.Name}'", $"struct field '{f.Name}'"), out value, out str);
 
         private static Variant StubGetter(IHostContext ctx, object o) => Variant.Nil;
         private static void StubSetter(IHostContext ctx, object o, Variant v) { }
@@ -632,7 +646,7 @@ namespace Dsl.Compilation
                 string inner = s.Substring(4, s.Length - 5);
                 int comma = SplitTopLevelComma(inner);
                 if (comma < 0)
-                    throw new FormatException($"salamander-api.json: некорректный тип '{s}'.");
+                    throw new FormatException(r.T($"salamander-api.json: некорректный тип '{s}'.", $"salamander-api.json: invalid type '{s}'."));
                 return TypeRef.MapOf(
                     ParseType(r, inner.Substring(0, comma)),
                     ParseType(r, inner.Substring(comma + 1)));
@@ -655,7 +669,8 @@ namespace Dsl.Compilation
             if (r.TryGetEnum(s, out var en)) return TypeRef.EnumOf(en.Id);
 
             throw new FormatException(
-                $"salamander-api.json: неизвестный тип '{s}' — енум/класс должен быть объявлен в манифесте раньше использования.");
+                r.T($"salamander-api.json: неизвестный тип '{s}' — енум/класс должен быть объявлен в манифесте раньше использования.",
+                    $"salamander-api.json: unknown type '{s}' — an enum/class must be declared in the manifest before it is used."));
         }
 
         /// <summary>Индекс запятой верхнего уровня (вне вложенных &lt;&gt;).</summary>
@@ -669,6 +684,58 @@ namespace Dsl.Compilation
                 else if (s[i] == ',' && depth == 0) return i;
             }
             return -1;
+        }
+    }
+
+    /// <summary>
+    /// Справка в salamander-api.json: строка (один текст для обоих языков) или
+    /// объект <c>{"ru": "…", "en": "…"}</c>. Старые манифесты (только строки) читаются как раньше.
+    /// </summary>
+    public sealed class DocTextJsonConverter : JsonConverter<DocText>
+    {
+        public static readonly DocTextJsonConverter Instance = new DocTextJsonConverter();
+
+        public override void WriteJson(JsonWriter writer, DocText value, JsonSerializer serializer)
+        {
+            if (value == null || value.IsEmpty) { writer.WriteNull(); return; }
+            if (!value.IsBilingual) { writer.WriteValue(value.Ru); return; }
+            writer.WriteStartObject();
+            if (!string.IsNullOrEmpty(value.Ru)) { writer.WritePropertyName("ru"); writer.WriteValue(value.Ru); }
+            if (!string.IsNullOrEmpty(value.En)) { writer.WritePropertyName("en"); writer.WriteValue(value.En); }
+            writer.WriteEndObject();
+        }
+
+        public override DocText ReadJson(JsonReader reader, System.Type objectType, DocText existingValue,
+                                         bool hasExistingValue, JsonSerializer serializer)
+        {
+            switch (reader.TokenType)
+            {
+                case JsonToken.Null:
+                case JsonToken.Undefined:
+                    return null;
+                case JsonToken.String:
+                    return (string)reader.Value;
+                case JsonToken.StartObject:
+                {
+                    string ru = null, en = null;
+                    while (reader.Read() && reader.TokenType != JsonToken.EndObject)
+                    {
+                        if (reader.TokenType != JsonToken.PropertyName) continue;
+                        string key = ((string)reader.Value)?.ToLowerInvariant();
+                        reader.Read();
+                        string val = reader.TokenType == JsonToken.Null ? null : reader.Value?.ToString();
+                        if (key == "ru") ru = val;
+                        else if (key == "en") en = val;
+                        else if (reader.TokenType == JsonToken.StartObject || reader.TokenType == JsonToken.StartArray)
+                            reader.Skip();
+                    }
+                    return ru == null && en == null ? null : new DocText(ru, en);
+                }
+                default:
+                    throw new JsonSerializationException(
+                        $"salamander-api.json: doc/summary must be a string or {{\"ru\", \"en\"}} object, got {reader.TokenType}. / " +
+                        $"doc/summary должны быть строкой или объектом {{\"ru\", \"en\"}}, встречено {reader.TokenType}.");
+            }
         }
     }
 }

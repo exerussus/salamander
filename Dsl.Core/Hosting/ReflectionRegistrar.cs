@@ -1,4 +1,5 @@
 using System;
+using Dsl.Text;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
@@ -30,15 +31,18 @@ namespace Dsl.Hosting
 
             if (type.GetCustomAttribute<SalamanderApiAttribute>() != null)
                 throw new ArgumentException(
-                    $"{type.Name} помечен [SalamanderApi] — регистрируйте его от экземпляра: " +
-                    "host.RegisterApi(new " + type.Name + "(...)).");
+                    host.T($"{type.Name} помечен [SalamanderApi] — регистрируйте его от экземпляра: " +
+                    "host.RegisterApi(new " + type.Name + "(...)).",
+                        $"{type.Name} is marked [SalamanderApi] — register it from an instance: " +
+                        "host.RegisterApi(new " + type.Name + "(...))."));
 
             var cls = type.GetCustomAttribute<SalamanderClassAttribute>();
             if (cls == null)
                 throw new ArgumentException(
-                    $"Тип {type.Name} не помечен [SalamanderClass] — нечего регистрировать.");
+                    host.T($"Тип {type.Name} не помечен [SalamanderClass] — нечего регистрировать.",
+                        $"Type {type.Name} is not marked [SalamanderClass] — nothing to register."));
 
-            if (type.IsEnum) { RegisterEnum(host, type, cls.Summary); return; }
+            if (type.IsEnum) { RegisterEnum(host, type, cls.Text); return; }
 
             // сущность отдаёт данные через свойства; методы — это API ([SalamanderApi])
             bool anyMethod = type
@@ -46,14 +50,17 @@ namespace Dsl.Hosting
                 .Any(m => m.GetCustomAttribute<SalamanderMethodAttribute>() != null);
             if (anyMethod)
                 throw new ArgumentException(
-                    $"{type.Name}: [SalamanderMethod] на классе-сущности недопустим. " +
+                    host.T($"{type.Name}: [SalamanderMethod] на классе-сущности недопустим. " +
                     "Для API пометьте отдельный класс [SalamanderApi] и регистрируйте его " +
-                    "экземпляром через host.RegisterApi(instance) — так у каждой комнаты своё состояние.");
+                    "экземпляром через host.RegisterApi(instance) — так у каждой комнаты своё состояние.",
+                        $"{type.Name}: [SalamanderMethod] is not allowed on an entity class. " +
+                        "For an API mark a separate class [SalamanderApi] and register it " +
+                        "as an instance via host.RegisterApi(instance) — so every room has its own state."));
 
             var props = type.GetProperties(BindingFlags.Public | BindingFlags.Instance)
                 .Where(p => p.GetCustomAttribute<SalamanderPropertyAttribute>() != null)
                 .ToArray();
-            RegisterEntity(host, type, cls.Summary, props);
+            RegisterEntity(host, type, cls.Text, props);
         }
 
         // ===================================================================
@@ -72,14 +79,15 @@ namespace Dsl.Hosting
             var api = type.GetCustomAttribute<SalamanderApiAttribute>();
             if (api == null)
                 throw new ArgumentException(
-                    $"{type.Name} не помечен [SalamanderApi]. Для сущностей/енумов используйте host.Register(type).");
+                    host.T($"{type.Name} не помечен [SalamanderApi]. Для сущностей/енумов используйте host.Register(type).",
+                        $"{type.Name} is not marked [SalamanderApi]. For entities/enums use host.Register(type)."));
 
             // приоритет: явный аргумент → имя из атрибута → имя типа
             string apiName = !string.IsNullOrWhiteSpace(nameOverride) ? nameOverride.Trim()
                            : !string.IsNullOrWhiteSpace(api.Name) ? api.Name.Trim()
                            : type.Name;
             var builder = host.Api(apiName);
-            host.Registry.DescribeApi(apiName, api.Summary);
+            host.Registry.DescribeApi(apiName, api.Text);
 
             var methods = type
                 .GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static)
@@ -103,12 +111,12 @@ namespace Dsl.Hosting
             bool isVoid = m.ReturnType == typeof(void);
 
             // MethodDoc: имена параметров из сигнатуры, doc — из [SalamanderParam]
-            var doc = Sig.Doc(m.GetCustomAttribute<SalamanderMethodAttribute>()?.Summary);
+            var doc = Sig.Doc(m.GetCustomAttribute<SalamanderMethodAttribute>()?.Text);
             foreach (var p in ps)
-                doc.P(ScriptName(p.Name), p.GetCustomAttribute<SalamanderParamAttribute>()?.Doc);
+                doc.P(ScriptName(p.Name), p.GetCustomAttribute<SalamanderParamAttribute>()?.Text);
 
             // делегат: instance-метод биндится к target, статический — без приёмника
-            Type delType = isVoid ? ActionType(paramTypes) : FuncType(paramTypes, m.ReturnType);
+            Type delType = isVoid ? ActionType(paramTypes, builder.Host) : FuncType(paramTypes, m.ReturnType, builder.Host);
             Delegate del = target != null
                 ? Delegate.CreateDelegate(delType, target, m)
                 : Delegate.CreateDelegate(delType, m);
@@ -138,7 +146,7 @@ namespace Dsl.Hosting
         // Енум / сущность
         // ===================================================================
 
-        private static void RegisterEnum(HostBuilder host, Type type, string summary)
+        private static void RegisterEnum(HostBuilder host, Type type, DocText summary)
         {
             var m = typeof(HostBuilder).GetMethods()
                 .First(x => x.Name == nameof(HostBuilder.Enum) && x.IsGenericMethodDefinition);
@@ -150,16 +158,17 @@ namespace Dsl.Hosting
             foreach (var f in type.GetFields(BindingFlags.Public | BindingFlags.Static))
             {
                 var doc = f.GetCustomAttribute<SalamanderMemberAttribute>();
-                if (doc == null || string.IsNullOrWhiteSpace(doc.Doc)) continue;
-                host.Registry.SetEnumMemberDoc(info.Id, Convert.ToInt32(f.GetRawConstantValue()), doc.Doc);
+                if (doc == null || doc.Text == null || doc.Text.IsEmpty) continue;
+                host.Registry.SetEnumMemberDoc(info.Id, Convert.ToInt32(f.GetRawConstantValue()), doc.Text);
             }
         }
 
-        private static void RegisterEntity(HostBuilder host, Type type, string summary, PropertyInfo[] props)
+        private static void RegisterEntity(HostBuilder host, Type type, DocText summary, PropertyInfo[] props)
         {
             if (!type.IsClass)
                 throw new ArgumentException(
-                    $"{type.Name}: класс-сущность должен быть ссылочным типом (class), а не struct.");
+                    host.T($"{type.Name}: класс-сущность должен быть ссылочным типом (class), а не struct.",
+                        $"{type.Name}: an entity class must be a reference type (class), not a struct."));
 
             var classOpen = typeof(HostBuilder).GetMethods()
                 .First(x => x.Name == nameof(HostBuilder.Class) && x.IsGenericMethodDefinition);
@@ -174,10 +183,11 @@ namespace Dsl.Hosting
             {
                 var getM = p.GetGetMethod();
                 if (getM == null)
-                    throw new ArgumentException($"{type.Name}.{p.Name}: свойство без get не поддерживается.");
+                    throw new ArgumentException(host.T($"{type.Name}.{p.Name}: свойство без get не поддерживается.",
+                        $"{type.Name}.{p.Name}: a property without get is not supported."));
                 var tv = p.PropertyType;
                 string name = ScriptName(p.Name);
-                string doc = p.GetCustomAttribute<SalamanderPropertyAttribute>()?.Summary;
+                DocText doc = p.GetCustomAttribute<SalamanderPropertyAttribute>()?.Text;
 
                 var getter = Delegate.CreateDelegate(typeof(Func<,>).MakeGenericType(type, tv), getM);
 
@@ -200,21 +210,23 @@ namespace Dsl.Hosting
 
         private static string ScriptName(string csName) => csName;
 
-        private static Type ActionType(Type[] args)
+        private static Type ActionType(Type[] args, HostBuilder host)
         {
             if (args.Length == 0) return typeof(Action);
             var open = Type.GetType("System.Action`" + args.Length)
-                       ?? throw new NotSupportedException($"Action на {args.Length} аргументов не поддержан.");
+                       ?? throw new NotSupportedException(host.T($"Action на {args.Length} аргументов не поддержан.",
+                           $"Action with {args.Length} arguments is not supported."));
             return open.MakeGenericType(args);
         }
 
-        private static Type FuncType(Type[] args, Type ret)
+        private static Type FuncType(Type[] args, Type ret, HostBuilder host)
         {
             var all = new Type[args.Length + 1];
             Array.Copy(args, all, args.Length);
             all[args.Length] = ret;
             var open = Type.GetType("System.Func`" + all.Length)
-                       ?? throw new NotSupportedException($"Func на {args.Length} аргументов не поддержан.");
+                       ?? throw new NotSupportedException(host.T($"Func на {args.Length} аргументов не поддержан.",
+                           $"Func with {args.Length} arguments is not supported."));
             return open.MakeGenericType(all);
         }
     }

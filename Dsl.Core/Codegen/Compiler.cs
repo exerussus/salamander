@@ -43,7 +43,13 @@ namespace Dsl.Codegen
             _host = host;
             _sem = sem;
             _files = files;
+            Language = host?.Language ?? Language.Ru;
         }
+
+        /// <summary>Язык внутренних сообщений и имён в трейсах.</summary>
+        public Language Language { get; set; }
+
+        private string T(string ru, string en) => Loc.T(Language, ru, en);
 
         public CompiledProgram Compile(List<ModuleAst> modules)
         {
@@ -248,6 +254,8 @@ namespace Dsl.Codegen
                 Triggers = triggers,
                 EventHandlers = handlers,
                 Modules = _sem.ModuleNames.ToArray(),
+                ModuleSynchronous = _sem.ModuleSynchronous?.ToArray() ?? new bool[_sem.ModuleNames.Count],
+                ModuleStateless = _sem.ModuleStateless?.ToArray() ?? new bool[_sem.ModuleNames.Count],
                 ScriptEnums = scriptEnums,
                 Listeners = listeners,
                 ListenerHandlerFunc = listenerHandlerFunc,
@@ -413,7 +421,8 @@ namespace Dsl.Codegen
             string ownerName = fn.Owner?.Name ?? "?";
             return new Chunk
             {
-                Name = ownerName + "." + fn.Name + (synth.Kind == ChainSynthKind.BaseSelector ? " [base]" : " [цепочка]"),
+                Name = ownerName + "." + fn.Name + (T(synth.Kind == ChainSynthKind.BaseSelector ? " [base]" : " [цепочка]",
+                    synth.Kind == ChainSynthKind.BaseSelector ? " [base]" : " [chain]")),
                 File = _fileName,
                 ParamCount = argc,
                 LocalCount = fn.LocalCount,
@@ -481,7 +490,8 @@ namespace Dsl.Codegen
             // инвариант: модуль версии есть в программе. Тихий 0 проверял бы чужой модуль
             if (m == null || !_moduleIndex.TryGetValue(m, out int mi))
                 throw new System.InvalidOperationException(
-                    $"Модуль '{m}' версии '{link.Name}' отсутствует в программе — гейт цепочки не собрать.");
+                    T($"Модуль '{m}' версии '{link.Name}' отсутствует в программе — гейт цепочки не собрать.",
+                        $"Module '{m}' of version '{link.Name}' is missing from the program — the chain gate cannot be built."));
             _code.Add(new Instr(op, -1, mi, _line));
             return _code.Count - 1;
         }

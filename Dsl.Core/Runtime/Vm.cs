@@ -67,14 +67,14 @@ namespace Dsl.Runtime
             }
             catch (ScriptError ex)
             {
-                _engine.ReportFiberError(f, ex.Message);
+                _engine.ReportFiberError(f, ex.MessageFor(_engine.Language));
                 return RunResult.Errored;
             }
             catch (Exception ex)
             {
                 // защита движка: любые неожиданные исключения хостовых биндингов
                 // тоже гасят только файбер
-                _engine.ReportFiberError(f, "Внутренняя ошибка: " + ex.Message);
+                _engine.ReportFiberError(f, _engine.T("Внутренняя ошибка: " + ex.Message, "Internal error: " + ex.Message));
                 return RunResult.Errored;
             }
             finally
@@ -177,9 +177,10 @@ namespace Dsl.Runtime
                                     break;
                                 }
                                 case VariantType.Nil:
-                                    throw new ScriptError("Итерация по null-коллекции.");
+                                    throw new ScriptError(_engine.T("Итерация по null-коллекции.", "Iterating over a null collection."));
                                 default:
-                                    throw new ScriptError($"for-in ожидает коллекцию, получен {coll.Type}.");
+                                    throw new ScriptError(_engine.T($"for-in ожидает коллекцию, получен {coll.Type}.",
+                                        $"for-in expects a collection, got {coll.Type}."));
                             }
                             f.IterCounts[bufId] = n;
                             f.IterDepth++;
@@ -234,7 +235,7 @@ namespace Dsl.Runtime
                         {
                             var objV = stack[--sp];
                             var obj = _engine.Entities.Resolve(objV);
-                            if (obj == null) throw new ScriptError("Чтение свойства у null.");
+                            if (obj == null) throw new ScriptError(_engine.T("Чтение свойства у null.", "Reading a property of null."));
                             { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = _engine.Host.Getter(ins.A)(_engine, obj); }
                             break;
                         }
@@ -243,9 +244,9 @@ namespace Dsl.Runtime
                             var value = stack[--sp];
                             var objV = stack[--sp];
                             var obj = _engine.Entities.Resolve(objV);
-                            if (obj == null) throw new ScriptError("Запись свойства у null.");
+                            if (obj == null) throw new ScriptError(_engine.T("Запись свойства у null.", "Writing a property of null."));
                             var setter = _engine.Host.Setter(ins.A);
-                            if (setter == null) throw new ScriptError("Свойство только для чтения.");
+                            if (setter == null) throw new ScriptError(_engine.T("Свойство только для чтения.", "The property is read-only."));
                             setter(_engine, obj, value);
                             break;
                         }
@@ -289,12 +290,13 @@ namespace Dsl.Runtime
                             var b = stack[--sp]; var a = stack[--sp];
                             if (a.Type == VariantType.Int && b.Type == VariantType.Int)
                             {
-                                if (b.AsInt == 0) throw new ScriptError("Деление на ноль.");
+                                if (b.AsInt == 0) throw new ScriptError(_engine.T("Деление на ноль.", "Division by zero."));
                                 // int.MinValue / -1 не представимо в int: без этой
                                 // проверки CLR бросит OverflowException, и автор скрипта
                                 // увидит бесполезное «Внутренняя ошибка»
                                 if (a.AsInt == int.MinValue && b.AsInt == -1)
-                                    throw new ScriptError("Переполнение: результат -2147483648 / -1 не помещается в int.");
+                                    throw new ScriptError(_engine.T("Переполнение: результат -2147483648 / -1 не помещается в int.",
+                                        "Overflow: the result of -2147483648 / -1 does not fit in int."));
                                 { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = Variant.Int(a.AsInt / b.AsInt); }
                             }
                             else
@@ -309,7 +311,7 @@ namespace Dsl.Runtime
                         case OpCode.Mod:
                         {
                             var b = stack[--sp]; var a = stack[--sp];
-                            if (b.AsInt == 0) throw new ScriptError("Остаток от деления на ноль.");
+                            if (b.AsInt == 0) throw new ScriptError(_engine.T("Остаток от деления на ноль.", "Remainder of division by zero."));
                             // int.MinValue % -1 математически 0, но в C# это
                             // implementation-defined (может бросить OverflowException)
                             if (a.AsInt == int.MinValue && b.AsInt == -1) { { if (sp >= stack.Length) { f.EnsureStack(sp + 1); stack = f.Stack; } stack[sp++] = Variant.Int(0); } break; }
@@ -433,7 +435,8 @@ namespace Dsl.Runtime
                             int argc = ins.B;
                             if (f.FrameCount >= MaxCallDepth)
                                 throw new ScriptError(
-                                    $"Слишком глубокая вложенность вызовов (предел {MaxCallDepth}) — похоже на бесконечную рекурсию.");
+                                    _engine.T($"Слишком глубокая вложенность вызовов (предел {MaxCallDepth}) — похоже на бесконечную рекурсию.",
+                                        $"Call nesting is too deep (limit {MaxCallDepth}) — looks like infinite recursion."));
                             var callee = Prog.Functions[funcIdx];
 
                             int newBase = sp - argc;
@@ -518,8 +521,10 @@ namespace Dsl.Runtime
                             // Infinity просто вешает файбер до перезагрузки.
                             if (float.IsNaN(pending) || float.IsInfinity(pending))
                                 throw new ScriptError(
-                                    "wait: длительность должна быть конечным числом, получено " +
-                                    pending.ToString(System.Globalization.CultureInfo.InvariantCulture) + ".");
+                                    _engine.T("wait: длительность должна быть конечным числом, получено " +
+                                    pending.ToString(System.Globalization.CultureInfo.InvariantCulture) + ".",
+                                        "wait: the duration must be a finite number, got " +
+                                        pending.ToString(System.Globalization.CultureInfo.InvariantCulture) + "."));
                             f.PendingWaitSeconds = pending;
                             frame.Ip = ip;
                             f.Sp = sp;
@@ -634,7 +639,7 @@ namespace Dsl.Runtime
                         }
 
                         default:
-                            throw new ScriptError($"Неизвестный опкод {ins.Op}.");
+                            throw new ScriptError(_engine.T($"Неизвестный опкод {ins.Op}.", $"Unknown opcode {ins.Op}."));
                     }
                     }
                 }
@@ -690,7 +695,7 @@ namespace Dsl.Runtime
                 var chunk = Prog.Functions[fr.Func];
                 int at = fr.Ip > 0 ? fr.Ip - 1 : 0;
                 int line = at < chunk.Code.Length ? chunk.Code[at].Line : 0;
-                sb.Append("  в ").Append(chunk.Name)
+                sb.Append(_engine.T("  в ", "  at ")).Append(chunk.Name)
                   .Append(" (").Append(chunk.File).Append(':').Append(line).Append(")\n");
             }
             return sb.ToString();

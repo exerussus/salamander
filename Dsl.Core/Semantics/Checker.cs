@@ -13,6 +13,7 @@ namespace Dsl.Semantics
         public HashSet<string> Visible;   // сам модуль + прямые зависимости
         public List<ScriptFile> Files = new List<ScriptFile>();
         public bool Synchronous;          // из манифеста: запрещает wait/spawn
+        public bool Stateless;            // из манифеста ("state": "none"): запрещает состояние скриптов
     }
 
     /// <summary>Результат семантики — всё, что нужно компилятору байткода.</summary>
@@ -28,6 +29,8 @@ namespace Dsl.Semantics
         public List<FieldSymbol> StaticFields;  // индекс = static slot; порядок = порядок инициализации
         public HashSet<string> ClassNames;
         public List<string> ModuleNames;
+        public List<bool> ModuleSynchronous;  // параллельно ModuleNames: execution: synchronous
+        public List<bool> ModuleStateless;    // параллельно ModuleNames: state: none
     }
 
     /// <summary>
@@ -40,6 +43,8 @@ namespace Dsl.Semantics
     {
         private readonly HostRegistry _host;
         private readonly DiagnosticBag _diag;
+
+        private string T(string ru, string en) => _diag.T(ru, en);
 
         private readonly GlobalSymbols _globals = new GlobalSymbols();
         private readonly List<FuncMember> _funcs = new List<FuncMember> { null }; // [0] = <init>
@@ -55,6 +60,8 @@ namespace Dsl.Semantics
         private readonly List<FieldSymbol> _staticFields = new List<FieldSymbol>();
         private readonly HashSet<string> _classNames = new HashSet<string>();
         private readonly List<string> _moduleNames = new List<string>();
+        private readonly List<bool> _moduleSync = new List<bool>();
+        private readonly List<bool> _moduleStateless = new List<bool>();
         private readonly List<ClassSymbol> _classList = new List<ClassSymbol>(); // порядок первого появления
         private int _declSeq; // сквозной номер блока-декларации: порядок мержа версий членов
         private readonly Dictionary<string, ModuleAst> _moduleByName = new Dictionary<string, ModuleAst>();
@@ -82,6 +89,32 @@ namespace Dsl.Semantics
         private ListenerSymbol _listener;   // контекст тела listener (self, attach-поля)
         private bool _noWaitHandler;        // тело OnUnsubscribe: wait/spawn запрещены
 
+        // Владелец сущности (модуль ПЕРВОГО блока), если он синхронный. Его
+        // обработчики исполняются целиком, поэтому версия члена из
+        // КООПЕРАТИВНОГО модуля (патч, слой before/after) не вправе уступать
+        // кадр: wait в after-слое мода разрезал бы обработчик синхронной базы.
+        private ModuleAst _syncOwner;
+        private string _syncOwnerName;
+
+        private void SetSyncOwner(string ownerModule, string entityName)
+        {
+            var m = ModuleOf(ownerModule, null);
+            _syncOwner = m != null && m.Synchronous ? m : null;
+            _syncOwnerName = entityName;
+        }
+
+        private void CheckSyncOwned(string what, SourcePos pos)
+        {
+            if (_syncOwner == null || _module == null || _module.Synchronous) return;
+            _diag.Error("E0252",
+                T($"{what} запрещён: '{_syncOwnerName}' принадлежит синхронному модулю '{_syncOwner.Name}' " +
+                $"(execution: synchronous), его обработчики исполняются целиком. Версия из модуля " +
+                $"'{_module.Name}' не может уступать кадр — вынесите ожидание в свой триггер через spawn.",
+                    $"{what} is forbidden: '{_syncOwnerName}' belongs to the synchronous module '{_syncOwner.Name}' " +
+                    $"(execution: synchronous), its handlers run to completion. The version from module " +
+                    $"'{_module.Name}' cannot yield the frame — move the wait into your own trigger via spawn."), pos);
+        }
+
         private sealed class LocalVar
         {
             public int Slot;
@@ -99,6 +132,8 @@ namespace Dsl.Semantics
             foreach (var m in modules)
             {
                 _moduleNames.Add(m.Name);
+                _moduleSync.Add(m.Synchronous);
+                _moduleStateless.Add(m.Stateless);
                 _moduleByName[m.Name] = m;
                 foreach (var f in m.Files)
                     foreach (var d in f.Decls)
@@ -160,6 +195,8 @@ namespace Dsl.Semantics
                 StaticFields = _staticFields,
                 ClassNames = _classNames,
                 ModuleNames = _moduleNames,
+                ModuleSynchronous = _moduleSync,
+                ModuleStateless = _moduleStateless,
             };
         }
 
@@ -173,7 +210,7 @@ namespace Dsl.Semantics
             _ns = d.Namespace;
             if (Reserved.Contains(d.ShortName))
             {
-                _diag.Error("E0100", $"Имя '{d.ShortName}' зарезервировано.", d.Pos);
+                _diag.Error("E0100", T($"Имя '{d.ShortName}' зарезервировано.", $"The name '{d.ShortName}' is reserved."), d.Pos);
                 return;
             }
             // внутри namespace полное имя с хостовым не совпадает никогда, а короткое
@@ -182,7 +219,8 @@ namespace Dsl.Semantics
             if (d.Namespace == null
                 && (_host.TryGetClass(d.Name, out _) || _host.TryGetApi(d.Name, out _) || _host.TryGetEnum(d.Name, out _)))
             {
-                _diag.Error("E0101", $"Имя '{d.Name}' уже занято хостом (класс/API/енум).", d.Pos);
+                _diag.Error("E0101", T($"Имя '{d.Name}' уже занято хостом (класс/API/енум).",
+                    $"The name '{d.Name}' is already taken by the host (class/API/enum)."), d.Pos);
                 return;
             }
 
@@ -221,8 +259,10 @@ namespace Dsl.Semantics
                         {
                             if (badRoots.Add(d.Namespace))
                                 _diag.Error("E0312",
-                                    $"Пространство имён '{d.Namespace}': имя '{bad}' занято " +
-                                    "(встроенное или объявлено игрой).", d.Pos);
+                                    T($"Пространство имён '{d.Namespace}': имя '{bad}' занято " +
+                                    "(встроенное или объявлено игрой).",
+                                        $"Namespace '{d.Namespace}': the name '{bad}' is taken " +
+                                        "(built-in or declared by the game)."), d.Pos);
                             continue;
                         }
 
@@ -275,8 +315,10 @@ namespace Dsl.Semantics
                         if (d is ArchetypeDecl) continue;
                         if (_nsModules.ContainsKey(d.Name) && reported.Add(d.Name))
                             _diag.Error("E0313",
-                                $"'{d.Name}' уже объявлено как пространство имён — у объявления и namespace " +
-                                "не может быть одного полного имени.", d.Pos);
+                                T($"'{d.Name}' уже объявлено как пространство имён — у объявления и namespace " +
+                                "не может быть одного полного имени.",
+                                    $"'{d.Name}' is already declared as a namespace — a declaration and a namespace " +
+                                    "cannot share the same full name."), d.Pos);
                     }
         }
 
@@ -379,11 +421,12 @@ namespace Dsl.Semantics
                         return id;
                     case ResolveResult.Ambiguous:
                         _diag.Error("E0155",
-                            $"Имя '{full}' объявлено в нескольких видимых модулях — уточните: module::{full}.",
+                            T($"Имя '{full}' объявлено в нескольких видимых модулях — уточните: module::{full}.",
+                                $"The name '{full}' is declared in several visible modules — qualify it: module::{full}."),
                             me.Pos);
                         break;
                     default:
-                        _diag.Error("E0314", $"В пространстве имён '{nsPath}' нет '{me.Name}'.", me.Pos);
+                        _diag.Error("E0314", T($"В пространстве имён '{nsPath}' нет '{me.Name}'.", $"Namespace '{nsPath}' has no '{me.Name}'."), me.Pos);
                         break;
                 }
                 id.Type = TypeRef.Error;
@@ -402,7 +445,8 @@ namespace Dsl.Semantics
                 if (_globals.TryResolveQualified(module, full, out var sym))
                     AnnotateQualified(q, sym);
                 else
-                    _diag.Error("E0314", $"В пространстве имён '{module}::{nsPath}' нет '{me.Name}'.", me.Pos);
+                    _diag.Error("E0314", T($"В пространстве имён '{module}::{nsPath}' нет '{me.Name}'.",
+                        $"Namespace '{module}::{nsPath}' has no '{me.Name}'."), me.Pos);
                 q.Type = TypeRef.Error;
                 return q;
             }
@@ -464,12 +508,14 @@ namespace Dsl.Semantics
             for (int i = 0; i < e.Members.Count; i++)
             {
                 if (sym.Members.ContainsKey(e.Members[i]))
-                    _diag.Error("E0102", $"Повтор элемента '{e.Members[i]}' в енуме '{e.Name}'.", e.Pos);
+                    _diag.Error("E0102", T($"Повтор элемента '{e.Members[i]}' в енуме '{e.Name}'.",
+                        $"Duplicate member '{e.Members[i]}' in enum '{e.Name}'."), e.Pos);
                 else
                     sym.Members[e.Members[i]] = i;
             }
             if (!_globals.Add(sym))
-                _diag.Error("E0103", $"Имя '{e.Name}' уже объявлено в модуле '{e.Module}'.", e.Pos);
+                _diag.Error("E0103", T($"Имя '{e.Name}' уже объявлено в модуле '{e.Module}'.",
+                    $"The name '{e.Name}' is already declared in module '{e.Module}'."), e.Pos);
             else
                 _scriptEnums.Add(sym);
         }
@@ -481,7 +527,8 @@ namespace Dsl.Semantics
                 sym = new ClassSymbol { Name = c.Name, Module = c.Module, Decl = c };
                 if (!_globals.Add(sym))
                 {
-                    _diag.Error("E0104", $"Имя '{c.Name}' уже объявлено в модуле '{c.Module}'.", c.Pos);
+                    _diag.Error("E0104", T($"Имя '{c.Name}' уже объявлено в модуле '{c.Module}'.",
+                        $"The name '{c.Name}' is already declared in module '{c.Module}'."), c.Pos);
                     return;
                 }
                 _clsByName[c.Name] = sym;
@@ -500,10 +547,10 @@ namespace Dsl.Semantics
                         CollectMergedField(sym.Fields, sym.FieldDecls, f, blockFields, "c:" + sym.Name);
                         break;
                     case FuncMember fn when fn.Kind == FuncKind.Event:
-                        _diag.Error("E0105", "'event' разрешён только внутри trigger.", fn.Pos);
+                        _diag.Error("E0105", T("'event' разрешён только внутри trigger.", "'event' is allowed only inside a trigger."), fn.Pos);
                         break;
                     case FuncMember fn when fn.Kind == FuncKind.Action:
-                        _diag.Error("E0106", "'action' разрешён только внутри trigger.", fn.Pos);
+                        _diag.Error("E0106", T("'action' разрешён только внутри trigger.", "'action' is allowed only inside a trigger."), fn.Pos);
                         break;
                     case FuncMember fn:
                         CollectMergedFunc(sym.Funcs, sym.AllFuncDecls, sym.Chains, sym.Module, fn, c, blockFuncs);
@@ -526,7 +573,8 @@ namespace Dsl.Semantics
                 };
                 if (!_globals.Add(sym))
                 {
-                    _diag.Error("E0107", $"Имя '{t.Name}' уже объявлено в модуле '{t.Module}'.", t.Pos);
+                    _diag.Error("E0107", T($"Имя '{t.Name}' уже объявлено в модуле '{t.Module}'.",
+                        $"The name '{t.Name}' is already declared in module '{t.Module}'."), t.Pos);
                     return;
                 }
                 _trigByName[t.Name] = sym;
@@ -549,7 +597,8 @@ namespace Dsl.Semantics
                 {
                     case FieldMember f:
                         if (f.IsConst)
-                            _diag.Error("E0108", "const внутри trigger не поддерживается — вынесите в class.", f.Pos);
+                            _diag.Error("E0108", T("const внутри trigger не поддерживается — вынесите в class.",
+                                "const inside a trigger is not supported — move it to a class."), f.Pos);
                         else
                             CollectMergedField(sym.Fields, sym.FieldDecls, f, blockFields, "t:" + sym.Name);
                         break;
@@ -561,7 +610,8 @@ namespace Dsl.Semantics
                     case FuncMember fn when fn.Kind == FuncKind.Action:
                         if (!blockActions.Add(BlockKey(fn, "Do")))
                         {
-                            _diag.Error("E0118", $"Триггер '{t.Name}' уже содержит action Do.", fn.Pos);
+                            _diag.Error("E0118", T($"Триггер '{t.Name}' уже содержит action Do.",
+                                $"Trigger '{t.Name}' already contains action Do."), fn.Pos);
                             break;
                         }
                         CollectAction(sym, fn, t);
@@ -608,7 +658,8 @@ namespace Dsl.Semantics
             if (!_host.TryGetArchetypeKind(a.Kind, out var kind))
             {
                 _diag.Error("E0198",
-                    $"Игра не объявляет вид сущности '{a.Kind}'. Доступные виды перечислены в манифесте API.",
+                    T($"Игра не объявляет вид сущности '{a.Kind}'. Доступные виды перечислены в манифесте API.",
+                        $"The game does not declare the entity kind '{a.Kind}'. Available kinds are listed in the API manifest."),
                     a.Pos);
                 return; // без вида проверять события не по чему
             }
@@ -616,7 +667,8 @@ namespace Dsl.Semantics
             // опциональная валидация id по списку известных игре (ловит опечатки)
             if (kind.KnownIds != null && kind.KnownIds.Count > 0 && !kind.KnownIds.Contains(a.Name))
                 _diag.Error("E0202",
-                    $"У игры нет сущности вида '{a.Kind}' с id '{a.Name}' (проверьте манифест контента).",
+                    T($"У игры нет сущности вида '{a.Kind}' с id '{a.Name}' (проверьте манифест контента).",
+                        $"The game has no entity of kind '{a.Kind}' with id '{a.Name}' (check the content manifest)."),
                     a.Pos);
 
             // все блоки одного (вид, id) сливаются в ОДНУ сущность: переопределение
@@ -642,9 +694,12 @@ namespace Dsl.Semantics
                     case FieldMember f:
                         if (f.IsConst)
                             _diag.Error("E0205",
-                                "const внутри блока-архетипа не поддерживается: он сворачивается в байткод, " +
+                                T("const внутри блока-архетипа не поддерживается: он сворачивается в байткод, " +
                                 "слота не имеет и снаружи не читается. Для константы контента используйте " +
-                                "readonly-поле (или объявите её у вида через Const/ConstOr).", f.Pos);
+                                "readonly-поле (или объявите её у вида через Const/ConstOr).",
+                                    "const inside an archetype block is not supported: it folds into bytecode, " +
+                                    "has no slot and cannot be read from outside. For a content constant use " +
+                                    "a readonly field (or declare it on the kind via Const/ConstOr)."), f.Pos);
                         else
                             CollectMergedField(sym.Fields, sym.FieldDecls, f, blockFields,
                                 "a:" + sym.Kind + ":" + sym.Id,
@@ -656,7 +711,8 @@ namespace Dsl.Semantics
                         break;
 
                     case FuncMember fn when fn.Kind == FuncKind.Action:
-                        _diag.Error("E0204", "Блок-архетип не имеет action — события поднимает игра адресно.", fn.Pos);
+                        _diag.Error("E0204", T("Блок-архетип не имеет action — события поднимает игра адресно.",
+                            "An archetype block has no action — the game raises its events directly."), fn.Pos);
                         break;
 
                     case FuncMember fn:
@@ -709,7 +765,7 @@ namespace Dsl.Semantics
         /// </summary>
         private string TypeName(TypeRef t)
         {
-            if (t == null) return "<нет типа>";
+            if (t == null) return T("<нет типа>", "<no type>");
             switch (t.Kind)
             {
                 case TypeKind.Entity:
@@ -744,8 +800,10 @@ namespace Dsl.Semantics
                 {
                     if (c.Required)
                         _diag.Error("E0223",
-                            $"'{asym.Kind} {asym.Id}': не объявлена обязательная константа '{c.Name}' ({TypeName(c.Type)}). " +
+                            T($"'{asym.Kind} {asym.Id}': не объявлена обязательная константа '{c.Name}' ({TypeName(c.Type)}). " +
                             "Вид требует её у каждой сущности — без неё блок компилируется чисто и молча ничего не делает.",
+                                $"'{asym.Kind} {asym.Id}': the required constant '{c.Name}' ({TypeName(c.Type)}) is not declared. " +
+                                "The kind requires it on every entity — without it the block compiles cleanly and silently does nothing."),
                             asym.Decls[0].Pos);
                     continue;
                 }
@@ -754,14 +812,17 @@ namespace Dsl.Semantics
                 // ровно тот случай, ради которого required и заведён
                 if (c.Required && fs.Decl != null && fs.Decl.Init == null)
                     _diag.Error("E0223",
-                        $"'{asym.Kind} {asym.Id}': обязательная константа '{c.Name}' объявлена без значения. " +
+                        T($"'{asym.Kind} {asym.Id}': обязательная константа '{c.Name}' объявлена без значения. " +
                         "Вид требует именно значение — допишите инициализатор.",
+                            $"'{asym.Kind} {asym.Id}': the required constant '{c.Name}' is declared without a value. " +
+                            "The kind requires a value — add an initializer."),
                         fs.Decl.Pos);
 
                 if (fs.Type == null || fs.Type.IsError) continue; // тип не разрешился — ошибка уже выдана
                 if (!c.Type.Same(fs.Type))
                     _diag.Error("E0224",
-                        $"Константа '{c.Name}' вида '{asym.Kind}' объявлена хостом как {TypeName(c.Type)}, в блоке — {TypeName(fs.Type)}.",
+                        T($"Константа '{c.Name}' вида '{asym.Kind}' объявлена хостом как {TypeName(c.Type)}, в блоке — {TypeName(fs.Type)}.",
+                            $"The constant '{c.Name}' of kind '{asym.Kind}' is declared by the host as {TypeName(c.Type)}, in the block as {TypeName(fs.Type)}."),
                         fs.Decl?.Pos ?? asym.Decls[0].Pos);
             }
 
@@ -775,8 +836,10 @@ namespace Dsl.Semantics
             {
                 if (kind.ConstByName.ContainsKey(f.Name) || !warned.Add(f.Name)) continue;
                 _diag.Warning("W0101",
-                    $"'{asym.Kind} {asym.Id}': поле '{f.Name}' не входит в набор констант вида " +
+                    T($"'{asym.Kind} {asym.Id}': поле '{f.Name}' не входит в набор констант вида " +
                     "(опечатка в имени? если это собственное состояние блока — всё в порядке).",
+                        $"'{asym.Kind} {asym.Id}': the field '{f.Name}' is not one of the kind's constants " +
+                        "(a typo in the name? if it is the block's own state, everything is fine)."),
                     f.Pos);
             }
         }
@@ -792,20 +855,23 @@ namespace Dsl.Semantics
                 // E0199 когда-то означал «блок без событий» (требование снято),
                 // поэтому «нет такого события у вида» живёт на своём коде
                 _diag.Error("E0217",
-                    $"У вида '{kind.Name}' нет события '{fn.Name}'. События вида перечислены в манифесте API.",
+                    T($"У вида '{kind.Name}' нет события '{fn.Name}'. События вида перечислены в манифесте API.",
+                        $"Kind '{kind.Name}' has no event '{fn.Name}'. The kind's events are listed in the API manifest."),
                     fn.Pos);
                 return;
             }
             if (!blockNames.Add(BlockKey(fn)))
             {
-                _diag.Error("E0113", $"Повторное объявление '{fn.Name}' в этом блоке.", fn.Pos);
+                _diag.Error("E0113", T($"Повторное объявление '{fn.Name}' в этом блоке.",
+                    $"Duplicate declaration of '{fn.Name}' in this block."), fn.Pos);
                 return;
             }
             // одноимённое событие в ДРУГОМ блоке — версия той же цепочки (BuildChain)
             if (ev.Params.Length != fn.Params.Count)
             {
                 _diag.Error("E0200",
-                    $"Событие '{fn.Name}' вида '{kind.Name}' имеет {ev.Params.Length} параметров, в обработчике {fn.Params.Count}.",
+                    T($"Событие '{fn.Name}' вида '{kind.Name}' имеет {ev.Params.Length} параметров, в обработчике {fn.Params.Count}.",
+                        $"Event '{fn.Name}' of kind '{kind.Name}' has {ev.Params.Length} parameters, the handler has {fn.Params.Count}."),
                     fn.Pos);
                 return;
             }
@@ -813,7 +879,8 @@ namespace Dsl.Semantics
             {
                 if (!ev.Params[i].Same(fn.Params[i].Type))
                     _diag.Error("E0201",
-                        $"Параметр #{i + 1} обработчика '{fn.Name}' имеет тип {fn.Params[i].Type}, у события вида — {ev.Params[i]}.",
+                        T($"Параметр #{i + 1} обработчика '{fn.Name}' имеет тип {fn.Params[i].Type}, у события вида — {ev.Params[i]}.",
+                            $"Parameter #{i + 1} of handler '{fn.Name}' has type {fn.Params[i].Type}, the kind's event has {ev.Params[i]}."),
                         fn.Params[i].Pos);
             }
 
@@ -837,7 +904,8 @@ namespace Dsl.Semantics
                 };
                 if (!_globals.Add(sym))
                 {
-                    _diag.Error("E0107", $"Имя '{l.Name}' уже объявлено в модуле '{l.Module}'.", l.Pos);
+                    _diag.Error("E0107", T($"Имя '{l.Name}' уже объявлено в модуле '{l.Module}'.",
+                        $"The name '{l.Name}' is already declared in module '{l.Module}'."), l.Pos);
                     return;
                 }
                 _lsnByName[l.Name] = sym;
@@ -855,7 +923,8 @@ namespace Dsl.Semantics
                 {
                     case FieldMember f:
                         if (f.IsConst)
-                            _diag.Error("E0108", "const внутри listener не поддерживается — вынесите в class.", f.Pos);
+                            _diag.Error("E0108", T("const внутри listener не поддерживается — вынесите в class.",
+                                "const inside a listener is not supported — move it to a class."), f.Pos);
                         else
                             CollectListenerField(sym, f, blockFields);
                         break;
@@ -866,7 +935,8 @@ namespace Dsl.Semantics
 
                     case FuncMember fn when fn.Kind == FuncKind.Action:
                         _diag.Error("E0176",
-                            "listener не имеет action — точкой входа служит подписка (Engine.Attach).", fn.Pos);
+                            T("listener не имеет action — точкой входа служит подписка (Engine.Attach).",
+                                "A listener has no action — the subscription (Engine.Attach) is its entry point."), fn.Pos);
                         break;
 
                     case FuncMember fn:
@@ -881,7 +951,7 @@ namespace Dsl.Semantics
         {
             if (!blockNames.Add(f.Name))
             {
-                _diag.Error("E0111", $"Повторное объявление поля '{f.Name}'.", f.Pos);
+                _diag.Error("E0111", T($"Повторное объявление поля '{f.Name}'.", $"Duplicate declaration of field '{f.Name}'."), f.Pos);
                 return;
             }
             var type = ResolveType(f.DeclType);
@@ -895,7 +965,8 @@ namespace Dsl.Semantics
                 if (!existing.Type.Same(type))
                 {
                     _diag.Error("E0207",
-                        $"Переопределение поля '{f.Name}' с другим типом: было {existing.Type}, стало {type}.", f.Pos);
+                        T($"Переопределение поля '{f.Name}' с другим типом: было {existing.Type}, стало {type}.",
+                            $"Field '{f.Name}' is redefined with a different type: was {existing.Type}, now {type}."), f.Pos);
                     return;
                 }
                 if (f.Init != null)
@@ -924,7 +995,8 @@ namespace Dsl.Semantics
         {
             if (!blockNames.Add(BlockKey(fn)))
             {
-                _diag.Error("E0113", $"Повторное объявление '{fn.Name}' в этом блоке.", fn.Pos);
+                _diag.Error("E0113", T($"Повторное объявление '{fn.Name}' в этом блоке.",
+                    $"Duplicate declaration of '{fn.Name}' in this block."), fn.Pos);
                 return;
             }
             fn.Owner = l;
@@ -935,7 +1007,7 @@ namespace Dsl.Semantics
             if (fn.Name == "OnSubscribe" || fn.Name == "OnUnsubscribe")
             {
                 if (fn.Params.Count > 0)
-                    _diag.Error("E0172", $"'{fn.Name}' не принимает параметров.", fn.Pos);
+                    _diag.Error("E0172", T($"'{fn.Name}' не принимает параметров.", $"'{fn.Name}' takes no parameters."), fn.Pos);
                 fn.FuncIndex = _funcs.Count;
                 _funcs.Add(fn);
                 sym.AllFuncDecls.Add(fn); // вытесненная версия тоже проверяется и компилируется
@@ -945,13 +1017,14 @@ namespace Dsl.Semantics
 
             if (!_host.TryGetEvent(fn.Name, out var ev))
             {
-                _diag.Error("E0114", $"Событие '{fn.Name}' не зарегистрировано хостом.", fn.Pos);
+                _diag.Error("E0114", T($"Событие '{fn.Name}' не зарегистрировано хостом.", $"Event '{fn.Name}' is not registered by the host."), fn.Pos);
                 return;
             }
             if (ev.Params.Length != fn.Params.Count)
             {
                 _diag.Error("E0115",
-                    $"Событие '{fn.Name}' объявлено хостом с {ev.Params.Length} параметрами, в обработчике {fn.Params.Count}.",
+                    T($"Событие '{fn.Name}' объявлено хостом с {ev.Params.Length} параметрами, в обработчике {fn.Params.Count}.",
+                        $"Event '{fn.Name}' is declared by the host with {ev.Params.Length} parameters, the handler has {fn.Params.Count}."),
                     fn.Pos);
                 return;
             }
@@ -960,7 +1033,8 @@ namespace Dsl.Semantics
                 if (!ev.Params[i].Same(fn.Params[i].Type))
                 {
                     _diag.Error("E0116",
-                        $"Параметр #{i + 1} обработчика '{fn.Name}' имеет тип {fn.Params[i].Type}, у события — {ev.Params[i]}.",
+                        T($"Параметр #{i + 1} обработчика '{fn.Name}' имеет тип {fn.Params[i].Type}, у события — {ev.Params[i]}.",
+                            $"Parameter #{i + 1} of handler '{fn.Name}' has type {fn.Params[i].Type}, the event has {ev.Params[i]}."),
                         fn.Params[i].Pos);
                 }
             }
@@ -969,9 +1043,12 @@ namespace Dsl.Semantics
             if (ev.Params.Length == 0 || ev.Params[0].Kind != TypeKind.Entity)
             {
                 _diag.Error("E0173",
-                    $"Событие '{fn.Name}' не подходит для listener: первый параметр должен быть сущностью " +
+                    T($"Событие '{fn.Name}' не подходит для listener: первый параметр должен быть сущностью " +
                     "(субъект подписки). Хост объявляет отдельные события под каждую роль " +
-                    "(OnUnitDamageTaken(target,...) / OnUnitDealtDamage(source,...)).", fn.Pos);
+                    "(OnUnitDamageTaken(target,...) / OnUnitDealtDamage(source,...)).",
+                        $"Event '{fn.Name}' does not fit a listener: the first parameter must be an entity " +
+                        "(the subscription subject). The host declares separate events for each role " +
+                        "(OnUnitDamageTaken(target,...) / OnUnitDealtDamage(source,...))."), fn.Pos);
                 return;
             }
             var target = ev.Params[0];
@@ -979,8 +1056,10 @@ namespace Dsl.Semantics
             else if (!sym.TargetType.Same(target))
             {
                 _diag.Error("E0174",
-                    $"listener '{sym.Name}': события про разные типы цели ({sym.TargetType} и {target}) — " +
-                    "разделите на два listener.", fn.Pos);
+                    T($"listener '{sym.Name}': события про разные типы цели ({sym.TargetType} и {target}) — " +
+                    "разделите на два listener.",
+                        $"listener '{sym.Name}': events about different target types ({sym.TargetType} and {target}) — " +
+                        "split it into two listeners."), fn.Pos);
                 return;
             }
 
@@ -1007,7 +1086,7 @@ namespace Dsl.Semantics
         {
             if (!blockNames.Add(f.Name))
             {
-                _diag.Error("E0111", $"Повторное объявление поля '{f.Name}'.", f.Pos);
+                _diag.Error("E0111", T($"Повторное объявление поля '{f.Name}'.", $"Duplicate declaration of field '{f.Name}'."), f.Pos);
                 return;
             }
             var type = ResolveType(f.DeclType);
@@ -1019,13 +1098,15 @@ namespace Dsl.Semantics
                 // переопределение из другого блока
                 if (existing.IsConst != f.IsConst)
                 {
-                    _diag.Error("E0207", $"Переопределение '{f.Name}': нельзя менять const и обычное поле местами.", f.Pos);
+                    _diag.Error("E0207", T($"Переопределение '{f.Name}': нельзя менять const и обычное поле местами.",
+                        $"Redefinition of '{f.Name}': a const and a regular field cannot be swapped."), f.Pos);
                     return;
                 }
                 if (!existing.Type.Same(type))
                 {
                     _diag.Error("E0207",
-                        $"Переопределение поля '{f.Name}' с другим типом: было {existing.Type}, стало {type}.", f.Pos);
+                        T($"Переопределение поля '{f.Name}' с другим типом: было {existing.Type}, стало {type}.",
+                            $"Field '{f.Name}' is redefined with a different type: was {existing.Type}, now {type}."), f.Pos);
                     return;
                 }
                 if (f.IsConst)
@@ -1083,7 +1164,7 @@ namespace Dsl.Semantics
         {
             if (!blockNames.Add(BlockKey(fn)))
             {
-                _diag.Error("E0113", $"Повторное объявление функции '{fn.Name}'.", fn.Pos);
+                _diag.Error("E0113", T($"Повторное объявление функции '{fn.Name}'.", $"Duplicate declaration of function '{fn.Name}'."), fn.Pos);
                 return;
             }
             fn.Owner = owner;
@@ -1109,7 +1190,7 @@ namespace Dsl.Semantics
                 _inInitializer = true;
                 var ti = CheckExpr(ref fm.Init);
                 _inInitializer = false;
-                CoerceAssign(ref fm.Init, fm.Type, ti, fm.Pos, "инициализатор поля");
+                CoerceAssign(ref fm.Init, fm.Type, ti, fm.Pos, T("инициализатор поля", "field initializer"));
             }
             _module = saved;
         }
@@ -1139,7 +1220,7 @@ namespace Dsl.Semantics
                         // и без этой проверки литерал молча обрезался бы кастом
                         if (lit.IntValue < int.MinValue || lit.IntValue > int.MaxValue)
                         {
-                            _diag.Error("E0152", "Целочисленная константа вне диапазона int.", f.Pos);
+                            _diag.Error("E0152", T("Целочисленная константа вне диапазона int.", "Integer constant out of int range."), f.Pos);
                             sym.ConstValue = Variant.Int(0);
                             return;
                         }
@@ -1174,7 +1255,8 @@ namespace Dsl.Semantics
                 }
             }
             _diag.Error("E0112",
-                "const в v1 принимает только литерал или элемент енума соответствующего типа.", f.Pos);
+                T("const в v1 принимает только литерал или элемент енума соответствующего типа.",
+                    "In v1 const accepts only a literal or an enum member of the matching type."), f.Pos);
         }
 
 
@@ -1182,7 +1264,8 @@ namespace Dsl.Semantics
         {
             if (!blockNames.Add(BlockKey(fn)))
             {
-                _diag.Error("E0113", $"Повторное объявление обработчика '{fn.Name}' в этом блоке.", fn.Pos);
+                _diag.Error("E0113", T($"Повторное объявление обработчика '{fn.Name}' в этом блоке.",
+                    $"Duplicate declaration of handler '{fn.Name}' in this block."), fn.Pos);
                 return;
             }
             // одноимённый обработчик в ДРУГОМ блоке — версия той же цепочки (BuildChain)
@@ -1192,13 +1275,14 @@ namespace Dsl.Semantics
 
             if (!_host.TryGetEvent(fn.Name, out var ev))
             {
-                _diag.Error("E0114", $"Событие '{fn.Name}' не зарегистрировано хостом.", fn.Pos);
+                _diag.Error("E0114", T($"Событие '{fn.Name}' не зарегистрировано хостом.", $"Event '{fn.Name}' is not registered by the host."), fn.Pos);
                 return;
             }
             if (ev.Params.Length != fn.Params.Count)
             {
                 _diag.Error("E0115",
-                    $"Событие '{fn.Name}' объявлено хостом с {ev.Params.Length} параметрами, в обработчике {fn.Params.Count}.",
+                    T($"Событие '{fn.Name}' объявлено хостом с {ev.Params.Length} параметрами, в обработчике {fn.Params.Count}.",
+                        $"Event '{fn.Name}' is declared by the host with {ev.Params.Length} parameters, the handler has {fn.Params.Count}."),
                     fn.Pos);
                 return;
             }
@@ -1207,7 +1291,8 @@ namespace Dsl.Semantics
                 if (!ev.Params[i].Same(fn.Params[i].Type))
                 {
                     _diag.Error("E0116",
-                        $"Параметр #{i + 1} обработчика '{fn.Name}' имеет тип {fn.Params[i].Type}, у события — {ev.Params[i]}.",
+                        T($"Параметр #{i + 1} обработчика '{fn.Name}' имеет тип {fn.Params[i].Type}, у события — {ev.Params[i]}.",
+                            $"Parameter #{i + 1} of handler '{fn.Name}' has type {fn.Params[i].Type}, the event has {ev.Params[i]}."),
                         fn.Params[i].Pos);
                 }
             }
@@ -1224,11 +1309,12 @@ namespace Dsl.Semantics
             fn.Owner = t;
             fn.ReturnType = TypeRef.Void;
             if (fn.Name != "Do")
-                _diag.Error("E0117", "В v1 у триггера ровно одно действие и оно называется 'Do'.", fn.Pos);
+                _diag.Error("E0117", T("В v1 у триггера ровно одно действие и оно называется 'Do'.",
+                    "In v1 a trigger has exactly one action and it is named 'Do'."), fn.Pos);
             if (fn.Params.Count > 0)
-                _diag.Error("E0119", "action Do() не принимает параметров.", fn.Pos);
+                _diag.Error("E0119", T("action Do() не принимает параметров.", "action Do() takes no parameters."), fn.Pos);
             if (fn.RetType != null)
-                _diag.Error("E0120", "action Do() не возвращает значение.", fn.Pos);
+                _diag.Error("E0120", T("action Do() не возвращает значение.", "action Do() returns no value."), fn.Pos);
 
             fn.FuncIndex = _funcs.Count;
             _funcs.Add(fn);
@@ -1368,8 +1454,10 @@ namespace Dsl.Semantics
                     var l = links[i];
                     if (l.ReturnType == null || l.ReturnType.Kind == TypeKind.Void || l.ReturnType.IsError) continue;
                     _diag.Error("E0246",
-                        $"У '{ch.Name}' есть только слои before/after, а основной версии нет — функции с " +
+                        T($"У '{ch.Name}' есть только слои before/after, а основной версии нет — функции с " +
                         $"результатом {TypeName(l.ReturnType)} нечего вернуть. Объявите её без модификатора.",
+                            $"'{ch.Name}' has only before/after layers and no main version — a function returning " +
+                            $"{TypeName(l.ReturnType)} has nothing to return. Declare it without a modifier."),
                         l.Pos);
                     layersOnlyWithResult = true;
                     break;
@@ -1438,14 +1526,19 @@ namespace Dsl.Semantics
 
         private void ReportSignatureMismatch(FuncMember late, FuncMember early)
         {
-            string word = late.Mode == MergeMode.Before || late.Mode == MergeMode.After
+            string word = T(late.Mode == MergeMode.Before || late.Mode == MergeMode.After
                 ? $"Слой {ModeWord(late.Mode)}"
-                : late.Mode == MergeMode.Replace ? "Версия replace" : "Версия";
+                : late.Mode == MergeMode.Replace ? "Версия replace" : "Версия",
+                late.Mode == MergeMode.Before || late.Mode == MergeMode.After
+                ? $"Layer {ModeWord(late.Mode)}"
+                : late.Mode == MergeMode.Replace ? "Replace version" : "Version");
             _sigReported.Add(late);
             _sigReported.Add(early);
             _diag.Error("E0242",
-                $"{word} '{SignatureText(late)}' не совпадает по сигнатуре с объявленной раньше '{SignatureText(early)}'. " +
+                T($"{word} '{SignatureText(late)}' не совпадает по сигнатуре с объявленной раньше '{SignatureText(early)}'. " +
                 "Версии одного члена вызываются одними аргументами — слоями и при выключении модуля.",
+                    $"{word} '{SignatureText(late)}' does not match the signature of the earlier '{SignatureText(early)}'. " +
+                    "Versions of one member are called with the same arguments — by layers and when a module is disabled."),
                 late.Pos);
         }
 
@@ -1502,7 +1595,7 @@ namespace Dsl.Semantics
                     if (_host.TryGetClass(n.Name, out var hc)) return TypeRef.Entity(hc.Id);
                     if (_host.TryGetStruct(n.Name, out var hs)) return TypeRef.StructOf(hs.Id);
                     if (TryResolveEnumType(n.Name, out int eid, out _)) return TypeRef.EnumOf(eid);
-                    _diag.Error("E0121", $"Неизвестный тип '{n.Name}'.", n.Pos);
+                    _diag.Error("E0121", T($"Неизвестный тип '{n.Name}'.", $"Unknown type '{n.Name}'."), n.Pos);
                     return TypeRef.Error;
 
                 case ArrayTypeSyntax a:
@@ -1516,12 +1609,12 @@ namespace Dsl.Semantics
                     var k = ResolveType(g.Args[0]);
                     if (!(k.Kind == TypeKind.Int || k.Kind == TypeKind.Str
                           || k.Kind == TypeKind.Enum || k.Kind == TypeKind.Entity))
-                        _diag.Error("E0122", "Ключ Map: int, string, енум или сущность.", g.Pos);
+                        _diag.Error("E0122", T("Ключ Map: int, string, енум или сущность.", "Map key: int, string, enum or entity."), g.Pos);
                     return TypeRef.MapOf(k, ResolveType(g.Args[1]));
                 }
 
                 case GenericTypeSyntax g:
-                    _diag.Error("E0123", $"Неизвестный обобщённый тип '{g.Name}<...>'.", g.Pos);
+                    _diag.Error("E0123", T($"Неизвестный обобщённый тип '{g.Name}<...>'.", $"Unknown generic type '{g.Name}<...>'."), g.Pos);
                     return TypeRef.Error;
 
                 default:
@@ -1584,7 +1677,70 @@ namespace Dsl.Semantics
         // ПРОХОД 2: тела
         // ===================================================================
 
+        /// <summary>
+        /// Сущностью владеет модуль без состояния: каждый её блок из модуля С
+        /// состоянием — E0255. Слой такого мода исполнялся бы внутри хода и менял
+        /// свои поля, которые откат хоста не вернёт; разбирать, «чистый» ли слой,
+        /// компилятор не берётся — запрет на весь блок.
+        /// </summary>
+        private void CheckStatelessOwner<TDecl>(string ownerModule, List<TDecl> decls, string entityName) where TDecl : Decl
+        {
+            var owner = ModuleOf(ownerModule, null);
+            if (owner == null) return;
+            foreach (var d in decls)
+            {
+                var m = ModuleOf(d.Module, null);
+                if (m == null || m.Stateless == owner.Stateless) continue;
+                if (owner.Stateless)
+                    _diag.Error("E0255",
+                        T($"'{entityName}' принадлежит модулю без состояния '{owner.Name}' (\"state\": \"none\"), " +
+                        $"а блок из модуля '{m.Name}' — с состоянием. Объявите у '{m.Name}' \"state\": \"none\".",
+                            $"'{entityName}' belongs to the stateless module '{owner.Name}' (\"state\": \"none\"), " +
+                            $"but the block from module '{m.Name}' has state. Declare \"state\": \"none\" in '{m.Name}'."), d.Pos);
+                else
+                    _diag.Error("E0255",
+                        T($"Модуль без состояния '{m.Name}' не может дописывать '{entityName}' модуля с состоянием " +
+                        $"'{owner.Name}': его код работал бы с изменяемыми полями этой сущности.",
+                            $"The stateless module '{m.Name}' cannot extend '{entityName}' of the stateful module " +
+                            $"'{owner.Name}': its code would work with the mutable fields of that entity."), d.Pos);
+            }
+        }
+
+        /// <summary>
+        /// Поля, объявленные модулем без состояния: только readonly (с учётом
+        /// «липкости» мержа — проверяется итоговый символ) и не коллекции —
+        /// содержимое readonly-списка всё равно меняется через Add.
+        /// </summary>
+        private void CheckStatelessFields(Dictionary<string, FieldSymbol> fields, List<FieldMember> decls)
+        {
+            foreach (var fm in decls)
+            {
+                var m = ModuleOf(fm.DeclModule, null);
+                if (m == null || !m.Stateless || fm.IsConst) continue;
+                if (!fields.TryGetValue(fm.Name, out var sym) || sym.Type == null) continue;
+                var k = sym.Type.Kind;
+                if (k == TypeKind.Array || k == TypeKind.List || k == TypeKind.Map)
+                    _diag.Error("E0253",
+                        T($"Поле '{fm.Name}' типа {sym.Type} в модуле без состояния '{m.Name}': содержимое коллекции " +
+                        "изменяемо даже у readonly-поля. Держите коллекцию локальной переменной или у хоста.",
+                            $"Field '{fm.Name}' of type {sym.Type} in the stateless module '{m.Name}': collection contents " +
+                            "are mutable even in a readonly field. Keep the collection in a local variable or on the host."), fm.Pos);
+                else if (!sym.IsReadOnly)
+                    _diag.Error("E0253",
+                        T($"Изменяемое поле '{fm.Name}' в модуле без состояния '{m.Name}' (\"state\": \"none\"): " +
+                        "объявите его readonly или держите значение у хоста.",
+                            $"Mutable field '{fm.Name}' in the stateless module '{m.Name}' (\"state\": \"none\"): " +
+                            "declare it readonly or keep the value on the host."), fm.Pos);
+            }
+        }
+
         private void CheckDeclBodies(Decl d)
+        {
+            try { CheckDeclBodiesCore(d); }
+            finally { _syncOwner = null; _syncOwnerName = null; }
+        }
+
+        private void CheckDeclBodiesCore(Decl d)
         {
             switch (d)
             {
@@ -1593,6 +1749,9 @@ namespace Dsl.Semantics
                     // мерж-сущность: тела один раз (на первом блоке), против итоговых таблиц
                     if (_clsByName.TryGetValue(c.Name, out var cs) && cs.Decls.Count > 0 && cs.Decls[0] == c)
                     {
+                        SetSyncOwner(cs.Module, c.Name);
+                        CheckStatelessOwner(cs.Module, cs.Decls, c.Name);
+                        CheckStatelessFields(cs.Fields, cs.FieldDecls);
                         _ownerFields = cs.Fields;
                         _ownerFuncs = cs.Funcs;
                         CheckMergedInits(cs.FieldDecls);
@@ -1604,6 +1763,9 @@ namespace Dsl.Semantics
                 {
                     if (_trigByName.TryGetValue(t.Name, out var tr) && tr.Decls.Count > 0 && tr.Decls[0] == t)
                     {
+                        SetSyncOwner(tr.Module, t.Name);
+                        CheckStatelessOwner(tr.Module, tr.Decls, t.Name);
+                        CheckStatelessFields(tr.Fields, tr.FieldDecls);
                         _ownerFields = tr.Fields;
                         _ownerFuncs = tr.Funcs;
                         CheckMergedInits(tr.FieldDecls);
@@ -1620,6 +1782,9 @@ namespace Dsl.Semantics
                     foreach (var asym in _archetypes)
                     {
                         if (asym.Decls.Count == 0 || asym.Decls[0] != a) continue;
+                        SetSyncOwner(asym.Module, asym.Kind + " " + asym.Id);
+                        CheckStatelessOwner(asym.Module, asym.Decls, asym.Kind + " " + asym.Id);
+                        CheckStatelessFields(asym.Fields, asym.FieldDecls);
                         _ownerFields = asym.Fields;
                         _ownerFuncs = asym.Funcs;
                         CheckMergedInits(asym.FieldDecls);
@@ -1633,6 +1798,9 @@ namespace Dsl.Semantics
                 {
                     if (_lsnByName.TryGetValue(l.Name, out var ls) && ls.Decls.Count > 0 && ls.Decls[0] == l)
                     {
+                        SetSyncOwner(ls.Module, l.Name);
+                        CheckStatelessOwner(ls.Module, ls.Decls, l.Name);
+                        CheckStatelessFields(ls.Fields, ls.FieldDecls);
                         _listener = ls; // включает self и attach-адресацию полей
                         _ownerFields = ls.Fields;
                         _ownerFuncs = ls.Funcs;
@@ -1677,7 +1845,7 @@ namespace Dsl.Semantics
             {
                 p.Slot = _localCount++;
                 if (!DeclareLocal(p.Name, p.Slot, p.Type))
-                    _diag.Error("E0130", $"Повтор имени параметра '{p.Name}'.", p.Pos);
+                    _diag.Error("E0130", T($"Повтор имени параметра '{p.Name}'.", $"Duplicate parameter name '{p.Name}'."), p.Pos);
             }
 
             if (fn.Body == null)
@@ -1686,7 +1854,8 @@ namespace Dsl.Semantics
                 // что возвращать, поэтому только void (события, action, void-func)
                 if (fn.ReturnType.Kind != TypeKind.Void)
                     _diag.Error("E0203",
-                        $"У '{fn.Name}' есть возвращаемый тип {fn.ReturnType} — прототип без тела допустим только для void.",
+                        T($"У '{fn.Name}' есть возвращаемый тип {fn.ReturnType} — прототип без тела допустим только для void.",
+                            $"'{fn.Name}' has the return type {fn.ReturnType} — a prototype without a body is allowed only for void."),
                         fn.Pos);
             }
             else
@@ -1699,7 +1868,8 @@ namespace Dsl.Semantics
                     && !AlwaysReturns(fn.Body))
                 {
                     _diag.Error("E0222",
-                        $"Не все пути '{fn.Name}' возвращают значение типа {fn.ReturnType}.", fn.Pos);
+                        T($"Не все пути '{fn.Name}' возвращают значение типа {fn.ReturnType}.",
+                            $"Not all code paths of '{fn.Name}' return a value of type {fn.ReturnType}."), fn.Pos);
                 }
             }
             PopScope();
@@ -1807,7 +1977,8 @@ namespace Dsl.Semantics
                         // var: вывод из инициализатора
                         if (initT == null || initT.Kind == TypeKind.Nil || initT.Kind == TypeKind.Void)
                         {
-                            _diag.Error("E0131", "Не удаётся вывести тип 'var' из этого инициализатора.", v.Pos);
+                            _diag.Error("E0131", T("Не удаётся вывести тип 'var' из этого инициализатора.",
+                                "Cannot infer the type of 'var' from this initializer."), v.Pos);
                             initT = TypeRef.Error;
                         }
                         v.Type = initT;
@@ -1816,12 +1987,13 @@ namespace Dsl.Semantics
                     {
                         v.Type = declared;
                         if (v.Init != null)
-                            CoerceAssign(ref v.Init, declared, initT, v.Pos, "инициализатор");
+                            CoerceAssign(ref v.Init, declared, initT, v.Pos, T("инициализатор", "initializer"));
                     }
 
                     v.Slot = _localCount++;
                     if (!DeclareLocal(v.Name, v.Slot, v.Type))
-                        _diag.Error("E0132", $"Переменная '{v.Name}' уже объявлена (затенение запрещено).", v.Pos);
+                        _diag.Error("E0132", T($"Переменная '{v.Name}' уже объявлена (затенение запрещено).",
+                            $"Variable '{v.Name}' is already declared (shadowing is not allowed)."), v.Pos);
                     break;
                 }
 
@@ -1836,7 +2008,7 @@ namespace Dsl.Semantics
                 case IfStmt i:
                 {
                     var t = CheckExpr(ref i.Cond);
-                    RequireBool(t, i.Cond.Pos, "условие if");
+                    RequireBool(t, i.Cond.Pos, T("условие if", "if condition"));
                     CheckBlock(i.Then);
                     if (i.Else != null) CheckStmt(i.Else);
                     break;
@@ -1845,7 +2017,7 @@ namespace Dsl.Semantics
                 case WhileStmt w:
                 {
                     var t = CheckExpr(ref w.Cond);
-                    RequireBool(t, w.Cond.Pos, "условие while");
+                    RequireBool(t, w.Cond.Pos, T("условие while", "while condition"));
                     _loopDepth++;
                     CheckBlock(w.Body);
                     _loopDepth--;
@@ -1857,12 +2029,16 @@ namespace Dsl.Semantics
                     // loop отдаёт кадр на каждой итерации → это кооперативная точка,
                     // как wait: запрещён там же, где запрещён wait
                     if (_module != null && _module.Synchronous)
-                        _diag.Error("E0170", "'loop' запрещён в синхронном модуле (execution: synchronous) — " +
-                                             "он уступает кадр; используйте while.", lp.Pos);
+                        _diag.Error("E0170", T("'loop' запрещён в синхронном модуле (execution: synchronous) — " +
+                                             "он уступает кадр; используйте while.",
+                            "'loop' is forbidden in a synchronous module (execution: synchronous) — " +
+                            "it yields the frame; use while."), lp.Pos);
                     if (_noWaitHandler)
-                        _diag.Error("E0178", "'loop' запрещён в OnUnsubscribe — подписка уничтожается немедленно.", lp.Pos);
+                        _diag.Error("E0178", T("'loop' запрещён в OnUnsubscribe — подписка уничтожается немедленно.",
+                            "'loop' is forbidden in OnUnsubscribe — the subscription is destroyed immediately."), lp.Pos);
+                    CheckSyncOwned("'loop'", lp.Pos);
                     var t = CheckExpr(ref lp.Cond);
-                    RequireBool(t, lp.Cond.Pos, "условие loop");
+                    RequireBool(t, lp.Cond.Pos, T("условие loop", "loop condition"));
                     _loopDepth++;
                     CheckBlock(lp.Body);
                     _loopDepth--;
@@ -1872,10 +2048,14 @@ namespace Dsl.Semantics
                 case YieldStmt y:
                 {
                     if (_module != null && _module.Synchronous)
-                        _diag.Error("E0170", "'yield' запрещён в синхронном модуле (execution: synchronous) — " +
-                                             "он уступает кадр.", y.Pos);
+                        _diag.Error("E0170", T("'yield' запрещён в синхронном модуле (execution: synchronous) — " +
+                                             "он уступает кадр.",
+                            "'yield' is forbidden in a synchronous module (execution: synchronous) — " +
+                            "it yields the frame."), y.Pos);
                     if (_noWaitHandler)
-                        _diag.Error("E0178", "'yield' запрещён в OnUnsubscribe — подписка уничтожается немедленно.", y.Pos);
+                        _diag.Error("E0178", T("'yield' запрещён в OnUnsubscribe — подписка уничтожается немедленно.",
+                            "'yield' is forbidden in OnUnsubscribe — the subscription is destroyed immediately."), y.Pos);
+                    CheckSyncOwned("'yield'", y.Pos);
                     break;
                 }
 
@@ -1883,15 +2063,15 @@ namespace Dsl.Semantics
                 {
                     var ft = CheckExpr(ref fr.From);
                     var tt = CheckExpr(ref fr.To);
-                    if (ft.Kind != TypeKind.Int) _diag.Error("E0133", "Нижняя граница диапазона должна быть int.", fr.From.Pos);
-                    if (tt.Kind != TypeKind.Int) _diag.Error("E0134", "Верхняя граница диапазона должна быть int.", fr.To.Pos);
+                    if (ft.Kind != TypeKind.Int) _diag.Error("E0133", T("Нижняя граница диапазона должна быть int.", "The lower bound of a range must be int."), fr.From.Pos);
+                    if (tt.Kind != TypeKind.Int) _diag.Error("E0134", T("Верхняя граница диапазона должна быть int.", "The upper bound of a range must be int."), fr.To.Pos);
 
                     fr.VarSlot = _localCount++;
                     fr.LimitSlot = _localCount++; // скрытый кэш верхней границы
 
                     PushScope();
                     if (!DeclareLocal(fr.Var, fr.VarSlot, TypeRef.Int))
-                        _diag.Error("E0135", $"Переменная '{fr.Var}' уже объявлена.", fr.Pos);
+                        _diag.Error("E0135", T($"Переменная '{fr.Var}' уже объявлена.", $"Variable '{fr.Var}' is already declared."), fr.Pos);
                     _loopDepth++;
                     CheckBlock(fr.Body);
                     _loopDepth--;
@@ -1909,7 +2089,8 @@ namespace Dsl.Semantics
                         elem = ct.Elem;
                         if (fe.Var2 != null)
                             _diag.Error("E0206",
-                                "Вторая переменная цикла допустима только для Map (ключ, значение).", fe.Pos);
+                                T("Вторая переменная цикла допустима только для Map (ключ, значение).",
+                                    "A second loop variable is allowed only for Map (key, value)."), fe.Pos);
                     }
                     else if (ct.Kind == TypeKind.Map)
                     {
@@ -1920,7 +2101,7 @@ namespace Dsl.Semantics
                         elem2 = ct.Val;
                     }
                     else if (!ct.IsError)
-                        _diag.Error("E0136", "for-in обходит массивы, List и Map.", fe.Coll.Pos);
+                        _diag.Error("E0136", T("for-in обходит массивы, List и Map.", "for-in iterates arrays, List and Map."), fe.Coll.Pos);
 
                     fe.ElemType = elem;
                     fe.Elem2Type = elem2;
@@ -1933,9 +2114,9 @@ namespace Dsl.Semantics
 
                     PushScope();
                     if (!DeclareLocal(fe.Var, fe.VarSlot, elem))
-                        _diag.Error("E0137", $"Переменная '{fe.Var}' уже объявлена.", fe.Pos);
+                        _diag.Error("E0137", T($"Переменная '{fe.Var}' уже объявлена.", $"Variable '{fe.Var}' is already declared."), fe.Pos);
                     if (fe.Var2 != null && !DeclareLocal(fe.Var2, fe.Var2Slot, elem2))
-                        _diag.Error("E0137", $"Переменная '{fe.Var2}' уже объявлена.", fe.Pos);
+                        _diag.Error("E0137", T($"Переменная '{fe.Var2}' уже объявлена.", $"Variable '{fe.Var2}' is already declared."), fe.Pos);
                     _loopDepth++;
                     CheckBlock(fe.Body);
                     _loopDepth--;
@@ -1944,11 +2125,11 @@ namespace Dsl.Semantics
                 }
 
                 case BreakStmt br:
-                    if (_loopDepth == 0) _diag.Error("E0138", "'break' вне цикла.", br.Pos);
+                    if (_loopDepth == 0) _diag.Error("E0138", T("'break' вне цикла.", "'break' outside a loop."), br.Pos);
                     break;
 
                 case ContinueStmt co:
-                    if (_loopDepth == 0) _diag.Error("E0139", "'continue' вне цикла.", co.Pos);
+                    if (_loopDepth == 0) _diag.Error("E0139", T("'continue' вне цикла.", "'continue' outside a loop."), co.Pos);
                     break;
 
                 case ReturnStmt r:
@@ -1957,13 +2138,15 @@ namespace Dsl.Semantics
                     if (r.Value == null)
                     {
                         if (expected.Kind != TypeKind.Void)
-                            _diag.Error("E0140", $"Функция возвращает {expected}, а return пуст.", r.Pos);
+                            _diag.Error("E0140", T($"Функция возвращает {expected}, а return пуст.",
+                                $"The function returns {expected}, but return is empty."), r.Pos);
                     }
                     else
                     {
                         var t = CheckExpr(ref r.Value);
                         if (expected.Kind == TypeKind.Void)
-                            _diag.Error("E0141", "Функция ничего не возвращает, а return со значением.", r.Pos);
+                            _diag.Error("E0141", T("Функция ничего не возвращает, а return со значением.",
+                                "The function returns nothing, but return has a value."), r.Pos);
                         else
                             CoerceAssign(ref r.Value, expected, t, r.Pos, "return");
                     }
@@ -1976,13 +2159,17 @@ namespace Dsl.Semantics
                 case WaitStmt w:
                 {
                     if (_module != null && _module.Synchronous)
-                        _diag.Error("E0170", "'wait' запрещён в синхронном модуле (execution: synchronous). " +
-                                             "Обработчик должен исполняться целиком до конца.", w.Pos);
+                        _diag.Error("E0170", T("'wait' запрещён в синхронном модуле (execution: synchronous). " +
+                                             "Обработчик должен исполняться целиком до конца.",
+                            "'wait' is forbidden in a synchronous module (execution: synchronous). " +
+                            "The handler must run to completion."), w.Pos);
                     if (_noWaitHandler)
-                        _diag.Error("E0178", "'wait' запрещён в OnUnsubscribe — подписка уничтожается немедленно.", w.Pos);
+                        _diag.Error("E0178", T("'wait' запрещён в OnUnsubscribe — подписка уничтожается немедленно.",
+                            "'wait' is forbidden in OnUnsubscribe — the subscription is destroyed immediately."), w.Pos);
+                    CheckSyncOwned("'wait'", w.Pos);
                     var t = CheckExpr(ref w.Seconds);
                     if (!t.IsNumeric && !t.IsError)
-                        _diag.Error("E0142", "'wait' ожидает число секунд.", w.Seconds.Pos);
+                        _diag.Error("E0142", T("'wait' ожидает число секунд.", "'wait' expects a number of seconds."), w.Seconds.Pos);
                     if (t.Kind == TypeKind.Int)
                         w.Seconds = Convert(w.Seconds, TypeRef.Float); // секунды: int→float (float/double проходят как есть)
                     break;
@@ -1991,11 +2178,13 @@ namespace Dsl.Semantics
                 case WaitUntilStmt wu:
                 {
                     if (_module != null && _module.Synchronous)
-                        _diag.Error("E0170", "'wait until' запрещён в синхронном модуле (execution: synchronous).", wu.Pos);
+                        _diag.Error("E0170", T("'wait until' запрещён в синхронном модуле (execution: synchronous).",
+                            "'wait until' is forbidden in a synchronous module (execution: synchronous)."), wu.Pos);
                     if (_noWaitHandler)
-                        _diag.Error("E0178", "'wait until' запрещён в OnUnsubscribe.", wu.Pos);
+                        _diag.Error("E0178", T("'wait until' запрещён в OnUnsubscribe.", "'wait until' is forbidden in OnUnsubscribe."), wu.Pos);
+                    CheckSyncOwned("'wait until'", wu.Pos);
                     var t = CheckExpr(ref wu.Cond);
-                    RequireBool(t, wu.Cond.Pos, "условие 'wait until'");
+                    RequireBool(t, wu.Cond.Pos, T("условие 'wait until'", "'wait until' condition"));
                     break;
                 }
             }
@@ -2015,7 +2204,8 @@ namespace Dsl.Semantics
                 if (!tt0.IsNumeric)
                 {
                     _diag.Error("E0247",
-                        $"'{(a.Op == TokenKind.PlusAssign ? "++" : "--")}' применим к числу (int/float/double), а цель имеет тип {tt0}.",
+                        T($"'{(a.Op == TokenKind.PlusAssign ? "++" : "--")}' применим к числу (int/float/double), а цель имеет тип {tt0}.",
+                            $"'{(a.Op == TokenKind.PlusAssign ? "++" : "--")}' applies to a number (int/float/double), but the target has type {tt0}."),
                         a.Pos);
                     return;
                 }
@@ -2029,7 +2219,7 @@ namespace Dsl.Semantics
                 a.Op = TokenKind.Assign;
                 var vt0 = CheckExpr(ref a.Value);
                 var v0 = a.Value;
-                CoerceAssign(ref v0, tt0, vt0, a.Pos, "присваивание");
+                CoerceAssign(ref v0, tt0, vt0, a.Pos, T("присваивание", "assignment"));
                 a.Value = v0;
                 return;
             }
@@ -2051,7 +2241,7 @@ namespace Dsl.Semantics
             var vt = CheckExpr(ref a.Value);
             var tt = CheckLValue(a.Target);
             var val = a.Value;
-            CoerceAssign(ref val, tt, vt, a.Pos, "присваивание");
+            CoerceAssign(ref val, tt, vt, a.Pos, T("присваивание", "assignment"));
             a.Value = val;
         }
 
@@ -2060,11 +2250,15 @@ namespace Dsl.Semantics
         /// readonly-ность, видно не всегда: у контрактного поля модификатор в
         /// блоке писать не обязательно, поэтому ошибка обязана назвать источник.
         /// </summary>
-        private static string ReadOnlyMessage(FieldSymbol fs)
-            => fs.FromKindContract
+        private string ReadOnlyMessage(FieldSymbol fs)
+            => T(fs.FromKindContract
                 ? $"'{fs.Name}' — константа вида '{fs.ContractKind}', объявленная игрой. " +
                   "Значение задаётся в объявлении блока, присваивать его нельзя."
-                : $"Нельзя присвоить readonly-полю '{fs.Name}' — значение задаётся только в объявлении.";
+                : $"Нельзя присвоить readonly-полю '{fs.Name}' — значение задаётся только в объявлении.",
+                fs.FromKindContract
+                ? $"'{fs.Name}' is a constant of kind '{fs.ContractKind}' declared by the game. " +
+                "Its value is set in the block declaration and cannot be assigned."
+                : $"Cannot assign to the readonly field '{fs.Name}' — its value is set only in the declaration.");
 
         /// <summary>Проверка выражения-цели присваивания; возвращает его тип.</summary>
         private TypeRef CheckLValue(Expr target)
@@ -2092,7 +2286,8 @@ namespace Dsl.Semantics
                         {
                             if (fs.IsConst)
                             {
-                                _diag.Error("E0143", $"Нельзя присвоить константе '{id.Name}'.", id.Pos);
+                                _diag.Error("E0143", T($"Нельзя присвоить константе '{id.Name}'.",
+                                    $"Cannot assign to the constant '{id.Name}'."), id.Pos);
                                 return TypeRef.Error;
                             }
                             if (fs.IsReadOnly)
@@ -2103,7 +2298,7 @@ namespace Dsl.Semantics
                         }
                         return t;
                     }
-                    _diag.Error("E0144", $"'{id.Name}' не является присваиваемым значением.", id.Pos);
+                    _diag.Error("E0144", T($"'{id.Name}' не является присваиваемым значением.", $"'{id.Name}' is not an assignable value."), id.Pos);
                     return TypeRef.Error;
                 }
 
@@ -2114,19 +2309,21 @@ namespace Dsl.Semantics
                     switch (me.MKind)
                     {
                         case MemberKind.HostProperty when me.ReadOnly:
-                            _diag.Error("E0145", $"Свойство '{me.Name}' только для чтения.", me.Pos);
+                            _diag.Error("E0145", T($"Свойство '{me.Name}' только для чтения.", $"Property '{me.Name}' is read-only."), me.Pos);
                             return TypeRef.Error;
                         case MemberKind.StructField:
                             // неизменяемость — не ограничение, а то, что снимает вопрос
                             // о копиях: алиасинг у неизменяемого значения ненаблюдаем
                             _diag.Error("E0236",
-                                $"Структуры неизменяемы: полю '{me.Name}' присвоить нельзя. " +
-                                "Соберите новое значение через new.", me.Pos);
+                                T($"Структуры неизменяемы: полю '{me.Name}' присвоить нельзя. " +
+                                "Соберите новое значение через new.",
+                                    $"Structs are immutable: the field '{me.Name}' cannot be assigned. " +
+                                    "Build a new value with new."), me.Pos);
                             return TypeRef.Error;
                         case MemberKind.HostProperty:
                             return t;
                         case MemberKind.StaticField when me.Sym is FieldSymbol fs && fs.IsConst:
-                            _diag.Error("E0146", $"Нельзя присвоить константе '{me.Name}'.", me.Pos);
+                            _diag.Error("E0146", T($"Нельзя присвоить константе '{me.Name}'.", $"Cannot assign to the constant '{me.Name}'."), me.Pos);
                             return TypeRef.Error;
                         case MemberKind.StaticField when me.Sym is FieldSymbol fsr && fsr.IsReadOnly:
                             _diag.Error("E0226", ReadOnlyMessage(fsr), me.Pos);
@@ -2134,7 +2331,7 @@ namespace Dsl.Semantics
                         case MemberKind.StaticField:
                             return t;
                         default:
-                            _diag.Error("E0147", "Этому выражению нельзя присваивать.", me.Pos);
+                            _diag.Error("E0147", T("Этому выражению нельзя присваивать.", "This expression cannot be assigned to."), me.Pos);
                             return TypeRef.Error;
                     }
                 }
@@ -2146,7 +2343,7 @@ namespace Dsl.Semantics
                 }
 
                 default:
-                    _diag.Error("E0148", "Этому выражению нельзя присваивать.", target.Pos);
+                    _diag.Error("E0148", T("Этому выражению нельзя присваивать.", "This expression cannot be assigned to."), target.Pos);
                     return TypeRef.Error;
             }
         }
@@ -2156,7 +2353,7 @@ namespace Dsl.Semantics
         private void RequireBool(TypeRef t, SourcePos pos, string what)
         {
             if (t.Kind != TypeKind.Bool && !t.IsError)
-                _diag.Error("E0150", $"{what} должно иметь тип bool, получен {t}.", pos);
+                _diag.Error("E0150", T($"{what} должно иметь тип bool, получен {t}.", $"Expected bool for {what}, got {t}."), pos);
         }
 
         private static ConvertExpr Convert(Expr inner, TypeRef to) =>
@@ -2172,7 +2369,8 @@ namespace Dsl.Semantics
                 return;
             }
             if (!target.AcceptsValueOf(valueT))
-                _diag.Error("E0151", $"Несовместимые типы: {what} ожидает {target}, получен {valueT}.", pos);
+                _diag.Error("E0151", T($"Несовместимые типы: {what} ожидает {target}, получен {valueT}.",
+                    $"Incompatible types: {what} expects {target}, got {valueT}."), pos);
         }
 
         private TypeRef CheckExpr(ref Expr e)
@@ -2229,7 +2427,7 @@ namespace Dsl.Semantics
                 case LiteralKind.Double: return lit.Type = TypeRef.Double;
                 case LiteralKind.Int:
                     if (lit.IntValue < int.MinValue || lit.IntValue > int.MaxValue)
-                        _diag.Error("E0152", "Целочисленная константа вне диапазона int.", lit.Pos);
+                        _diag.Error("E0152", T("Целочисленная константа вне диапазона int.", "Integer constant out of int range."), lit.Pos);
                     return lit.Type = TypeRef.Int;
                 default: return lit.Type = TypeRef.Error;
             }
@@ -2245,7 +2443,8 @@ namespace Dsl.Semantics
                 bool ok = t.Kind == TypeKind.Str || t.Kind == TypeKind.Int || t.Kind == TypeKind.Float
                           || t.Kind == TypeKind.Double || t.Kind == TypeKind.Bool || t.Kind == TypeKind.Enum || t.IsError;
                 if (!ok)
-                    _diag.Error("E0153", $"В интерполяцию нельзя подставить значение типа {t}.", p.Pos);
+                    _diag.Error("E0153", T($"В интерполяцию нельзя подставить значение типа {t}.",
+                        $"A value of type {t} cannot be interpolated."), p.Pos);
             }
             return ip.Type = TypeRef.Str;
         }
@@ -2292,7 +2491,8 @@ namespace Dsl.Semantics
                         return NamespaceNotAValue(nsPath, id.Pos, id);
                     case ResolveResult.Ambiguous:
                         _diag.Error("E0155",
-                            $"Имя '{id.Name}' объявлено в нескольких видимых модулях — уточните: module::{id.Name}.",
+                            T($"Имя '{id.Name}' объявлено в нескольких видимых модулях — уточните: module::{id.Name}.",
+                                $"The name '{id.Name}' is declared in several visible modules — qualify it: module::{id.Name}."),
                             id.Pos);
                         return id.Type = TypeRef.Error;
                 }
@@ -2327,7 +2527,7 @@ namespace Dsl.Semantics
             if (_host.TryGetClass(id.Name, out _))
             {
                 id.IdKind = IdentKind.HostTypeRef;
-                _diag.Error("E0154", $"'{id.Name}' — тип, а не значение.", id.Pos);
+                _diag.Error("E0154", T($"'{id.Name}' — тип, а не значение.", $"'{id.Name}' is a type, not a value."), id.Pos);
                 return id.Type = TypeRef.Error;
             }
 
@@ -2338,7 +2538,8 @@ namespace Dsl.Semantics
                     return AnnotateGlobalIdent(id, sym);
                 case ResolveResult.Ambiguous:
                     _diag.Error("E0155",
-                        $"Имя '{id.Name}' объявлено в нескольких видимых модулях — уточните: module::{id.Name}.",
+                        T($"Имя '{id.Name}' объявлено в нескольких видимых модулях — уточните: module::{id.Name}.",
+                            $"The name '{id.Name}' is declared in several visible modules — qualify it: module::{id.Name}."),
                         id.Pos);
                     return id.Type = TypeRef.Error;
                 default:
@@ -2358,7 +2559,7 @@ namespace Dsl.Semantics
                         id.IdKind = IdentKind.MathRef;
                         return id.Type = TypeRef.Error; // сам по себе значения не имеет
                     }
-                    _diag.Error("E0156", $"Неизвестное имя '{id.Name}'.", id.Pos);
+                    _diag.Error("E0156", T($"Неизвестное имя '{id.Name}'.", $"Unknown name '{id.Name}'."), id.Pos);
                     return id.Type = TypeRef.Error;
             }
         }
@@ -2402,7 +2603,8 @@ namespace Dsl.Semantics
             }
             if (!_module.Visible.Contains(q.Module))
             {
-                _diag.Error("E0157", $"Модуль '{q.Module}' не входит в зависимости текущего модуля.", q.Pos);
+                _diag.Error("E0157", T($"Модуль '{q.Module}' не входит в зависимости текущего модуля.",
+                    $"Module '{q.Module}' is not a dependency of the current module."), q.Pos);
                 return q.Type = TypeRef.Error;
             }
             if (!_globals.TryResolveQualified(q.Module, q.Name, out var sym))
@@ -2413,7 +2615,7 @@ namespace Dsl.Semantics
                     q.Sym = q.Name;
                     return NamespaceNotAValue(q.Module + "::" + q.Name, q.Pos, q);
                 }
-                _diag.Error("E0158", $"В модуле '{q.Module}' нет символа '{q.Name}'.", q.Pos);
+                _diag.Error("E0158", T($"В модуле '{q.Module}' нет символа '{q.Name}'.", $"Module '{q.Module}' has no symbol '{q.Name}'."), q.Pos);
                 return q.Type = TypeRef.Error;
             }
             AnnotateQualified(q, sym);
@@ -2438,7 +2640,8 @@ namespace Dsl.Semantics
         private TypeRef NamespaceNotAValue(string path, SourcePos pos, Expr node)
         {
             _diag.Error("E0315",
-                $"'{path}' — пространство имён, а не значение. Допишите имя объявления: {path}.Имя.", pos);
+                T($"'{path}' — пространство имён, а не значение. Допишите имя объявления: {path}.Имя.",
+                    $"'{path}' is a namespace, not a value. Add the declaration name: {path}.Name."), pos);
             return node.Type = TypeRef.Error;
         }
 
@@ -2490,7 +2693,7 @@ namespace Dsl.Semantics
 
                     if (members == null || !members.TryGetValue(me.Name, out int val))
                     {
-                        _diag.Error("E0159", $"В енуме нет элемента '{me.Name}'.", me.Pos);
+                        _diag.Error("E0159", T($"В енуме нет элемента '{me.Name}'.", $"The enum has no member '{me.Name}'."), me.Pos);
                         return me.Type = TypeRef.Error;
                     }
                     me.MKind = MemberKind.EnumValue;
@@ -2509,22 +2712,25 @@ namespace Dsl.Semantics
                         return me.Type = fs.Type;
                     }
                     // функции класса — только как цель вызова (обрабатывает CheckCall)
-                    _diag.Error("E0160", $"В классе '{cs.Name}' нет поля '{me.Name}'.", me.Pos);
+                    _diag.Error("E0160", T($"В классе '{cs.Name}' нет поля '{me.Name}'.", $"Class '{cs.Name}' has no field '{me.Name}'."), me.Pos);
                     return me.Type = TypeRef.Error;
                 }
 
                 case IdentKind.TriggerRef:
-                    _diag.Error("E0161", "Поля триггера приватны и снаружи недоступны.", me.Pos);
+                    _diag.Error("E0161", T("Поля триггера приватны и снаружи недоступны.",
+                        "Trigger fields are private and not accessible from outside."), me.Pos);
                     return me.Type = TypeRef.Error;
 
                 case IdentKind.ListenerRef:
-                    _diag.Error("E0179", "Члены listener приватны и снаружи недоступны (состояние живёт в подписке).", me.Pos);
+                    _diag.Error("E0179", T("Члены listener приватны и снаружи недоступны (состояние живёт в подписке).",
+                        "Listener members are private and not accessible from outside (the state lives in the subscription)."), me.Pos);
                     return me.Type = TypeRef.Error;
 
                 // ApiClassRef сюда не доходит: member-access с API в голове
                 // целиком разбирает ResolveApiMember в начале метода
                 case IdentKind.EngineRef:
-                    _diag.Error("E0162", $"'{me.Name}' — метод; его можно только вызвать.", me.Pos);
+                    _diag.Error("E0162", T($"'{me.Name}' — метод; его можно только вызвать.",
+                        $"'{me.Name}' is a method; it can only be called."), me.Pos);
                     return me.Type = TypeRef.Error;
 
                 case IdentKind.MathRef:
@@ -2536,9 +2742,11 @@ namespace Dsl.Semantics
                         return me.Type = TypeRef.Float;
                     }
                     if (MathSigs.ContainsKey(me.Name))
-                        _diag.Error("E0162", $"'Math.{me.Name}' — метод; его можно только вызвать.", me.Pos);
+                        _diag.Error("E0162", T($"'Math.{me.Name}' — метод; его можно только вызвать.",
+                            $"'Math.{me.Name}' is a method; it can only be called."), me.Pos);
                     else
-                        _diag.Error("E0249", $"У Math нет '{me.Name}'. Есть: {MathMemberList()}.", me.Pos);
+                        _diag.Error("E0249", T($"У Math нет '{me.Name}'. Есть: {MathMemberList()}.",
+                            $"Math has no '{me.Name}'. Available: {MathMemberList()}."), me.Pos);
                     return me.Type = TypeRef.Error;
 
                 case IdentKind.ApiNamespaceRef:
@@ -2548,13 +2756,16 @@ namespace Dsl.Semantics
                     string full = ((IdentExpr)me.Target).Name + "." + me.Name;
                     if (_host.TryGetApi(full, out _))
                         _diag.Error("E0227",
-                            $"'{full}' — API-класс: у него можно только вызвать метод.", me.Pos);
+                            T($"'{full}' — API-класс: у него можно только вызвать метод.",
+                                $"'{full}' is an API class: you can only call its methods."), me.Pos);
                     else if (_host.IsApiNamespace(full))
                         _diag.Error("E0227",
-                            $"'{full}' — пространство имён API, а не значение. " +
-                            "Допишите имя API и метод.", me.Pos);
+                            T($"'{full}' — пространство имён API, а не значение. " +
+                            "Допишите имя API и метод.",
+                                $"'{full}' is an API namespace, not a value. " +
+                                "Add the API name and the method."), me.Pos);
                     else
-                        _diag.Error("E0228", $"Нет API или пространства имён '{full}'.", me.Pos);
+                        _diag.Error("E0228", T($"Нет API или пространства имён '{full}'.", $"No API or namespace '{full}'."), me.Pos);
                     return me.Type = TypeRef.Error;
                 }
 
@@ -2582,7 +2793,7 @@ namespace Dsl.Semantics
                         me.ReadOnly = prop.ReadOnly;
                         return me.Type = prop.Type;
                     }
-                    _diag.Error("E0163", $"У сущности нет свойства '{me.Name}'.", me.Pos);
+                    _diag.Error("E0163", T($"У сущности нет свойства '{me.Name}'.", $"The entity has no property '{me.Name}'."), me.Pos);
                     return me.Type = TypeRef.Error;
                 }
 
@@ -2597,7 +2808,8 @@ namespace Dsl.Semantics
                         return me.Type = sf.Type;
                     }
                     _diag.Error("E0232",
-                        $"У структуры '{StructName(targetT.StructId)}' нет поля '{me.Name}'.", me.Pos);
+                        T($"У структуры '{StructName(targetT.StructId)}' нет поля '{me.Name}'.",
+                            $"Struct '{StructName(targetT.StructId)}' has no field '{me.Name}'."), me.Pos);
                     return me.Type = TypeRef.Error;
                 }
 
@@ -2608,7 +2820,8 @@ namespace Dsl.Semantics
                     return me.Type = TypeRef.Int;
 
                 default:
-                    _diag.Error("E0164", $"У значения типа {targetT} нет члена '{me.Name}'.", me.Pos);
+                    _diag.Error("E0164", T($"У значения типа {targetT} нет члена '{me.Name}'.",
+                        $"A value of type {targetT} has no member '{me.Name}'."), me.Pos);
                     return me.Type = TypeRef.Error;
             }
         }
@@ -2621,33 +2834,36 @@ namespace Dsl.Semantics
             if (tt.Kind == TypeKind.Array || tt.Kind == TypeKind.List)
             {
                 if (it.Kind != TypeKind.Int && !it.IsError)
-                    _diag.Error("E0165", "Индекс массива/списка должен быть int.", ix.Index.Pos);
+                    _diag.Error("E0165", T("Индекс массива/списка должен быть int.", "An array/list index must be int."), ix.Index.Pos);
                 return ix.Type = tt.Elem;
             }
             if (tt.Kind == TypeKind.Map)
             {
                 if (!tt.Key.AcceptsValueOf(it) && !it.IsError)
-                    _diag.Error("E0166", $"Ключ Map имеет тип {tt.Key}, получен {it}.", ix.Index.Pos);
+                    _diag.Error("E0166", T($"Ключ Map имеет тип {tt.Key}, получен {it}.", $"The Map key has type {tt.Key}, got {it}."), ix.Index.Pos);
                 return ix.Type = tt.Val;
             }
             if (!tt.IsError)
-                _diag.Error("E0167", $"Индексирование не поддерживается для типа {tt}.", ix.Pos);
+                _diag.Error("E0167", T($"Индексирование не поддерживается для типа {tt}.", $"Indexing is not supported for type {tt}."), ix.Pos);
             return ix.Type = TypeRef.Error;
         }
 
         private TypeRef CheckSpawn(SpawnExpr sp)
         {
             if (_module != null && _module.Synchronous)
-                _diag.Error("E0170", "'spawn' запрещён в синхронном модуле (execution: synchronous) — " +
-                                     "параллельных файберов нет.", sp.Pos);
+                _diag.Error("E0170", T("'spawn' запрещён в синхронном модуле (execution: synchronous) — " +
+                                     "параллельных файберов нет.",
+                    "'spawn' is forbidden in a synchronous module (execution: synchronous) — " +
+                    "there are no parallel fibers."), sp.Pos);
             if (_inInitializer)
-                _diag.Error("E0168", "'spawn' нельзя использовать в инициализаторе поля.", sp.Pos);
+                _diag.Error("E0168", T("'spawn' нельзя использовать в инициализаторе поля.", "'spawn' cannot be used in a field initializer."), sp.Pos);
             if (_noWaitHandler)
-                _diag.Error("E0178", "'spawn' запрещён в OnUnsubscribe — подписка уничтожается немедленно.", sp.Pos);
+                _diag.Error("E0178", T("'spawn' запрещён в OnUnsubscribe — подписка уничтожается немедленно.",
+                    "'spawn' is forbidden in OnUnsubscribe — the subscription is destroyed immediately."), sp.Pos);
 
             var ct = CheckCall(sp.Call);
             if (sp.Call.CKind != CallKind.ScriptFunc)
-                _diag.Error("E0169", "'spawn' запускает только скриптовые функции.", sp.Pos);
+                _diag.Error("E0169", T("'spawn' запускает только скриптовые функции.", "'spawn' starts only script functions."), sp.Pos);
             _ = ct; // возвращаемое значение игнорируется
             return sp.Type = TypeRef.Fiber;
         }
@@ -2656,7 +2872,7 @@ namespace Dsl.Semantics
         {
             if (_listener == null)
             {
-                _diag.Error("E0177", "'self' доступен только внутри listener.", se.Pos);
+                _diag.Error("E0177", T("'self' доступен только внутри listener.", "'self' is available only inside a listener."), se.Pos);
                 return se.Type = TypeRef.Error;
             }
             // тип цели выводится из первого параметра хостовых событий: без них
@@ -2664,9 +2880,12 @@ namespace Dsl.Semantics
             if (_listener.TargetType == null && _listener.Events.Count == 0)
             {
                 _diag.Error("E0171",
-                    $"listener '{_listener.Name}' не обрабатывает ни одного хостового события, поэтому тип цели " +
+                    T($"listener '{_listener.Name}' не обрабатывает ни одного хостового события, поэтому тип цели " +
                     "подписки неизвестен и 'self' недоступен. Добавьте событие о цели (её тип — первый параметр) " +
-                    "или работайте без self.", se.Pos);
+                    "или работайте без self.",
+                        $"listener '{_listener.Name}' handles no host events, so the subscription target type " +
+                        "is unknown and 'self' is unavailable. Add an event about the target (its type is the first parameter) " +
+                        "or work without self."), se.Pos);
                 return se.Type = TypeRef.Error;
             }
             // TargetType может быть null, если события listener не прошли проверку —
@@ -2679,7 +2898,7 @@ namespace Dsl.Semantics
             na.ElemTypeRef = ResolveType(na.ElemType);
             var st = CheckExpr(ref na.Size);
             if (st.Kind != TypeKind.Int && !st.IsError)
-                _diag.Error("E0210", "Размер массива должен быть int.", na.Size.Pos);
+                _diag.Error("E0210", T("Размер массива должен быть int.", "The array size must be int."), na.Size.Pos);
             return na.Type = TypeRef.ArrayOf(na.ElemTypeRef);
         }
 
@@ -2700,8 +2919,10 @@ namespace Dsl.Semantics
             if (!_host.TryGetStruct(ns.TypeName, out var si))
             {
                 _diag.Error("E0233",
-                    $"Игра не объявляет структуру '{ns.TypeName}'. " +
+                    T($"Игра не объявляет структуру '{ns.TypeName}'. " +
                     "Структуры объявляет хост (host.Struct<T>), скрипт их только собирает.",
+                        $"The game does not declare the struct '{ns.TypeName}'. " +
+                        "Structs are declared by the host (host.Struct<T>); scripts only build them."),
                     ns.Pos);
                 foreach (var a in ns.Args) { var e = a.Value; CheckExpr(ref e); a.Value = e; }
                 return ns.Type = TypeRef.Error;
@@ -2719,17 +2940,17 @@ namespace Dsl.Semantics
                 if (!si.TryGetField(a.Name, out var f))
                 {
                     _diag.Error("E0234",
-                        $"У структуры '{si.Name}' нет поля '{a.Name}'.", a.Pos);
+                        T($"У структуры '{si.Name}' нет поля '{a.Name}'.", $"Struct '{si.Name}' has no field '{a.Name}'."), a.Pos);
                     a.Value = val;
                     continue;
                 }
                 if (!seen.Add(a.Name))
                 {
-                    _diag.Error("E0235", $"Поле '{a.Name}' задано дважды.", a.Pos);
+                    _diag.Error("E0235", T($"Поле '{a.Name}' задано дважды.", $"Field '{a.Name}' is set twice."), a.Pos);
                     a.Value = val;
                     continue;
                 }
-                CoerceAssign(ref val, f.Type, vt, a.Pos, $"поле '{a.Name}'");
+                CoerceAssign(ref val, f.Type, vt, a.Pos, T($"поле '{a.Name}'", $"field '{a.Name}'"));
                 a.Value = val;
                 given[f.Index] = val;
             }
@@ -2772,7 +2993,8 @@ namespace Dsl.Semantics
         {
             if (al.Elems.Count == 0)
             {
-                _diag.Error("E0208", "Пустой литерал массива: тип неопределим — используйте new T[0].", al.Pos);
+                _diag.Error("E0208", T("Пустой литерал массива: тип неопределим — используйте new T[0].",
+                    "Empty array literal: the type cannot be inferred — use new T[0]."), al.Pos);
                 return al.Type = TypeRef.Error;
             }
             var first = al.Elems[0];
@@ -2788,7 +3010,8 @@ namespace Dsl.Semantics
                 // числовой элемент шире — поднимаем тип массива по рангу (int→float→double)
                 if (elemT.IsNumeric && t.IsNumeric && t.NumericRank > elemT.NumericRank) elemT = t;
                 else if (!elemT.AcceptsValueOf(t) && !t.IsError)
-                    _diag.Error("E0211", $"Элемент #{i + 1} имеет тип {t}, ожидался {elemT}.", e.Pos);
+                    _diag.Error("E0211", T($"Элемент #{i + 1} имеет тип {t}, ожидался {elemT}.",
+                        $"Element #{i + 1} has type {t}, expected {elemT}."), e.Pos);
             }
 
             // числовой элементный тип — подтягиваем более узкие числовые элементы вверх
@@ -2810,11 +3033,11 @@ namespace Dsl.Semantics
             if (u.Op == TokenKind.Minus)
             {
                 if (!t.IsNumeric && !t.IsError)
-                    _diag.Error("E0212", $"Унарный минус неприменим к {t}.", u.Pos);
+                    _diag.Error("E0212", T($"Унарный минус неприменим к {t}.", $"Unary minus is not applicable to {t}."), u.Pos);
                 return u.Type = t;
             }
             // Not
-            RequireBool(t, u.Pos, "операнд '!'");
+            RequireBool(t, u.Pos, T("операнд '!'", "operand of '!'"));
             return u.Type = TypeRef.Bool;
         }
 
@@ -2827,8 +3050,8 @@ namespace Dsl.Semantics
             {
                 case TokenKind.AndAnd:
                 case TokenKind.OrOr:
-                    RequireBool(lt, b.Left.Pos, "операнд логического оператора");
-                    RequireBool(rt, b.Right.Pos, "операнд логического оператора");
+                    RequireBool(lt, b.Left.Pos, T("операнд логического оператора", "operand of a logical operator"));
+                    RequireBool(rt, b.Right.Pos, T("операнд логического оператора", "operand of a logical operator"));
                     return b.Type = TypeRef.Bool;
 
                 case TokenKind.EqEq:
@@ -2840,7 +3063,8 @@ namespace Dsl.Semantics
                         // содержимому структуры оказались бы неравны — это ловушка,
                         // которую честнее закрыть, чем объяснять
                         _diag.Error("E0237",
-                            "Структуры нельзя сравнивать: сравните нужные поля явно.", b.Pos);
+                            T("Структуры нельзя сравнивать: сравните нужные поля явно.",
+                                "Structs cannot be compared: compare the needed fields explicitly."), b.Pos);
                         return b.Type = TypeRef.Bool;
                     }
                     bool ok =
@@ -2850,7 +3074,7 @@ namespace Dsl.Semantics
                         (rt.Kind == TypeKind.Nil && lt.IsRefLike) ||
                         lt.IsError || rt.IsError;
                     if (!ok)
-                        _diag.Error("E0213", $"Нельзя сравнивать {lt} и {rt}.", b.Pos);
+                        _diag.Error("E0213", T($"Нельзя сравнивать {lt} и {rt}.", $"Cannot compare {lt} and {rt}."), b.Pos);
                     return b.Type = TypeRef.Bool;
                 }
 
@@ -2859,7 +3083,8 @@ namespace Dsl.Semantics
                 case TokenKind.Gt:
                 case TokenKind.Ge:
                     if ((!lt.IsNumeric || !rt.IsNumeric) && !lt.IsError && !rt.IsError)
-                        _diag.Error("E0175", $"Сравнение порядка применимо к числам, получены {lt} и {rt}.", b.Pos);
+                        _diag.Error("E0175", T($"Сравнение порядка применимо к числам, получены {lt} и {rt}.",
+                            $"Ordering comparison applies to numbers, got {lt} and {rt}."), b.Pos);
                     return b.Type = TypeRef.Bool;
 
                 case TokenKind.Plus:
@@ -2878,7 +3103,7 @@ namespace Dsl.Semantics
                 {
                     if ((!lt.IsNumeric || !rt.IsNumeric) && !lt.IsError && !rt.IsError)
                     {
-                        _diag.Error("E0214", $"Арифметика неприменима к {lt} и {rt}.", b.Pos);
+                        _diag.Error("E0214", T($"Арифметика неприменима к {lt} и {rt}.", $"Arithmetic is not applicable to {lt} and {rt}."), b.Pos);
                         return b.Type = TypeRef.Error;
                     }
                     // результат — по наибольшему числовому рангу; операнды ниже расширяются
@@ -2891,7 +3116,7 @@ namespace Dsl.Semantics
 
                 case TokenKind.Percent:
                     if ((lt.Kind != TypeKind.Int || rt.Kind != TypeKind.Int) && !lt.IsError && !rt.IsError)
-                        _diag.Error("E0215", "Оператор % определён для int % int.", b.Pos);
+                        _diag.Error("E0215", T("Оператор % определён для int % int.", "Operator % is defined for int % int."), b.Pos);
                     return b.Type = TypeRef.Int;
 
                 default:
@@ -2904,7 +3129,8 @@ namespace Dsl.Semantics
             bool ok = t.Kind == TypeKind.Str || t.Kind == TypeKind.Int || t.Kind == TypeKind.Float
                       || t.Kind == TypeKind.Double || t.Kind == TypeKind.Bool || t.Kind == TypeKind.Enum || t.IsError;
             if (!ok)
-                _diag.Error("E0216", $"Значение типа {t} нельзя вклеить в строку.", pos);
+                _diag.Error("E0216", T($"Значение типа {t} нельзя вклеить в строку.",
+                    $"A value of type {t} cannot be concatenated into a string."), pos);
         }
 
         // ===== вызовы =====
@@ -2967,7 +3193,8 @@ namespace Dsl.Semantics
                 if (loc == null && own.Name == "base")
                     return BindBaseCall(call, own);
 
-                _diag.Error("E0180", $"Функция '{own.Name}' не найдена в текущем классе/триггере.", own.Pos);
+                _diag.Error("E0180", T($"Функция '{own.Name}' не найдена в текущем классе/триггере.",
+                    $"Function '{own.Name}' not found in the current class/trigger."), own.Pos);
                 CheckArgsLoose(call);
                 return call.Type = TypeRef.Error;
             }
@@ -2988,8 +3215,10 @@ namespace Dsl.Semantics
                 {
                     string what = callNs + "." + me.Name;
                     _diag.Error("E0316",
-                        $"'{what}(...)': у пространства имён нет функций. Функции живут в классах — " +
-                        $"вызывайте {callNs}.Класс.{me.Name}(...).", me.Pos);
+                        T($"'{what}(...)': у пространства имён нет функций. Функции живут в классах — " +
+                        $"вызывайте {callNs}.Класс.{me.Name}(...).",
+                            $"'{what}(...)': a namespace has no functions. Functions live in classes — " +
+                            $"call {callNs}.Class.{me.Name}(...)."), me.Pos);
                     CheckArgsLoose(call);
                     return call.Type = TypeRef.Error;
                 }
@@ -3031,7 +3260,7 @@ namespace Dsl.Semantics
                 return BindBuiltinCall(call, me, tt);
             }
 
-            _diag.Error("E0181", "Это выражение нельзя вызвать.", call.Pos);
+            _diag.Error("E0181", T("Это выражение нельзя вызвать.", "This expression cannot be called."), call.Pos);
             CheckArgsLoose(call);
             return call.Type = TypeRef.Error;
         }
@@ -3089,7 +3318,8 @@ namespace Dsl.Semantics
             if (api.TryGetMethod(me.Name, out _))
             {
                 _diag.Error("E0162",
-                    $"'{apiName}.{me.Name}' — метод; его можно только вызвать.", me.Pos);
+                    T($"'{apiName}.{me.Name}' — метод; его можно только вызвать.",
+                        $"'{apiName}.{me.Name}' is a method; it can only be called."), me.Pos);
                 return me.Type = TypeRef.Error;
             }
 
@@ -3099,21 +3329,27 @@ namespace Dsl.Semantics
             if (_host.TryGetApi(deeper, out _))
             {
                 _diag.Error("E0227",
-                    $"'{deeper}' — API-класс: у него можно вызвать метод или прочитать константу.", me.Pos);
+                    T($"'{deeper}' — API-класс: у него можно вызвать метод или прочитать константу.",
+                        $"'{deeper}' is an API class: you can call its methods or read its constants."), me.Pos);
                 return me.Type = TypeRef.Error;
             }
             if (_host.IsApiNamespace(deeper))
             {
                 _diag.Error("E0227",
-                    $"'{deeper}' — пространство имён API, а не значение. Допишите имя API и член.", me.Pos);
+                    T($"'{deeper}' — пространство имён API, а не значение. Допишите имя API и член.",
+                        $"'{deeper}' is an API namespace, not a value. Add the API name and the member."), me.Pos);
                 return me.Type = TypeRef.Error;
             }
 
             _diag.Error("E0238",
-                api.Consts.Count == 0
+                T(api.Consts.Count == 0
                     ? $"У API '{apiName}' нет константы '{me.Name}' — у него их не объявлено вовсе. " +
                       "Если это метод, его надо вызвать со скобками."
                     : $"У API '{apiName}' нет константы '{me.Name}'.",
+                    api.Consts.Count == 0
+                    ? $"API '{apiName}' has no constant '{me.Name}' — it declares no constants at all. " +
+                    "If it is a method, call it with parentheses."
+                    : $"API '{apiName}' has no constant '{me.Name}'."),
                 me.Pos);
             return me.Type = TypeRef.Error;
         }
@@ -3126,7 +3362,7 @@ namespace Dsl.Semantics
                 {
                     if (!EngineSigs.TryGetValue(me.Name, out var sig))
                     {
-                        _diag.Error("E0182", $"У Engine нет метода '{me.Name}'.", me.Pos);
+                        _diag.Error("E0182", T($"У Engine нет метода '{me.Name}'.", $"Engine has no method '{me.Name}'."), me.Pos);
                         CheckArgsLoose(call);
                         return call.Type = TypeRef.Error;
                     }
@@ -3143,9 +3379,12 @@ namespace Dsl.Semantics
                         // составное имя: разводим «нет такого API» и «нет метода» —
                         // иначе опечатка в середине пути читалась бы как пропавший метод
                         _diag.Error("E0228",
-                            _host.IsApiNamespace(targetName)
+                            T(_host.IsApiNamespace(targetName)
                                 ? $"'{targetName}' — пространство имён API, а не API. Уточните имя."
                                 : $"Игра не объявляет API '{targetName}'.",
+                                _host.IsApiNamespace(targetName)
+                                ? $"'{targetName}' is an API namespace, not an API. Specify the name."
+                                : $"The game does not declare the API '{targetName}'."),
                             me.Pos);
                         CheckArgsLoose(call);
                         return call.Type = TypeRef.Error;
@@ -3157,12 +3396,13 @@ namespace Dsl.Semantics
                         if (api.TryGetConst(me.Name, out _))
                         {
                             _diag.Error("E0239",
-                                $"'{targetName}.{me.Name}' — константа, а не метод: читайте её без скобок.",
+                                T($"'{targetName}.{me.Name}' — константа, а не метод: читайте её без скобок.",
+                                    $"'{targetName}.{me.Name}' is a constant, not a method: read it without parentheses."),
                                 me.Pos);
                             CheckArgsLoose(call);
                             return call.Type = TypeRef.Error;
                         }
-                        _diag.Error("E0183", $"У '{targetName}' нет метода '{me.Name}'.", me.Pos);
+                        _diag.Error("E0183", T($"У '{targetName}' нет метода '{me.Name}'.", $"'{targetName}' has no method '{me.Name}'."), me.Pos);
                         CheckArgsLoose(call);
                         return call.Type = TypeRef.Error;
                     }
@@ -3174,7 +3414,8 @@ namespace Dsl.Semantics
                     var cs = (ClassSymbol)sym;
                     if (!cs.Funcs.TryGetValue(me.Name, out var fn))
                     {
-                        _diag.Error("E0184", $"В классе '{cs.Name}' нет функции '{me.Name}'.", me.Pos);
+                        _diag.Error("E0184", T($"В классе '{cs.Name}' нет функции '{me.Name}'.",
+                            $"Class '{cs.Name}' has no function '{me.Name}'."), me.Pos);
                         CheckArgsLoose(call);
                         return call.Type = TypeRef.Error;
                     }
@@ -3182,17 +3423,19 @@ namespace Dsl.Semantics
                 }
 
                 case IdentKind.TriggerRef:
-                    _diag.Error("E0185", "Функции триггера приватны — вызвать их снаружи нельзя.", me.Pos);
+                    _diag.Error("E0185", T("Функции триггера приватны — вызвать их снаружи нельзя.",
+                        "Trigger functions are private — they cannot be called from outside."), me.Pos);
                     CheckArgsLoose(call);
                     return call.Type = TypeRef.Error;
 
                 case IdentKind.ListenerRef:
-                    _diag.Error("E0179", "Функции listener приватны — вызвать их снаружи нельзя.", me.Pos);
+                    _diag.Error("E0179", T("Функции listener приватны — вызвать их снаружи нельзя.",
+                        "Listener functions are private — they cannot be called from outside."), me.Pos);
                     CheckArgsLoose(call);
                     return call.Type = TypeRef.Error;
 
                 default:
-                    _diag.Error("E0186", $"'{targetName}.{me.Name}' нельзя вызвать.", me.Pos);
+                    _diag.Error("E0186", T($"'{targetName}.{me.Name}' нельзя вызвать.", $"'{targetName}.{me.Name}' cannot be called."), me.Pos);
                     CheckArgsLoose(call);
                     return call.Type = TypeRef.Error;
             }
@@ -3211,14 +3454,15 @@ namespace Dsl.Semantics
         private TypeRef BindScriptCall(CallExpr call, FuncMember fn)
         {
             if (call.Args.Count != fn.Params.Count)
-                _diag.Error("E0187", $"'{fn.Name}' принимает {fn.Params.Count} аргументов, передано {call.Args.Count}.", call.Pos);
+                _diag.Error("E0187", T($"'{fn.Name}' принимает {fn.Params.Count} аргументов, передано {call.Args.Count}.",
+                    $"'{fn.Name}' takes {fn.Params.Count} arguments, {call.Args.Count} given."), call.Pos);
 
             int n = System.Math.Min(call.Args.Count, fn.Params.Count);
             for (int i = 0; i < n; i++)
             {
                 var a = call.Args[i];
                 var t = CheckExpr(ref a);
-                CoerceAssign(ref a, fn.Params[i].Type, t, a.Pos, $"аргумент #{i + 1}");
+                CoerceAssign(ref a, fn.Params[i].Type, t, a.Pos, T($"аргумент #{i + 1}", $"argument #{i + 1}"));
                 call.Args[i] = a;
             }
             for (int i = n; i < call.Args.Count; i++) { var a = call.Args[i]; CheckExpr(ref a); call.Args[i] = a; }
@@ -3243,19 +3487,24 @@ namespace Dsl.Semantics
             if (_inInitializer || fn == null || fn.Chain == null || fn.Synth != null)
             {
                 code = "E0245";
-                fail = "base() вызывает предыдущую версию члена и доступен только в теле event, func или action.";
+                fail = T("base() вызывает предыдущую версию члена и доступен только в теле event, func или action.",
+                    "base() calls the previous version of a member and is available only in the body of event, func or action.");
             }
             else if (fn.Mode == MergeMode.Before || fn.Mode == MergeMode.After)
             {
                 code = "E0243";
-                fail = $"base() доступен только в основной версии, а это слой {ModeWord(fn.Mode)}: " +
-                       "ядро и так выполнится — до или после слоя.";
+                fail = T($"base() доступен только в основной версии, а это слой {ModeWord(fn.Mode)}: " +
+                       "ядро и так выполнится — до или после слоя.",
+                    $"base() is available only in the main version, and this is a {ModeWord(fn.Mode)} layer: " +
+                    "the core runs anyway — before or after the layer.");
             }
             else if (fn.Mode == MergeMode.Replace)
             {
                 code = "E0244";
-                fail = "replace стирает всё, что объявлено раньше, — base() звать некого. " +
-                       "Нужна предыдущая версия — объявите без replace.";
+                fail = T("replace стирает всё, что объявлено раньше, — base() звать некого. " +
+                       "Нужна предыдущая версия — объявите без replace.",
+                    "replace erases everything declared earlier — there is no base() to call. " +
+                    "If you need the previous version, declare it without replace.");
             }
 
             FuncMember first = null;
@@ -3269,7 +3518,8 @@ namespace Dsl.Semantics
                 if (first == null)
                 {
                     code = "E0245";
-                    fail = $"У '{fn.Name}' нет более ранней версии — base() звать некого.";
+                    fail = T($"У '{fn.Name}' нет более ранней версии — base() звать некого.",
+                        $"'{fn.Name}' has no earlier version — there is no base() to call.");
                 }
             }
 
@@ -3282,13 +3532,14 @@ namespace Dsl.Semantics
 
             // аргументы — по сигнатуре СВОЕЙ версии: base зовёт ту же функцию
             if (call.Args.Count != fn.Params.Count)
-                _diag.Error("E0187", $"base() для '{fn.Name}' принимает {fn.Params.Count} аргументов, передано {call.Args.Count}.", call.Pos);
+                _diag.Error("E0187", T($"base() для '{fn.Name}' принимает {fn.Params.Count} аргументов, передано {call.Args.Count}.",
+                    $"base() for '{fn.Name}' takes {fn.Params.Count} arguments, {call.Args.Count} given."), call.Pos);
             int n = System.Math.Min(call.Args.Count, fn.Params.Count);
             for (int i = 0; i < n; i++)
             {
                 var a = call.Args[i];
                 var t = CheckExpr(ref a);
-                CoerceAssign(ref a, fn.Params[i].Type, t, a.Pos, $"аргумент #{i + 1}");
+                CoerceAssign(ref a, fn.Params[i].Type, t, a.Pos, T($"аргумент #{i + 1}", $"argument #{i + 1}"));
                 call.Args[i] = a;
             }
             for (int i = n; i < call.Args.Count; i++) { var a = call.Args[i]; CheckExpr(ref a); call.Args[i] = a; }
@@ -3306,7 +3557,8 @@ namespace Dsl.Semantics
                     // расхождение этих версий уже названо сборкой цепочки — не дублируем
                     if (!_sigReported.Contains(fn) && !_sigReported.Contains(c))
                         _diag.Error("E0242",
-                            $"base() из '{SignatureText(fn)}' ведёт в '{SignatureText(c)}' — сигнатуры не совпадают.",
+                            T($"base() из '{SignatureText(fn)}' ведёт в '{SignatureText(c)}' — сигнатуры не совпадают.",
+                                $"base() from '{SignatureText(fn)}' leads to '{SignatureText(c)}' — the signatures do not match."),
                             callee.Pos);
                     break;
                 }
@@ -3341,14 +3593,15 @@ namespace Dsl.Semantics
         private TypeRef BindHostCall(CallExpr call, HostMethodInfo m, CallKind kind)
         {
             if (call.Args.Count != m.Params.Length)
-                _diag.Error("E0188", $"'{m.Name}' принимает {m.Params.Length} аргументов, передано {call.Args.Count}.", call.Pos);
+                _diag.Error("E0188", T($"'{m.Name}' принимает {m.Params.Length} аргументов, передано {call.Args.Count}.",
+                    $"'{m.Name}' takes {m.Params.Length} arguments, {call.Args.Count} given."), call.Pos);
 
             int n = System.Math.Min(call.Args.Count, m.Params.Length);
             for (int i = 0; i < n; i++)
             {
                 var a = call.Args[i];
                 var t = CheckExpr(ref a);
-                CoerceAssign(ref a, m.Params[i], t, a.Pos, $"аргумент #{i + 1}");
+                CoerceAssign(ref a, m.Params[i], t, a.Pos, T($"аргумент #{i + 1}", $"argument #{i + 1}"));
                 call.Args[i] = a;
             }
             for (int i = n; i < call.Args.Count; i++) { var a = call.Args[i]; CheckExpr(ref a); call.Args[i] = a; }
@@ -3411,9 +3664,11 @@ namespace Dsl.Semantics
             if (!MathSigs.TryGetValue(me.Name, out var sig))
             {
                 if (me.Name == "PI")
-                    _diag.Error("E0239", "'Math.PI' — константа, а не метод: читайте её без скобок.", me.Pos);
+                    _diag.Error("E0239", T("'Math.PI' — константа, а не метод: читайте её без скобок.",
+                        "'Math.PI' is a constant, not a method: read it without parentheses."), me.Pos);
                 else
-                    _diag.Error("E0249", $"У Math нет '{me.Name}'. Есть: {MathMemberList()}.", me.Pos);
+                    _diag.Error("E0249", T($"У Math нет '{me.Name}'. Есть: {MathMemberList()}.",
+                        $"Math has no '{me.Name}'. Available: {MathMemberList()}."), me.Pos);
                 CheckArgsLoose(call);
                 return call.Type = TypeRef.Error;
             }
@@ -3421,7 +3676,8 @@ namespace Dsl.Semantics
             if (call.Args.Count != sig.Argc)
             {
                 _diag.Error("E0250",
-                    $"Math.{me.Name} принимает {sig.Argc} аргумент(а/ов), передано {call.Args.Count}.", call.Pos);
+                    T($"Math.{me.Name} принимает {sig.Argc} аргумент(а/ов), передано {call.Args.Count}.",
+                        $"Math.{me.Name} takes {sig.Argc} argument(s), {call.Args.Count} given."), call.Pos);
                 CheckArgsLoose(call);
                 return call.Type = TypeRef.Error;
             }
@@ -3439,7 +3695,8 @@ namespace Dsl.Semantics
                 if (t.IsError) { bad = true; continue; }
                 if (!t.IsNumeric)
                 {
-                    _diag.Error("E0251", $"Math.{me.Name}: аргумент #{i + 1} должен быть числом, получен {t}.", a.Pos);
+                    _diag.Error("E0251", T($"Math.{me.Name}: аргумент #{i + 1} должен быть числом, получен {t}.",
+                        $"Math.{me.Name}: argument #{i + 1} must be a number, got {t}."), a.Pos);
                     bad = true;
                     continue;
                 }
@@ -3463,8 +3720,26 @@ namespace Dsl.Semantics
 
         private TypeRef BindEngineCall(CallExpr call, EngineSig sig, SourcePos pos)
         {
+            // состояние самого движка (флаги триггеров и модулей, подписки) откат хоста
+            // не вернёт — в модуле без состояния такие операции запрещены; чтение можно
+            if (_module != null && _module.Stateless)
+            {
+                switch (sig.Op)
+                {
+                    case EngineOp.EnableTrigger: case EngineOp.DisableTrigger:
+                    case EngineOp.EnableModule: case EngineOp.DisableModule:
+                    case EngineOp.Attach: case EngineOp.Detach: case EngineOp.DetachAll:
+                        _diag.Error("E0254",
+                            T($"Engine.{sig.Op} меняет состояние движка — запрещено в модуле без состояния " +
+                            $"'{_module.Name}' (\"state\": \"none\"). Подписки и флаги ведёт хост.",
+                                $"Engine.{sig.Op} changes engine state — forbidden in the stateless module " +
+                                $"'{_module.Name}' (\"state\": \"none\"). Subscriptions and flags are managed by the host."), pos);
+                        break;
+                }
+            }
             if (call.Args.Count != sig.Args.Length)
-                _diag.Error("E0189", $"Метод Engine принимает {sig.Args.Length} аргументов, передано {call.Args.Count}.", pos);
+                _diag.Error("E0189", T($"Метод Engine принимает {sig.Args.Length} аргументов, передано {call.Args.Count}.",
+                    $"The Engine method takes {sig.Args.Length} arguments, {call.Args.Count} given."), pos);
 
             int n = System.Math.Min(call.Args.Count, sig.Args.Length);
             for (int i = 0; i < n; i++)
@@ -3479,28 +3754,28 @@ namespace Dsl.Semantics
                         bool ok = (a is IdentExpr ai && ai.IdKind == IdentKind.TriggerRef)
                                || (a is QualifiedExpr aq && aq.IdKind == IdentKind.TriggerRef);
                         if (!ok)
-                            _diag.Error("E0190", "Здесь ожидается имя триггера.", a.Pos);
+                            _diag.Error("E0190", T("Здесь ожидается имя триггера.", "A trigger name is expected here."), a.Pos);
                         break;
                     }
                     case EngineArg.FiberArg:
                     {
                         var t = CheckExpr(ref a);
                         if (t.Kind != TypeKind.Fiber && !t.IsError)
-                            _diag.Error("E0191", $"Ожидался Fiber, получен {t}.", a.Pos);
+                            _diag.Error("E0191", T($"Ожидался Fiber, получен {t}.", $"Expected Fiber, got {t}."), a.Pos);
                         break;
                     }
                     case EngineArg.StrArg:
                     {
                         var t = CheckExpr(ref a);
                         if (t.Kind != TypeKind.Str && !t.IsError)
-                            _diag.Error("E0192", $"Ожидалась строка, получен {t}.", a.Pos);
+                            _diag.Error("E0192", T($"Ожидалась строка, получен {t}.", $"Expected a string, got {t}."), a.Pos);
                         break;
                     }
                     case EngineArg.EntityAny:
                     {
                         var t = CheckExpr(ref a);
                         if (t.Kind != TypeKind.Entity && t.Kind != TypeKind.Nil && !t.IsError)
-                            _diag.Error("E0193", $"Ожидалась сущность, получен {t}.", a.Pos);
+                            _diag.Error("E0193", T($"Ожидалась сущность, получен {t}.", $"Expected an entity, got {t}."), a.Pos);
                         break;
                     }
                     case EngineArg.ListenerRef:
@@ -3509,14 +3784,14 @@ namespace Dsl.Semantics
                         bool okL = (a is IdentExpr ali && ali.IdKind == IdentKind.ListenerRef)
                                 || (a is QualifiedExpr alq && alq.IdKind == IdentKind.ListenerRef);
                         if (!okL)
-                            _diag.Error("E0196", "Здесь ожидается имя listener.", a.Pos);
+                            _diag.Error("E0196", T("Здесь ожидается имя listener.", "A listener name is expected here."), a.Pos);
                         break;
                     }
                     case EngineArg.SubArg:
                     {
                         var t = CheckExpr(ref a);
                         if (t.Kind != TypeKind.Sub && t.Kind != TypeKind.Nil && !t.IsError)
-                            _diag.Error("E0197", $"Ожидалась Subscription, получен {t}.", a.Pos);
+                            _diag.Error("E0197", T($"Ожидалась Subscription, получен {t}.", $"Expected Subscription, got {t}."), a.Pos);
                         break;
                     }
                 }
@@ -3548,7 +3823,8 @@ namespace Dsl.Semantics
                     // соседняя ошибка: «нет такого метода» увело бы искать метод,
                     // которого не существует, вместо лишних скобок
                     _diag.Error("E0240",
-                        $"'{hostCls.Name}.{me.Name}' — свойство, а не метод: читайте его без скобок.",
+                        T($"'{hostCls.Name}.{me.Name}' — свойство, а не метод: читайте его без скобок.",
+                            $"'{hostCls.Name}.{me.Name}' is a property, not a method: read it without parentheses."),
                         me.Pos);
                     CheckArgsLoose(call);
                     return call.Type = TypeRef.Error;
@@ -3562,20 +3838,21 @@ namespace Dsl.Semantics
             else
             {
                 if (!targetT.IsError)
-                    _diag.Error("E0194", $"У значения типа {targetT} нет метода '{me.Name}'.", me.Pos);
+                    _diag.Error("E0194", T($"У значения типа {targetT} нет метода '{me.Name}'.",
+                        $"A value of type {targetT} has no method '{me.Name}'."), me.Pos);
                 CheckArgsLoose(call);
                 return call.Type = TypeRef.Error;
             }
 
             int expected = argT == null ? 0 : 1;
             if (call.Args.Count != expected)
-                _diag.Error("E0195", $"'{me.Name}' принимает {expected} аргументов.", call.Pos);
+                _diag.Error("E0195", T($"'{me.Name}' принимает {expected} аргументов.", $"'{me.Name}' takes {expected} arguments."), call.Pos);
 
             if (argT != null && call.Args.Count >= 1)
             {
                 var a = call.Args[0];
                 var t = CheckExpr(ref a);
-                CoerceAssign(ref a, argT, t, a.Pos, "аргумент");
+                CoerceAssign(ref a, argT, t, a.Pos, T("аргумент", "argument"));
                 call.Args[0] = a;
             }
 

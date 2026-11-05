@@ -101,7 +101,8 @@ namespace Dsl.Ide
             _scroll.Clear();
             if (snapshot == null || snapshot.Modules.Count == 0)
             {
-                var empty = new Label(ws?.Root == null ? "Модули не загружены." : "Модулей не найдено в\n" + ws.Root);
+                var empty = new Label(IdeText.T(ws?.Root == null ? "Модули не загружены." : "Модулей не найдено в\n" + ws.Root,
+                    ws?.Root == null ? "Modules are not loaded." : "No modules found in\n" + ws.Root));
                 empty.AddToClassList("sal-empty");
                 _scroll.Add(empty);
             }
@@ -127,7 +128,7 @@ namespace Dsl.Ide
                 }
                 if (canCreate)
                 {
-                    var add = new Button(() => NewFileRequested?.Invoke(module)) { text = "+", tooltip = "Новый файл в модуле" };
+                    var add = new Button(() => NewFileRequested?.Invoke(module)) { text = "+", tooltip = IdeText.T("Новый файл в модуле", "New file in the module") };
                     add.AddToClassList("sal-tree-add");
                     header.Add(add);
                 }
@@ -149,7 +150,7 @@ namespace Dsl.Ide
                 }
                 if (ws != null)
                     foreach (var key in ws.ListUnlistedFiles(module))
-                        _scroll.Add(FileRow(ws.DisplayNameOf(key) + "  (не в module.json)", key, key == activeKey, dim: true));
+                        _scroll.Add(FileRow(IdeText.T(ws.DisplayNameOf(key) + "  (не в module.json)", ws.DisplayNameOf(key) + "  (not in module.json)"), key, key == activeKey, dim: true));
             }
 
             // ошибки загрузки модулей — тут же, иначе «почему модуля нет» не понять
@@ -199,7 +200,7 @@ namespace Dsl.Ide
             _scroll.Clear();
             if (symbols == null || symbols.Decls.Count == 0)
             {
-                var empty = new Label("Нет деклараций.");
+                var empty = new Label(IdeText.T("Нет деклараций.", "No declarations."));
                 empty.AddToClassList("sal-empty");
                 _scroll.Add(empty);
                 return;

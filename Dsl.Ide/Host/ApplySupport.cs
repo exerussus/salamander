@@ -96,14 +96,17 @@ namespace Dsl.Ide
                 else if (d.Severity == Severity.Warning) warnings++;
             }
             if (r.Success)
-                log(IdeLogKind.Compile, $"Скрипты перезагружены: модулей {r.Program.Modules.Length}, " +
-                                        $"триггеров {r.Program.Triggers.Length}" + (warnings > 0 ? $", предупреждений {warnings}." : "."));
+                log(IdeLogKind.Compile, IdeText.T($"Скрипты перезагружены: модулей {r.Program.Modules.Length}, " +
+                                        $"триггеров {r.Program.Triggers.Length}" + (warnings > 0 ? $", предупреждений {warnings}." : "."),
+                    $"Scripts reloaded: modules {r.Program.Modules.Length}, " +
+                    $"triggers {r.Program.Triggers.Length}" + (warnings > 0 ? $", warnings {warnings}." : ".")));
             else
-                log(IdeLogKind.Error, $"Перезагрузка не удалась: ошибок {errors} — работает предыдущая версия.");
+                log(IdeLogKind.Error, IdeText.T($"Перезагрузка не удалась: ошибок {errors} — работает предыдущая версия.",
+                    $"Reload failed: {errors} errors — the previous version keeps running."));
             foreach (var ex in r.Excluded)
-                log(IdeLogKind.Error, $"Модуль «{ex.Name}» исключён: {ex.Reason}");
+                log(IdeLogKind.Error, IdeText.T($"Модуль «{ex.Name}» исключён: {ex.Reason}", $"Module «{ex.Name}» excluded: {ex.Reason}"));
             foreach (var ex in r.ExcludedFiles)
-                log(IdeLogKind.Error, $"Файл «{ex.File}» исключён: {ex.Reason}");
+                log(IdeLogKind.Error, IdeText.T($"Файл «{ex.File}» исключён: {ex.Reason}", $"File «{ex.File}» excluded: {ex.Reason}"));
             foreach (var d in r.Diagnostics)
                 if (d.Severity == Severity.Error)
                     log(IdeLogKind.Error, d.ToString());

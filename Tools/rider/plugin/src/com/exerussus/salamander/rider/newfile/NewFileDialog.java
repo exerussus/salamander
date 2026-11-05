@@ -85,8 +85,6 @@ final class NewFileDialog extends DialogWrapper {
                 ApiModel.Event e = events.get(i);
                 JCheckBox box = new JCheckBox(signature(e));
                 box.setToolTipText(tip(e.summary()));
-                // архетипу без событий не собраться — первое отмечаем сразу
-                if (i == 0 && template.kind == Template.Kind.ARCHETYPE && template.needsEvent()) box.setSelected(true);
                 box.setAlignmentX(Component.LEFT_ALIGNMENT);
                 eventBoxes.add(box);
                 list.add(box);
@@ -112,8 +110,6 @@ final class NewFileDialog extends DialogWrapper {
         if (n.isEmpty()) return new ValidationInfo("Введите имя", name);
         if (!IDENT.matcher(n).matches()) return new ValidationInfo("Только латиница, цифры и _; с цифры начинать нельзя", name);
         if (dir.findChild(n + ".sal") != null) return new ValidationInfo("Файл " + n + ".sal уже есть", name);
-        if (template.needsEvent() && selectedEvents().isEmpty())
-            return new ValidationInfo("Отметьте хотя бы одно событие: без него " + template.title() + " не соберётся");
         return null;
     }
 

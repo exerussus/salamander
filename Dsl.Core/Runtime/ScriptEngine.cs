@@ -1,4 +1,5 @@
 using System;
+using Dsl.Text;
 using System.Collections.Generic;
 using Dsl.Codegen;
 using Dsl.Semantics;
@@ -207,8 +208,17 @@ namespace Dsl.Runtime
         public double Time => _time;
         public bool IsLoaded => _prog != null;
 
+        /// <summary>
+        /// Язык сообщений движка: OnError/OnWarn, тексты исключений, трейсы.
+        /// Начальное значение — <see cref="HostRegistry.Language"/>; можно менять в любой момент.
+        /// </summary>
+        public Language Language { get; set; }
+
+        internal string T(string ru, string en) => Loc.T(Language, ru, en);
+
         public ScriptEngine(HostRegistry host)
         {
+            Language = host?.Language ?? Language.Ru;
             Host = host;
             Strings = new StringTable();
             _vm = new Vm(this);
@@ -242,6 +252,14 @@ namespace Dsl.Runtime
             _vm.Statics = _statics;
             _vm.LitIds = _litIds;
 
+            // режим модулей — в плоский массив один раз: проверка стоит на создании
+            // каждого обработчика, а цепочка _prog?.ModuleSynchronous + границы на
+            // горячем пути заметна (−3…5 % на пустом обработчике)
+            _moduleSync = new bool[prog.Modules.Length];
+            var syncFlags = prog.ModuleSynchronous;
+            if (syncFlags != null)
+                Array.Copy(syncFlags, _moduleSync, Math.Min(syncFlags.Length, _moduleSync.Length));
+
             _triggerEnabled = new bool[prog.Triggers.Length];
             for (int i = 0; i < prog.Triggers.Length; i++)
                 _triggerEnabled[i] = !prog.Triggers[i].StartDisabled;
@@ -253,6 +271,8 @@ namespace Dsl.Runtime
             // Raise до первого Tick обязан исполняться немедленно (контракт событий):
             // выдаём полный бюджет сразу, первый Tick пополнит его как обычно
             _tickInstrLeft = TickInstructionBudget;
+            _raiseDeferWarned = false;
+            _tickedSinceLoad = false;
 
             // подписки принадлежат программе — при (пере)загрузке всё сбрасывается жёстко
             _subsByEntity.Clear();
@@ -294,10 +314,13 @@ namespace Dsl.Runtime
             var r = _vm.Run(f, InitInstructionLimit);
             _current = null;
             if (r == RunResult.Waited || r == RunResult.Yielded)
-                OnError?.Invoke("<init>: инициализаторы полей не должны ждать (wait) — инициализация прервана.");
+                OnError?.Invoke(T("<init>: инициализаторы полей не должны ждать (wait) — инициализация прервана.",
+                    "<init>: field initializers must not wait — initialization aborted."));
             else if (r == RunResult.OutOfBudget)
-                OnError?.Invoke($"<init>: инициализация статических полей не уложилась в {InitInstructionLimit} " +
-                                "инструкций и прервана — вероятно, инициализатор вызывает зацикленную функцию.");
+                OnError?.Invoke(T($"<init>: инициализация статических полей не уложилась в {InitInstructionLimit} " +
+                                "инструкций и прервана — вероятно, инициализатор вызывает зацикленную функцию.",
+                    $"<init>: static field initialization did not fit into {InitInstructionLimit} " +
+                    "instructions and was aborted — the initializer probably calls a looping function."));
             _fibers.Return(f);
         }
 
@@ -337,9 +360,12 @@ namespace Dsl.Runtime
             // ошибка хоста; тик отрабатывает с нулевым шагом, время не портится.
             if (float.IsNaN(dt) || float.IsInfinity(dt) || dt < 0f)
             {
-                OnWarn?.Invoke("Tick: недопустимый шаг времени " +
+                OnWarn?.Invoke(T("Tick: недопустимый шаг времени " +
                                dt.ToString(System.Globalization.CultureInfo.InvariantCulture) +
-                               " — тик выполнен с dt = 0.");
+                               " — тик выполнен с dt = 0.",
+                    "Tick: invalid time step " +
+                    dt.ToString(System.Globalization.CultureInfo.InvariantCulture) +
+                    " — the tick ran with dt = 0."));
                 dt = 0f;
             }
             _time += dt;
@@ -347,6 +373,8 @@ namespace Dsl.Runtime
 
             // новый кадр — новый бюджет и обнулённые накопители
             _tickInstrLeft = TickInstructionBudget;
+            _raiseDeferWarned = false;
+            _tickedSinceLoad = true;
             _tick = default;
             if (EnableProfiling)
                 for (int i = 0; i < _trigStats.Length; i++) _trigStats[i].InstructionsThisTick = 0;
@@ -431,6 +459,34 @@ namespace Dsl.Runtime
 
         public int ResolveArchetype(string kind, string id) =>
             _archKindByName.TryGetValue(kind, out int k) ? ResolveArchetype(k, id) : -1;
+
+        // ----- для Dsl.Hosting.ArchetypeBaking (запекание без строковых ключей на каждое поле) -----
+
+        internal int ArchKindIndex(string kind) =>
+            _prog != null && kind != null && _archKindByName.TryGetValue(kind, out int k) ? k : -1;
+
+        internal string[] ArchIds(int kindId) => _prog.ArchetypeKinds[kindId].Ids;
+
+        /// <summary>Поле блока по (вид, индекс сущности): значение и readonly ли слот.</summary>
+        internal bool TryReadArchField(int kindId, int arch, string field, out Variant value, out bool readOnly)
+        {
+            value = Variant.Nil;
+            readOnly = false;
+            if (_prog == null || (uint)kindId >= (uint)_archConsts.Length) return false;
+            var row = _archConsts[kindId];
+            if ((uint)arch >= (uint)row.Length) return false;
+            var c = row[arch];
+            for (int i = 0; i < c.Names.Length; i++)
+            {
+                if (!string.Equals(c.Names[i], field, StringComparison.Ordinal)) continue;
+                int slot = c.Slots[i];
+                value = _statics[slot];
+                var ro = _prog.StaticReadOnly;
+                readOnly = ro != null && (uint)slot < (uint)ro.Length && ro[slot];
+                return true;
+            }
+            return false;
+        }
 
         /// <summary>Есть ли у сущности (вид, id) скриптовый код. Для валидации манифеста контента.</summary>
         public bool HasArchetype(string kind, string id) => ResolveArchetype(kind, id) >= 0;
@@ -619,14 +675,18 @@ namespace Dsl.Runtime
         {
             if (!TryOpenStruct(value, out var info, out _))
                 throw new InvalidOperationException(
-                    $"Значение не является структурой (ожидалась {typeof(T).Name}).");
+                    Loc.T(Language, $"Значение не является структурой (ожидалась {typeof(T).Name}).",
+                        $"The value is not a struct (expected {typeof(T).Name})."));
 
             var factory = Host.StructFactory(info.Id) as Func<StructValue, T>;
             if (factory == null)
                 throw new InvalidOperationException(
-                    $"У структуры '{info.Name}' нет фабрики C#-значения. Добавьте " +
+                    Loc.T(Language, $"У структуры '{info.Name}' нет фабрики C#-значения. Добавьте " +
                     $"host.Struct<{typeof(T).Name}>(...).Build(v => ...) — или читайте поля " +
-                    "по одному через engine.TryGetStructField.");
+                    "по одному через engine.TryGetStructField.",
+                        $"Struct '{info.Name}' has no C# value factory. Add " +
+                        $"host.Struct<{typeof(T).Name}>(...).Build(v => ...) — or read the fields " +
+                        "one by one via engine.TryGetStructField."));
 
             return factory(new StructValue(info, value, this));
         }
@@ -643,11 +703,13 @@ namespace Dsl.Runtime
         public Variant StructGet(Variant value, int fieldIndex)
         {
             if (!TryOpenStruct(value, out var info, out _))
-                throw new ScriptError("Значение не является структурой.");
+                throw new ScriptError(T("Значение не является структурой.", "The value is not a struct."));
             if ((uint)fieldIndex >= (uint)info.Fields.Count)
                 throw new ScriptError(
-                    $"У структуры '{info.Name}' нет поля с индексом {fieldIndex} " +
-                    $"(полей: {info.Fields.Count}).");
+                    T($"У структуры '{info.Name}' нет поля с индексом {fieldIndex} " +
+                    $"(полей: {info.Fields.Count}).",
+                        $"Struct '{info.Name}' has no field with index {fieldIndex} " +
+                        $"(fields: {info.Fields.Count})."));
             return Collections.Get(value, Variant.Int(fieldIndex + 1));
         }
 
@@ -659,10 +721,11 @@ namespace Dsl.Runtime
         public Variant StructNew(int structId, int fieldCount)
         {
             if (!Host.TryGetStructById(structId, out var info))
-                throw new ScriptError($"Структура #{structId} не зарегистрирована.");
+                throw new ScriptError(T($"Структура #{structId} не зарегистрирована.", $"Struct #{structId} is not registered."));
             if (fieldCount != info.Fields.Count)
                 throw new ScriptError(
-                    $"Структура '{info.Name}': полей {info.Fields.Count}, передано {fieldCount}.");
+                    T($"Структура '{info.Name}': полей {info.Fields.Count}, передано {fieldCount}.",
+                        $"Struct '{info.Name}': {info.Fields.Count} fields, {fieldCount} given."));
 
             var v = Collections.NewArray(fieldCount + 1);
             Collections.Set(v, Variant.Int(0), Variant.Int(structId));
@@ -673,11 +736,13 @@ namespace Dsl.Runtime
         public void StructSet(Variant value, int fieldIndex, Variant fieldValue)
         {
             if (!TryOpenStruct(value, out var info, out _))
-                throw new ScriptError("Значение не является структурой.");
+                throw new ScriptError(T("Значение не является структурой.", "The value is not a struct."));
             if ((uint)fieldIndex >= (uint)info.Fields.Count)
                 throw new ScriptError(
-                    $"У структуры '{info.Name}' нет поля с индексом {fieldIndex} " +
-                    $"(полей: {info.Fields.Count}).");
+                    T($"У структуры '{info.Name}' нет поля с индексом {fieldIndex} " +
+                    $"(полей: {info.Fields.Count}).",
+                        $"Struct '{info.Name}' has no field with index {fieldIndex} " +
+                        $"(fields: {info.Fields.Count})."));
             Collections.Set(value, Variant.Int(fieldIndex + 1), fieldValue);
         }
 
@@ -756,6 +821,7 @@ namespace Dsl.Runtime
             // до запуска (вложенные Raise из хостовых методов безопасны)
             int start = _pendingHandlers.Count;
             var f = CreateFiber(h.Func, _raiseArgs, 0, _raiseArgCount, -1);
+            f.Synchronous = IsModuleSync(h.ModuleIndex);
             _pendingHandlers.Add(FiberPool.Pack(f));
             _tick.HandlerInvocationsThisTick++;
             int end = _pendingHandlers.Count;
@@ -763,7 +829,7 @@ namespace Dsl.Runtime
             {
                 var pf = _fibers.ResolvePacked(_pendingHandlers[i]);
                 if (pf != null && pf.State == FiberState.Ready)
-                    RunFiberNow(pf);
+                    RunHandlerNow(pf);
             }
             _pendingHandlers.RemoveRange(start, end - start);
 
@@ -818,6 +884,7 @@ namespace Dsl.Runtime
                 if (!_moduleEnabled[trig.ModuleIndex]) continue;
 
                 var f = CreateFiber(h.FuncIndex, _raiseArgs, 0, _raiseArgCount, h.TriggerId);
+                f.Synchronous = IsModuleSync(trig.ModuleIndex);
                 _pendingHandlers.Add(FiberPool.Pack(f));
 
                 _tick.HandlerInvocationsThisTick++;
@@ -846,6 +913,7 @@ namespace Dsl.Runtime
                         if (func < 0) continue;
 
                         var lf = CreateAttachedFiber(func, att, _raiseArgs, 0, _raiseArgCount);
+                        lf.Synchronous = IsModuleSync(linfo.ModuleIndex);
                         _pendingHandlers.Add(FiberPool.Pack(lf));
                         _tick.HandlerInvocationsThisTick++;
                     }
@@ -860,7 +928,7 @@ namespace Dsl.Runtime
             {
                 var f = _fibers.ResolvePacked(_pendingHandlers[i]);
                 if (f != null && f.State == FiberState.Ready)
-                    RunFiberNow(f);
+                    RunHandlerNow(f);
             }
             _pendingHandlers.RemoveRange(start, end - start);
 
@@ -880,18 +948,49 @@ namespace Dsl.Runtime
                 if (f == null || f.State != FiberState.Ready) continue;
                 RunFiberNow(f);
             }
+            // хвост — холодный путь отдельным методом: DrainRunQueue зовётся из
+            // каждого Raise и должен оставаться маленьким
+            if (_runQueue.Count > 0) DrainAfterBudget();
+        }
+
+        /// <summary>
+        /// Бюджет кончился: кооперативные ждут следующего тика в прежнем порядке,
+        /// а синхронные (action Do синхронного триггера) бюджету не подчиняются —
+        /// их дорабатываем сейчас. Новые синхронные, поставленные по ходу,
+        /// подберёт следующий проход.
+        /// </summary>
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        private void DrainAfterBudget()
+        {
+            bool ranSync = true;
+            while (ranSync && _runQueue.Count > 0)
+            {
+                ranSync = false;
+                int n = _runQueue.Count;
+                for (int i = 0; i < n; i++)
+                {
+                    long packed = _runQueue.Dequeue();
+                    var f = _fibers.ResolvePacked(packed);
+                    if (f == null || f.State != FiberState.Ready) continue;
+                    if (f.Synchronous) { RunFiberNow(f); ranSync = true; }
+                    else _runQueue.Enqueue(packed);
+                }
+            }
             if (_runQueue.Count > 0) _tick.BudgetExhaustedThisTick = true;
         }
 
         private void RunFiberNow(Fiber f)
         {
-            // если бюджета тика уже нет — не запускаем, откладываем на след. тик
-            if (_tickInstrLeft <= 0)
+            // если бюджета тика уже нет — не запускаем, откладываем на след. тик.
+            // Синхронный файбер не откладывается: модуль обещает исполнение целиком
+            // в момент Raise, а отложенный обработчик хост увидел бы «потом»
+            if (_tickInstrLeft <= 0 && !f.Synchronous)
             {
                 RequeueReady(f);
                 _tick.FibersDeferredThisTick++;
                 return;
             }
+
 
             // рекурсия через хост: дальше — переполнение нативного стека и смерть процесса
             if (_runDepth >= MaxNestedRunDepth)
@@ -900,7 +999,10 @@ namespace Dsl.Runtime
                 return;
             }
 
+            // синхронному — полный слайс независимо от остатка тика: кооперативный
+            // переносится на следующий тик, синхронный разрезать нельзя
             int cap = (int)Math.Min(MaxInstructionsPerFiberRun, _tickInstrLeft);
+            if (f.Synchronous) cap = MaxInstructionsPerFiberRun;
 
             // Raise может прийти из хостового метода ПОСРЕДИ исполнения другого
             // файбера — сохраняем и восстанавливаем текущий, иначе Kill(self)
@@ -926,6 +1028,14 @@ namespace Dsl.Runtime
             if (f.KillRequested)
             {
                 _fibers.Return(f);
+                return;
+            }
+
+            // Completed — почти всегда: сравнение с ним первым, флаг файбера читается
+            // только на редком пути
+            if (r != RunResult.Completed && r != RunResult.Errored && f.Synchronous)
+            {
+                KillUnfinishedSync(f, r);
                 return;
             }
 
@@ -962,6 +1072,68 @@ namespace Dsl.Runtime
             }
         }
 
+        private bool[] _moduleSync = Array.Empty<bool>();
+
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        private bool IsModuleSync(int moduleIndex) =>
+            (uint)moduleIndex < (uint)_moduleSync.Length && _moduleSync[moduleIndex];
+
+        /// <summary>
+        /// Запуск обработчика из Raise. Отличие от RunFiberNow — только
+        /// предупреждение: кооперативный обработчик, отложенный бюджетом, не
+        /// исполнится «немедленно», как обещает Raise, а хост об этом иначе не узнает.
+        /// </summary>
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        private void RunHandlerNow(Fiber f)
+        {
+            if (_tickInstrLeft <= 0 && !f.Synchronous && !_raiseDeferWarned) WarnRaiseDeferred();
+            RunFiberNow(f);
+        }
+
+        // холодный путь вынесен: строка с интерполяцией раздувала тело и мешала инлайну
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        private void WarnRaiseDeferred()
+        {
+            _raiseDeferWarned = true;
+            OnWarn?.Invoke(
+                T($"Raise: бюджет инструкций тика ({TickInstructionBudget}) исчерпан — обработчики событий " +
+                "отложены до следующего Tick и не исполнены в момент Raise." +
+                (_tickedSinceLoad ? "" : " Tick ни разу не вызывался после LoadProgram: бюджет пополняется только в Tick.") +
+                " Вызывайте Tick на каждом шаге или поднимите TickInstructionBudget.",
+                    $"Raise: the tick instruction budget ({TickInstructionBudget}) is exhausted — event handlers " +
+                    "are deferred to the next Tick and did not run at the moment of Raise." +
+                    (_tickedSinceLoad ? "" : " Tick has never been called since LoadProgram: the budget is refilled only in Tick.") +
+                    " Call Tick on every step or raise TickInstructionBudget."));
+        }
+
+        private bool _raiseDeferWarned;
+        private bool _tickedSinceLoad;
+
+        /// <summary>
+        /// Синхронный файбер не дошёл до конца за один запуск: упёрся в слайс
+        /// инструкций или дошёл до wait (через функцию кооперативного модуля —
+        /// прямой wait ловит компилятор). Продолжить его «потом» значило бы
+        /// нарушить обещание модуля, поэтому он гасится с внятной ошибкой.
+        /// </summary>
+        private void KillUnfinishedSync(Fiber f, RunResult r)
+        {
+            string why = T(r == RunResult.OutOfBudget
+                ? $"синхронный обработчик не уложился в {MaxInstructionsPerFiberRun} инструкций " +
+                  "(MaxInstructionsPerFiberRun) за один запуск — похоже на бесконечный цикл"
+                : "синхронный обработчик дошёл до wait/yield (через функцию кооперативного модуля) — " +
+                  "в синхронном модуле обработчик исполняется целиком, ожидание невозможно",
+                r == RunResult.OutOfBudget
+                ? $"the synchronous handler did not fit into {MaxInstructionsPerFiberRun} instructions " +
+                "(MaxInstructionsPerFiberRun) in one run — looks like an infinite loop"
+                : "the synchronous handler reached wait/yield (through a function of a cooperative module) — " +
+                "in a synchronous module a handler runs to completion, waiting is impossible");
+            int trig = f.TriggerId;
+            _tick.FibersKilledThisTick++;
+            ReportFiberError(f, T(why + "; остаток обработчика не выполнен.", why + "; the rest of the handler did not run."));
+            _fibers.Return(f);
+            if (r == RunResult.OutOfBudget) OnBudgetExceeded?.Invoke(trig);
+        }
+
         private void RefuseNestedRun(Fiber f)
         {
             string name = "?";
@@ -973,15 +1145,19 @@ namespace Dsl.Runtime
             if ((uint)f.TriggerId < (uint)_trigStats.Length)
             {
                 _trigStats[f.TriggerId].ErrorCount++;
-                _trigStats[f.TriggerId].LastError = "отклонён: рекурсия событий через хост";
+                _trigStats[f.TriggerId].LastError = T("отклонён: рекурсия событий через хост", "rejected: event recursion through the host");
             }
             _tick.FibersErroredThisTick++;
             _fibers.Return(f);
             OnError?.Invoke(
-                $"Обработчик '{name}' не запущен: вложенность запусков достигла {MaxNestedRunDepth}. " +
+                T($"Обработчик '{name}' не запущен: вложенность запусков достигла {MaxNestedRunDepth}. " +
                 "Похоже на рекурсию событий: обработчик вызывает метод игры, который снова поднимает " +
                 "событие, ведущее в этот же обработчик (например, OnDamage наносит урон). " +
-                "Разорвите цикл флагом-стражем или отложите действие через spawn/wait.");
+                "Разорвите цикл флагом-стражем или отложите действие через spawn/wait.",
+                    $"Handler '{name}' was not started: run nesting reached {MaxNestedRunDepth}. " +
+                    "Looks like event recursion: the handler calls a game method that raises again " +
+                    "the event leading to this same handler (e.g. OnDamage deals damage). " +
+                    "Break the cycle with a guard flag or defer the action via spawn/wait."));
         }
 
         private void RequeueReady(Fiber f)
@@ -1009,17 +1185,22 @@ namespace Dsl.Runtime
                 if ((uint)trig < (uint)_trigStats.Length)
                 {
                     _trigStats[trig].ErrorCount++;
-                    _trigStats[trig].LastError = "убит бюджетом (вероятно, цикл без wait)";
+                    _trigStats[trig].LastError = T("убит бюджетом (вероятно, цикл без wait)", "killed by the budget (probably a loop without wait)");
                 }
                 _tick.FibersKilledThisTick++;
                 _fibers.Return(f);
                 if (stuck)
-                    OnError?.Invoke($"Файбер убит: цикл без ожидания — {f.InstrSinceYield} инструкций " +
+                    OnError?.Invoke(T($"Файбер убит: цикл без ожидания — {f.InstrSinceYield} инструкций " +
                                     "без единого wait/wait until (бесконечный while без эффективной паузы). " +
-                                    "Добавьте wait в тело цикла или убедитесь, что условие wait until может стать ложным.");
+                                    "Добавьте wait в тело цикла или убедитесь, что условие wait until может стать ложным.",
+                        $"Fiber killed: loop without waiting — {f.InstrSinceYield} instructions " +
+                        "without a single wait/wait until (an infinite while without an effective pause). " +
+                        "Add wait to the loop body or make sure the wait until condition can become false."));
                 else
-                    OnError?.Invoke($"Файбер убит: превышен бюджет инструкций {f.BudgetHits} тиков подряд " +
-                                    "(похоже на бесконечный цикл без wait).");
+                    OnError?.Invoke(T($"Файбер убит: превышен бюджет инструкций {f.BudgetHits} тиков подряд " +
+                                    "(похоже на бесконечный цикл без wait).",
+                        $"Fiber killed: the instruction budget was exceeded {f.BudgetHits} ticks in a row " +
+                        "(looks like an infinite loop without wait)."));
                 OnBudgetExceeded?.Invoke(trig);
             }
             else
@@ -1055,7 +1236,8 @@ namespace Dsl.Runtime
             {
                 _tick.SpawnsDroppedThisTick++;
                 if (_tick.SpawnsDroppedThisTick == 1) // предупреждаем один раз за тик
-                    OnWarn?.Invoke($"Лимит спавнов за тик ({MaxFibersStartedPerTick}) исчерпан — часть spawn проигнорирована.");
+                    OnWarn?.Invoke(T($"Лимит спавнов за тик ({MaxFibersStartedPerTick}) исчерпан — часть spawn проигнорирована.",
+                        $"The per-tick spawn limit ({MaxFibersStartedPerTick}) is exhausted — some spawns were ignored."));
                 return Variant.Nil;
             }
             _tick.FibersStartedThisTick++;
@@ -1134,7 +1316,7 @@ namespace Dsl.Runtime
                     if (name != null && _moduleIndex.TryGetValue(name, out int mi))
                         _moduleEnabled[mi] = op == EngineOp.EnableModule;
                     else
-                        OnWarn?.Invoke($"Engine: модуль '{name}' не загружен.");
+                        OnWarn?.Invoke(T($"Engine: модуль '{name}' не загружен.", $"Engine: module '{name}' is not loaded."));
                     return Variant.Nil;
                 }
                 case EngineOp.IsModuleEnabled:
@@ -1187,7 +1369,7 @@ namespace Dsl.Runtime
                 }
 
                 default:
-                    throw new ScriptError($"Неизвестная операция Engine: {op}.");
+                    throw new ScriptError(T($"Неизвестная операция Engine: {op}.", $"Unknown Engine operation: {op}."));
             }
         }
 
@@ -1204,12 +1386,14 @@ namespace Dsl.Runtime
             {
                 _tick.SpawnsDroppedThisTick++;
                 if (_tick.SpawnsDroppedThisTick == 1) // как у spawn: один раз за тик
-                    OnWarn?.Invoke($"Лимит спавнов за тик ({MaxFibersStartedPerTick}) исчерпан — часть ActivateTrigger проигнорирована.");
+                    OnWarn?.Invoke(T($"Лимит спавнов за тик ({MaxFibersStartedPerTick}) исчерпан — часть ActivateTrigger проигнорирована.",
+                        $"The per-tick spawn limit ({MaxFibersStartedPerTick}) is exhausted — some ActivateTrigger calls were ignored."));
                 return Variant.Nil;
             }
             _tick.FibersStartedThisTick++;
 
             var f = CreateFiber(info.ActionFuncIndex, null, 0, 0, triggerId);
+            f.Synchronous = IsModuleSync(info.ModuleIndex);
             if ((uint)triggerId < (uint)_trigStats.Length)
             {
                 _trigStats[triggerId].FibersSpawned++;
@@ -1269,7 +1453,8 @@ namespace Dsl.Runtime
             if (_prog == null || (uint)listenerId >= (uint)_prog.Listeners.Length) return Variant.Nil;
             if (target.Type != VariantType.Entity || !Entities.IsValid(target))
             {
-                OnWarn?.Invoke("Engine.Attach: цель не является живой сущностью — подписка не создана.");
+                OnWarn?.Invoke(T("Engine.Attach: цель не является живой сущностью — подписка не создана.",
+                    "Engine.Attach: the target is not a live entity — no subscription created."));
                 return Variant.Nil;
             }
             var info = _prog.Listeners[listenerId];
@@ -1307,8 +1492,10 @@ namespace Dsl.Runtime
                 try
                 {
                     if (_vm.Run(fi, InitInstructionLimit) == RunResult.OutOfBudget)
-                        OnError?.Invoke($"listener '{info.Name}': инициализация полей подписки не уложилась в " +
-                                        $"{InitInstructionLimit} инструкций и прервана.");
+                        OnError?.Invoke(T($"listener '{info.Name}': инициализация полей подписки не уложилась в " +
+                                        $"{InitInstructionLimit} инструкций и прервана.",
+                            $"listener '{info.Name}': initialization of the subscription fields did not fit into " +
+                            $"{InitInstructionLimit} instructions and was aborted."));
                 }
                 finally { _runDepth--; _current = prev; }
                 _fibers.Return(fi);
@@ -1318,6 +1505,7 @@ namespace Dsl.Runtime
             if (info.OnSubscribeFunc >= 0)
             {
                 var fs = CreateAttachedFiber(info.OnSubscribeFunc, att, null, 0, 0);
+                fs.Synchronous = IsModuleSync(info.ModuleIndex);
                 RunFiberNow(fs);
             }
 
@@ -1374,7 +1562,8 @@ namespace Dsl.Runtime
                 try { r = _vm.Run(fu, MaxInstructionsPerFiberRun); }
                 finally { _runDepth--; _current = prev; }
                 if (r != RunResult.Completed && r != RunResult.Errored)
-                    OnError?.Invoke($"listener '{info.Name}'.OnUnsubscribe должен завершаться немедленно — файбер остановлен.");
+                    OnError?.Invoke(T($"listener '{info.Name}'.OnUnsubscribe должен завершаться немедленно — файбер остановлен.",
+                        $"listener '{info.Name}'.OnUnsubscribe must finish immediately — the fiber was stopped."));
                 _fibers.Return(fu);
             }
 
@@ -1576,7 +1765,7 @@ namespace Dsl.Runtime
                 _trigStats[f.TriggerId].LastError = message;
             }
             string trace = _vm.BuildTrace(f);
-            OnError?.Invoke($"Ошибка скрипта: {message}\n{trace}");
+            OnError?.Invoke(T($"Ошибка скрипта: {message}\n{trace}", $"Script error: {message}\n{trace}"));
         }
 
         // ===================================================================

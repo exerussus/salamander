@@ -107,6 +107,7 @@ Folder to Project) и ищет под ним модули (`module.json`) и
 | `salamander.modulesRoot` | папка, под которой искать модули и `*.sal`; по умолчанию — корень папки |
 | `salamander.apiManifest` | точный путь к манифесту API игры |
 | `salamander.buildFile` | точный путь к `salamander-build.json` |
+| `salamander.language` | язык ошибок и подсказок: `ru` / `en`; пусто — из `salamander-build.json`, иначе `ru` |
 | `salamander.referencePaths` | папки со **справочными модулями** (игра, зависимости мода) — только для подсказок и go-to, их ошибки не показываются |
 
 ```jsonc

@@ -391,7 +391,7 @@ namespace Dsl.Tests
 
             Assert.IsTrue(api.TryGetConst("sword_01", out var grip));
             Assert.AreEqual("weapon.grip.sword.01", grip.ValueStr);
-            Assert.AreEqual("рукоять одноручного меча", grip.Doc);
+            Assert.AreEqual("рукоять одноручного меча", grip.Doc?.Ru);
             Assert.IsTrue(api.TryGetConst("TICKS", out var ticks));
             Assert.AreEqual(7, ticks.Value.AsInt);
             Assert.IsTrue(api.TryGetConst("SIDE", out var side));

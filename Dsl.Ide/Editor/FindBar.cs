@@ -47,17 +47,17 @@ namespace Dsl.Ide
             _find.RegisterCallback<KeyDownEvent>(OnKey, TrickleDown.TrickleDown);
             row.Add(_find);
 
-            _caseBtn = Toggle("Aa", "Учитывать регистр", () => { MatchCase = !MatchCase; Sync(); QueryChanged?.Invoke(); });
-            _wordBtn = Toggle("W", "Слово целиком", () => { WholeWord = !WholeWord; Sync(); QueryChanged?.Invoke(); });
+            _caseBtn = Toggle("Aa", IdeText.T("Учитывать регистр", "Match case"), () => { MatchCase = !MatchCase; Sync(); QueryChanged?.Invoke(); });
+            _wordBtn = Toggle("W", IdeText.T("Слово целиком", "Whole word"), () => { WholeWord = !WholeWord; Sync(); QueryChanged?.Invoke(); });
             row.Add(_caseBtn);
             row.Add(_wordBtn);
 
             _count = new Label("0/0");
             _count.AddToClassList("sal-find-count");
             row.Add(_count);
-            row.Add(Small("↑", "Предыдущее (Shift+Enter, Shift+F3)", () => Previous?.Invoke()));
-            row.Add(Small("↓", "Следующее (Enter, F3)", () => Next?.Invoke()));
-            row.Add(Small("×", "Закрыть (Esc)", Close));
+            row.Add(Small("↑", IdeText.T("Предыдущее (Shift+Enter, Shift+F3)", "Previous (Shift+Enter, Shift+F3)"), () => Previous?.Invoke()));
+            row.Add(Small("↓", IdeText.T("Следующее (Enter, F3)", "Next (Enter, F3)"), () => Next?.Invoke()));
+            row.Add(Small("×", IdeText.T("Закрыть (Esc)", "Close (Esc)"), Close));
             Add(row);
 
             _replaceRow = new VisualElement();
@@ -66,8 +66,8 @@ namespace Dsl.Ide
             _replace.AddToClassList("sal-find-input");
             _replace.RegisterCallback<KeyDownEvent>(OnKey, TrickleDown.TrickleDown);
             _replaceRow.Add(_replace);
-            _replaceRow.Add(Small("Заменить", "Заменить текущее", () => ReplaceOne?.Invoke()));
-            _replaceRow.Add(Small("Все", "Заменить все", () => ReplaceAll?.Invoke()));
+            _replaceRow.Add(Small(IdeText.T("Заменить", "Replace"), IdeText.T("Заменить текущее", "Replace current"), () => ReplaceOne?.Invoke()));
+            _replaceRow.Add(Small(IdeText.T("Все", "All"), IdeText.T("Заменить все", "Replace all"), () => ReplaceAll?.Invoke()));
             Add(_replaceRow);
             Sync();
         }
@@ -113,7 +113,7 @@ namespace Dsl.Ide
 
         public void SetCount(int current, int total)
         {
-            _count.text = total == 0 ? (Query.Length == 0 ? "" : "нет") : $"{current + 1}/{total}";
+            _count.text = total == 0 ? (IdeText.T(Query.Length == 0 ? "" : "нет", Query.Length == 0 ? "" : "none")) : $"{current + 1}/{total}";
             _count.EnableInClassList("sal-find-count--none", total == 0 && Query.Length > 0);
         }
 

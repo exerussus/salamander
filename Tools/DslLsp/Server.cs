@@ -34,6 +34,20 @@ namespace Dsl.Tools.Lsp
         // go-to, раскраска. Сервер держит только воркспейс и протокол.
         private readonly LanguageService _ls = new LanguageService();
 
+        /// <summary>
+        /// Язык сервера. Порядок: настройка salamander.language ("ru"/"en"), ключ
+        /// "language" в salamander-build.json, переменная SALAMANDER_LANGUAGE, ru.
+        /// </summary>
+        private Language _lang = EnvLanguage();
+        private Language? _cfgLanguage;
+
+        public Language Language => _lang;
+
+        internal static Language EnvLanguage()
+            => Loc.TryParse(Environment.GetEnvironmentVariable("SALAMANDER_LANGUAGE"), out var l) ? l : Language.Ru;
+
+        private string T(string ru, string en) => Loc.T(_lang, ru, en);
+
         public Server(Rpc rpc)
         {
             _rpc = rpc;
@@ -57,7 +71,8 @@ namespace Dsl.Tools.Lsp
                 {
                     // Тело сообщения уже вычитано целиком по Content-Length, поток цел —
                     // одно битое сообщение не повод ронять сервер посреди сессии редактора.
-                    System.Console.Error.WriteLine("salamander-lsp: пропущено некорректное JSON-сообщение: " + ex.Message);
+                    System.Console.Error.WriteLine(T("salamander-lsp: пропущено некорректное JSON-сообщение: " + ex.Message,
+                        "salamander-lsp: skipped an invalid JSON message: " + ex.Message));
                     continue;
                 }
                 if (msg == null) return; // клиент закрыл поток
@@ -121,7 +136,7 @@ namespace Dsl.Tools.Lsp
 
                         default:
                             // запросы, которых не умеем, честно отклоняем; нотификации молча пропускаем
-                            if (id != null) _rpc.Error(id, -32601, $"метод не поддерживается: {method}");
+                            if (id != null) _rpc.Error(id, -32601, T($"метод не поддерживается: {method}", $"method not supported: {method}"));
                             break;
                     }
                 }
@@ -165,7 +180,8 @@ namespace Dsl.Tools.Lsp
             // корне воркспейса.
             bool Has(string key) =>
                 settings[key] != null || settings["salamander." + key] != null || s?[key] != null;
-            if (!Has("apiManifest") && !Has("modulesRoot") && !Has("buildFile") && !Has("referencePaths"))
+            if (!Has("apiManifest") && !Has("modulesRoot") && !Has("buildFile") && !Has("referencePaths")
+                && !Has("language"))
                 return;
 
             string Get(string key)
@@ -177,6 +193,12 @@ namespace Dsl.Tools.Lsp
             _cfgApiManifest = Get("apiManifest");
             _cfgModulesRoot = Get("modulesRoot");
             _cfgBuildFile = Get("buildFile");
+            // язык: "ru" / "en"; пусто — из salamander-build.json (иначе ru)
+            string lang = Get("language");
+            _cfgLanguage = lang != null && Loc.TryParse(lang, out var parsed) ? parsed : (Language?)null;
+            if (_cfgLanguage != null) _lang = _cfgLanguage.Value;
+            if (lang != null && _cfgLanguage == null)
+                Console.Error.WriteLine($"salamander-lsp: salamander.language = \"{lang}\" — expected \"ru\" or \"en\" / ожидалось \"ru\" или \"en\"");
             _resolvedApiPath = null;
 
             // список: массив строк или одна строка через ';'
@@ -240,7 +262,7 @@ namespace Dsl.Tools.Lsp
                 if (!string.IsNullOrEmpty(rootPath)) _root = Path.GetFullPath(rootPath);
             }
             _root ??= Directory.GetCurrentDirectory();
-            Console.Error.WriteLine($"salamander-lsp: корень воркспейса: {_root}");
+            Console.Error.WriteLine(T($"salamander-lsp: корень воркспейса: {_root}", $"salamander-lsp: workspace root: {_root}"));
 
             ApplySettings(p?["initializationOptions"] as JObject);
 
@@ -343,6 +365,15 @@ namespace Dsl.Tools.Lsp
                 return arr;
             }
 
+            // «ешь то, что дал сборщик»: если он экспортировал salamander-build.json
+            // (упорядоченный список папок модулей) — берём РОВНО его; обход папки
+            // остаётся дев-режимом без сборщика (общая логика — Dsl.Tooling).
+            // Грузится первым: в build-файле может быть "language", а на нём все
+            // дальнейшие сообщения и подсказки (настройка salamander.language важнее).
+            var ws = WorkspaceLoader.Load(modulesRoot, ResolveConfigured(_cfgBuildFile), null, _cfgLanguage ?? _lang);
+            _lang = _cfgLanguage ?? (ws.LanguageFromBuild ? ws.Language : EnvLanguage());
+            _ls.Language = _lang;
+
             string apiPath = ResolveApiManifestPath();
             Semantics.HostRegistry registry;
             int apiVersion = 1;
@@ -352,49 +383,57 @@ namespace Dsl.Tools.Lsp
                 try
                 {
                     var apiText = File.ReadAllText(apiPath);
-                    registry = ApiManifest.Import(apiText, out apiVersion);
-                    _ls.Api = JsonConvert.DeserializeObject<ApiManifest>(apiText);
+                    registry = ApiManifest.Import(apiText, out apiVersion, _lang);
+                    _ls.Api = JsonConvert.DeserializeObject<ApiManifest>(apiText, DocTextJsonConverter.Instance);
                 }
                 catch (Exception ex)
                 {
-                    registry = new Semantics.HostRegistry();
-                    Bucket(apiPath).Add(LspDiag(1, 1, 1, 1, "E0400", "salamander-api.json не читается: " + ex.Message));
+                    registry = new Semantics.HostRegistry { Language = _lang };
+                    Bucket(apiPath).Add(LspDiag(1, 1, 1, 1, "E0400", T("salamander-api.json не читается: " + ex.Message,
+                        "salamander-api.json cannot be read: " + ex.Message)));
                 }
             }
             else
             {
-                registry = new Semantics.HostRegistry();
+                registry = new Semantics.HostRegistry { Language = _lang };
                 // если корня нет, манифест не мог быть найден по определению —
                 // жаловаться на манифест значит увести человека не туда
                 if (!rootMissing)
                     Bucket(apiPath).Add(LspDiag(1, 1, 1, 2, "W0401",
-                        "salamander-api.json не найден — события и API хоста неизвестны " +
+                        T("salamander-api.json не найден — события и API хоста неизвестны " +
                         "(запустите игру в редакторе один раз, манифест экспортируется автоматически; " +
-                        "если он лежит в другом месте — укажите настройку salamander.apiManifest)."));
-                Console.Error.WriteLine($"salamander-lsp: манифест не найден, искали от {modulesRoot}");
+                        "если он лежит в другом месте — укажите настройку salamander.apiManifest).",
+                            "salamander-api.json not found — host events and API are unknown " +
+                            "(run the game in the editor once, the manifest is exported automatically; " +
+                            "if it lives elsewhere, set salamander.apiManifest).")));
+                Console.Error.WriteLine(T($"salamander-lsp: манифест не найден, искали от {modulesRoot}",
+                    $"salamander-lsp: manifest not found, searched from {modulesRoot}"));
             }
 
             if (rootMissing)
             {
                 Bucket(apiPath).Add(LspDiag(1, 1, 1, 2, "W0402",
-                    $"Папка модулей не найдена: {modulesRoot}. Ни один .sal не проиндексирован. " +
+                    T($"Папка модулей не найдена: {modulesRoot}. Ни один .sal не проиндексирован. " +
                     "Проверьте salamander.modulesRoot — путь абсолютный либо относительно корня " +
                     "воркспейса; ведущий слэш перед буквой диска (\\C:\\...) Проводник прощает, " +
-                    "а файловая система нет."));
-                Console.Error.WriteLine($"salamander-lsp: папка модулей не найдена: {modulesRoot}");
+                    "а файловая система нет.",
+                        $"Modules folder not found: {modulesRoot}. No .sal file was indexed. " +
+                        "Check salamander.modulesRoot — the path is absolute or relative to the workspace " +
+                        "root; a leading slash before the drive letter (\\C:\\...) is forgiven by Explorer, " +
+                        "but not by the file system.")));
+                Console.Error.WriteLine(T($"salamander-lsp: папка модулей не найдена: {modulesRoot}",
+                    $"salamander-lsp: modules folder not found: {modulesRoot}"));
             }
 
-            // «ешь то, что дал сборщик»: если он экспортировал salamander-build.json
-            // (упорядоченный список папок модулей) — берём РОВНО его; обход папки
-            // остаётся дев-режимом без сборщика (общая логика — Dsl.Tooling)
-            var ws = WorkspaceLoader.Load(modulesRoot, ResolveConfigured(_cfgBuildFile));
             foreach (var err in ws.LoadErrors)
                 Bucket(Path.GetFullPath(err.Key)).Add(LspDiag(1, 1, 1, 1, "E0401", err.Value));
 
             if (ws.Modules.Count == 0)
                 Console.Error.WriteLine(
-                    $"salamander-lsp: модулей не найдено под {modulesRoot} — " +
-                    "укажите salamander.modulesRoot или положите salamander-build.json.");
+                    T($"salamander-lsp: модулей не найдено под {modulesRoot} — " +
+                    "укажите salamander.modulesRoot или положите salamander-build.json.",
+                        $"salamander-lsp: no modules found under {modulesRoot} — " +
+                        "set salamander.modulesRoot or add salamander-build.json."));
 
             // оверлеи: несохранённые правки важнее диска
             var modules = WorkspaceCompiler.WithOverlays(ws,
@@ -409,10 +448,11 @@ namespace Dsl.Tools.Lsp
                 string dir = ResolveConfigured(rp);
                 if (dir == null || !Directory.Exists(dir))
                 {
-                    Console.Error.WriteLine($"salamander-lsp: папка справочных модулей не найдена: {rp}");
+                    Console.Error.WriteLine(T($"salamander-lsp: папка справочных модулей не найдена: {rp}",
+                        $"salamander-lsp: reference modules folder not found: {rp}"));
                     continue;
                 }
-                var rws = WorkspaceLoader.Load(dir);
+                var rws = WorkspaceLoader.Load(dir, null, null, _lang);
                 refModules.AddRange(rws.Modules);
                 foreach (var kv in rws.LogicalToPath)
                     if (!logicalToPath.ContainsKey(kv.Key)) logicalToPath[kv.Key] = kv.Value;
@@ -446,7 +486,7 @@ namespace Dsl.Tools.Lsp
 
             if (modules.Count > 0)
             {
-                var result = ScriptCompiler.Compile(registry, apiVersion, modules);
+                var result = ScriptCompiler.Compile(registry, apiVersion, modules, false, _lang);
                 _ls.UpdateSymbols(result); // семантические подсказки: типы, сигнатуры, справочные модули
                 foreach (var d in result.Diagnostics)
                 {

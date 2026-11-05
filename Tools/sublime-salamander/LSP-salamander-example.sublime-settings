@@ -34,7 +34,8 @@
                 // "salamander.modulesRoot": "Assets/StreamingAssets/Core",
                 // "salamander.apiManifest": "Assets/StreamingAssets/Core/salamander-api.json",
                 // "salamander.buildFile": "salamander-build.json",
-                // "salamander.referencePaths": ["C:/Games/MyGame/Assets/StreamingAssets/Scripts"]
+                // "salamander.referencePaths": ["C:/Games/MyGame/Assets/StreamingAssets/Scripts"],
+                // "salamander.language": "en"   // ru / en; пусто — из salamander-build.json, иначе ru
             },
 
             // Отслеживание файлов на диске (нужен пакет LSP-file-watcher-chokidar):

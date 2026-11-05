@@ -10,6 +10,10 @@
 Tools/rider/plugin/build.sh      # → Tools/rider/plugin/build/Salamander-<версия>.zip
 ```
 
+На Windows проще из корня репозитория: `build-tools.bat rider` (сервер + плагин,
+`build.sh` запускается через bash из Git for Windows), с `-InstallRider` — ещё и
+установка в закрытый Rider. Все цели — в шапке `Tools/build-tools.ps1`.
+
 Gradle не нужен. Скрипт берёт `javac`/`java` и jar-ы платформы из установленного
 Rider, jar-ы LSP4IJ — из его папки плагинов, сервер собирает `dotnet publish`
 (нужен .NET SDK 8). Всё ищется само. Если нет — переменные:
