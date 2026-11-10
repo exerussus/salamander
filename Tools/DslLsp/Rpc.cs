@@ -1,8 +1,7 @@
 using System;
 using System.IO;
 using System.Text;
-using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
+using Dsl.Json;
 
 namespace Dsl.Tools.Lsp
 {
@@ -17,7 +16,10 @@ namespace Dsl.Tools.Lsp
         private readonly object _writeLock = new object();
 
         /// <summary>Следующее сообщение клиента; null — поток закрыт (пора выходить).</summary>
-        public JObject Read()
+        /// <summary>Язык сообщений об ошибках разбора (сервер меняет его по настройкам).</summary>
+        public Dsl.Text.Language Language = Dsl.Text.Language.Ru;
+
+        public JsonObject Read()
         {
             int length = -1;
             while (true)
@@ -38,7 +40,8 @@ namespace Dsl.Tools.Lsp
                 if (n <= 0) return null;
                 off += n;
             }
-            return JObject.Parse(Encoding.UTF8.GetString(buf));
+            return JsonNode.Parse(Encoding.UTF8.GetString(buf), Language) as JsonObject
+                   ?? throw new JsonException("JSON-RPC message is not an object");
         }
 
         private string ReadHeaderLine()
@@ -54,9 +57,9 @@ namespace Dsl.Tools.Lsp
             return sb.ToString();
         }
 
-        private void Send(JObject msg)
+        private void Send(JsonObject msg)
         {
-            var body = Encoding.UTF8.GetBytes(msg.ToString(Formatting.None));
+            var body = Encoding.UTF8.GetBytes(msg.ToJson());
             var head = Encoding.ASCII.GetBytes($"Content-Length: {body.Length}\r\n\r\n");
             lock (_writeLock)
             {
@@ -66,18 +69,18 @@ namespace Dsl.Tools.Lsp
             }
         }
 
-        public void Reply(JToken id, JToken result) =>
-            Send(new JObject { ["jsonrpc"] = "2.0", ["id"] = id, ["result"] = result ?? JValue.CreateNull() });
+        public void Reply(JsonNode id, JsonNode result) =>
+            Send(new JsonObject { ["jsonrpc"] = "2.0", ["id"] = id, ["result"] = result ?? JsonValue.Null });
 
-        public void Error(JToken id, int code, string message) =>
-            Send(new JObject
+        public void Error(JsonNode id, int code, string message) =>
+            Send(new JsonObject
             {
                 ["jsonrpc"] = "2.0",
                 ["id"] = id,
-                ["error"] = new JObject { ["code"] = code, ["message"] = message },
+                ["error"] = new JsonObject { ["code"] = code, ["message"] = message },
             });
 
-        public void Notify(string method, JToken @params) =>
-            Send(new JObject { ["jsonrpc"] = "2.0", ["method"] = method, ["params"] = @params });
+        public void Notify(string method, JsonNode @params) =>
+            Send(new JsonObject { ["jsonrpc"] = "2.0", ["method"] = method, ["params"] = @params });
     }
 }

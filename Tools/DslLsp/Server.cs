@@ -6,8 +6,7 @@ using Dsl.Compilation;
 using Dsl.Syntax;
 using Dsl.Text;
 using Dsl.Tooling;
-using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
+using Dsl.Json;
 
 namespace Dsl.Tools.Lsp
 {
@@ -62,12 +61,13 @@ namespace Dsl.Tools.Lsp
         {
             while (true)
             {
-                JObject msg;
+                JsonObject msg;
                 try
                 {
+                    _rpc.Language = _lang;
                     msg = _rpc.Read();
                 }
-                catch (Newtonsoft.Json.JsonException ex)
+                catch (JsonException ex)
                 {
                     // Тело сообщения уже вычитано целиком по Content-Length, поток цел —
                     // одно битое сообщение не повод ронять сервер посреди сессии редактора.
@@ -79,7 +79,7 @@ namespace Dsl.Tools.Lsp
 
                 var method = (string)msg["method"];
                 var id = msg["id"];
-                var p = msg["params"] as JObject;
+                var p = msg["params"] as JsonObject;
 
                 try
                 {
@@ -92,7 +92,7 @@ namespace Dsl.Tools.Lsp
 
                         case "textDocument/didOpen":
                         {
-                            var doc = (JObject)p["textDocument"];
+                            var doc = (JsonObject)p["textDocument"];
                             _open[UriToPath((string)doc["uri"])] = (string)doc["text"];
                             RefreshAll();
                             break;
@@ -100,7 +100,7 @@ namespace Dsl.Tools.Lsp
                         case "textDocument/didChange":
                         {
                             var path = UriToPath((string)p["textDocument"]["uri"]);
-                            var changes = (JArray)p["contentChanges"];
+                            var changes = (JsonArray)p["contentChanges"];
                             if (changes.Count > 0)
                                 _open[path] = (string)changes[changes.Count - 1]["text"]; // full sync
                             RefreshAll();
@@ -116,7 +116,7 @@ namespace Dsl.Tools.Lsp
 
                         case "workspace/didChangeConfiguration":
                             // клиент может передать настройки и после старта
-                            ApplySettings(p?["settings"] as JObject);
+                            ApplySettings(p?["settings"] as JsonObject);
                             RefreshAll();
                             break;
                         case "workspace/didChangeWatchedFiles":
@@ -165,12 +165,12 @@ namespace Dsl.Tools.Lsp
         private List<string> _cfgReferencePaths = new List<string>();
         private string _resolvedApiPath;  // кэш найденного манифеста (обход не на каждый рефреш)
 
-        private void ApplySettings(JObject settings)
+        private void ApplySettings(JsonObject settings)
         {
             if (settings == null) return;
             // принимаем и плоский вид ({"salamander.apiManifest": ...}), и вложенный
             // ({"salamander": {"apiManifest": ...}}) — клиенты шлют по-разному
-            var s = settings["salamander"] as JObject;
+            var s = settings["salamander"] as JsonObject;
 
             // Сообщение без единого нашего ключа — не «сбросить всё», а «мне нечего
             // сказать». Клиенты шлют didChangeConfiguration и тогда, когда настроек
@@ -204,13 +204,13 @@ namespace Dsl.Tools.Lsp
             // список: массив строк или одна строка через ';'
             _cfgReferencePaths = new List<string>();
             var refs = settings["referencePaths"] ?? settings["salamander.referencePaths"] ?? s?["referencePaths"];
-            if (refs is JArray arr)
+            if (refs is JsonArray arr)
             {
                 foreach (var t in arr)
-                    if (t != null && t.Type == JTokenType.String && !string.IsNullOrWhiteSpace((string)t))
+                    if (t != null && t.Kind == JsonKind.String && !string.IsNullOrWhiteSpace((string)t))
                         _cfgReferencePaths.Add(((string)t).Trim());
             }
-            else if (refs != null && refs.Type == JTokenType.String)
+            else if (refs != null && refs.Kind == JsonKind.String)
                 foreach (var part in ((string)refs).Split(';'))
                     if (!string.IsNullOrWhiteSpace(part)) _cfgReferencePaths.Add(part.Trim());
             foreach (var rp in _cfgReferencePaths) Console.Error.WriteLine($"salamander-lsp: referencePath = {rp}");
@@ -242,11 +242,11 @@ namespace Dsl.Tools.Lsp
         /// <summary>Корень поиска модулей: настройка, иначе корень воркспейса.</summary>
         private string ModulesRoot() => ResolveConfigured(_cfgModulesRoot) ?? _root;
 
-        private JObject Initialize(JObject p)
+        private JsonObject Initialize(JsonObject p)
         {
             _root = null;
             // современные клиенты (Rider/LSP4IJ) шлют workspaceFolders, rootUri — null
-            if (p?["workspaceFolders"] is JArray folders && folders.Count > 0)
+            if (p?["workspaceFolders"] is JsonArray folders && folders.Count > 0)
             {
                 var wf = (string)folders[0]?["uri"];
                 if (!string.IsNullOrEmpty(wf)) _root = UriToPath(wf);
@@ -264,21 +264,21 @@ namespace Dsl.Tools.Lsp
             _root ??= Directory.GetCurrentDirectory();
             Console.Error.WriteLine(T($"salamander-lsp: корень воркспейса: {_root}", $"salamander-lsp: workspace root: {_root}"));
 
-            ApplySettings(p?["initializationOptions"] as JObject);
+            ApplySettings(p?["initializationOptions"] as JsonObject);
 
-            return new JObject
+            return new JsonObject
             {
-                ["capabilities"] = new JObject
+                ["capabilities"] = new JsonObject
                 {
                     ["textDocumentSync"] = 1, // Full: документ приходит целиком
-                    ["completionProvider"] = new JObject { ["triggerCharacters"] = new JArray(".", " ") },
-                    ["signatureHelpProvider"] = new JObject { ["triggerCharacters"] = new JArray("(", ",") },
-                    ["semanticTokensProvider"] = new JObject
+                    ["completionProvider"] = new JsonObject { ["triggerCharacters"] = new JsonArray(".", " ") },
+                    ["signatureHelpProvider"] = new JsonObject { ["triggerCharacters"] = new JsonArray("(", ",") },
+                    ["semanticTokensProvider"] = new JsonObject
                     {
-                        ["legend"] = new JObject
+                        ["legend"] = new JsonObject
                         {
-                            ["tokenTypes"] = new JArray(SemanticClassifier.TokenTypes),
-                            ["tokenModifiers"] = new JArray(),
+                            ["tokenTypes"] = new JsonArray(SemanticClassifier.TokenTypes),
+                            ["tokenModifiers"] = new JsonArray(),
                         },
                         ["full"] = true,
                     },
@@ -287,7 +287,7 @@ namespace Dsl.Tools.Lsp
                     ["documentSymbolProvider"] = true,
                     ["workspaceSymbolProvider"] = true,
                 },
-                ["serverInfo"] = new JObject { ["name"] = "salamander-lsp", ["version"] = "1.0" },
+                ["serverInfo"] = new JsonObject { ["name"] = "salamander-lsp", ["version"] = "1.0" },
             };
         }
 
@@ -358,10 +358,10 @@ namespace Dsl.Tools.Lsp
             _ls.Index.RetainOnly(seen);
 
             // --- компиляция воркспейса тем же путём, что DslCheck ---
-            var diagsByFile = new Dictionary<string, JArray>(StringComparer.OrdinalIgnoreCase);
-            JArray Bucket(string file)
+            var diagsByFile = new Dictionary<string, JsonArray>(StringComparer.OrdinalIgnoreCase);
+            JsonArray Bucket(string file)
             {
-                if (!diagsByFile.TryGetValue(file, out var arr)) diagsByFile[file] = arr = new JArray();
+                if (!diagsByFile.TryGetValue(file, out var arr)) diagsByFile[file] = arr = new JsonArray();
                 return arr;
             }
 
@@ -384,7 +384,7 @@ namespace Dsl.Tools.Lsp
                 {
                     var apiText = File.ReadAllText(apiPath);
                     registry = ApiManifest.Import(apiText, out apiVersion, _lang);
-                    _ls.Api = JsonConvert.DeserializeObject<ApiManifest>(apiText, DocTextJsonConverter.Instance);
+                    _ls.Api = ApiManifest.Parse(apiText, _lang);
                 }
                 catch (Exception ex)
                 {
@@ -507,18 +507,18 @@ namespace Dsl.Tools.Lsp
             foreach (var file in toPublish)
             {
                 diagsByFile.TryGetValue(file, out var arr);
-                _rpc.Notify("textDocument/publishDiagnostics", new JObject
+                _rpc.Notify("textDocument/publishDiagnostics", new JsonObject
                 {
                     ["uri"] = PathToUri(file),
-                    ["diagnostics"] = arr ?? new JArray(),
+                    ["diagnostics"] = arr ?? new JsonArray(),
                 });
                 if (arr != null && arr.Count > 0) _published.Add(file);
             }
         }
 
-        private static JToken LspDiag(int line, int col, int len, int severity, string code, string message)
+        private static JsonNode LspDiag(int line, int col, int len, int severity, string code, string message)
         {
-            return new JObject
+            return new JsonObject
             {
                 ["range"] = Range0(line, col, line, col + Math.Max(1, len)),
                 ["severity"] = severity, // 1 error, 2 warning, 3 info
@@ -528,62 +528,62 @@ namespace Dsl.Tools.Lsp
             };
         }
 
-        private static JObject Range0(int line1, int col1, int line2, int col2) => new JObject
+        private static JsonObject Range0(int line1, int col1, int line2, int col2) => new JsonObject
         {
-            ["start"] = new JObject { ["line"] = line1 - 1, ["character"] = col1 - 1 },
-            ["end"] = new JObject { ["line"] = line2 - 1, ["character"] = col2 - 1 },
+            ["start"] = new JsonObject { ["line"] = line1 - 1, ["character"] = col1 - 1 },
+            ["end"] = new JsonObject { ["line"] = line2 - 1, ["character"] = col2 - 1 },
         };
 
         // ===================================================================
         // Протокол поверх языкового сервиса
         // ===================================================================
 
-        private static (string path, int line1, int col1) Pos(JObject p) =>
+        private static (string path, int line1, int col1) Pos(JsonObject p) =>
             (UriToPath((string)p["textDocument"]["uri"]),
              (int)p["position"]["line"] + 1,
              (int)p["position"]["character"] + 1);
 
-        private JToken Completion(JObject p)
+        private JsonNode Completion(JsonObject p)
         {
             var (path, line1, col1) = Pos(p);
-            var items = new JArray();
+            var items = new JsonArray();
             foreach (var c in _ls.Complete(path, line1, col1))
             {
-                var it = new JObject { ["label"] = c.Label, ["kind"] = (int)c.Kind };
+                var it = new JsonObject { ["label"] = c.Label, ["kind"] = (int)c.Kind };
                 if (c.Detail != null) it["detail"] = c.Detail;
-                if (c.Documentation != null) it["documentation"] = new JObject { ["kind"] = "markdown", ["value"] = c.Documentation };
+                if (c.Documentation != null) it["documentation"] = new JsonObject { ["kind"] = "markdown", ["value"] = c.Documentation };
                 if (c.InsertText != null) { it["insertText"] = c.InsertText; if (c.IsSnippet) it["insertTextFormat"] = 2; }
                 items.Add(it);
             }
             return items;
         }
 
-        private JToken SignatureHelp(JObject p)
+        private JsonNode SignatureHelp(JsonObject p)
         {
             var (path, line1, col1) = Pos(p);
             var s = _ls.SignatureHelp(path, line1, col1);
             if (s == null) return null;
 
-            var ps = new JArray();
-            foreach (var pl in s.Parameters) ps.Add(new JObject { ["label"] = pl });
-            var sig = new JObject { ["label"] = s.Label, ["parameters"] = ps };
-            if (s.Documentation != null) sig["documentation"] = new JObject { ["kind"] = "markdown", ["value"] = s.Documentation };
-            return new JObject
+            var ps = new JsonArray();
+            foreach (var pl in s.Parameters) ps.Add(new JsonObject { ["label"] = pl });
+            var sig = new JsonObject { ["label"] = s.Label, ["parameters"] = ps };
+            if (s.Documentation != null) sig["documentation"] = new JsonObject { ["kind"] = "markdown", ["value"] = s.Documentation };
+            return new JsonObject
             {
-                ["signatures"] = new JArray(sig),
+                ["signatures"] = new JsonArray(sig),
                 ["activeSignature"] = 0,
                 ["activeParameter"] = s.ActiveParameter,
             };
         }
 
-        private JToken SemanticTokens(JObject p)
+        private JsonNode SemanticTokens(JsonObject p)
         {
             var path = UriToPath((string)p["textDocument"]["uri"]);
             var spans = _ls.Classify(path);
-            if (spans == null) return new JObject { ["data"] = new JArray() };
+            if (spans == null) return new JsonObject { ["data"] = new JsonArray() };
 
             // дельта-кодирование протокола
-            var data = new JArray();
+            var data = new JsonArray();
             int lastLine = 1, lastCol = 1;
             foreach (var s in spans)
             {
@@ -592,50 +592,50 @@ namespace Dsl.Tools.Lsp
                 data.Add(dLine); data.Add(dCol); data.Add(s.Length); data.Add(s.Type); data.Add(0);
                 lastLine = s.Line; lastCol = s.Col;
             }
-            return new JObject { ["data"] = data };
+            return new JsonObject { ["data"] = data };
         }
 
-        private JToken Hover(JObject p)
+        private JsonNode Hover(JsonObject p)
         {
             var (path, line1, col1) = Pos(p);
             var md = _ls.Hover(path, line1, col1);
             if (md == null) return null;
-            return new JObject
+            return new JsonObject
             {
-                ["contents"] = new JObject { ["kind"] = "markdown", ["value"] = md },
+                ["contents"] = new JsonObject { ["kind"] = "markdown", ["value"] = md },
             };
         }
 
-        private JToken Definition(JObject p)
+        private JsonNode Definition(JsonObject p)
         {
             var (path, line1, col1) = Pos(p);
             var loc = _ls.Definition(path, line1, col1);
             return loc == null ? null : Location(loc.File, loc.Line, loc.Col, loc.Length);
         }
 
-        private static JObject Location(string absPath, int line1, int col1, int len) => new JObject
+        private static JsonObject Location(string absPath, int line1, int col1, int len) => new JsonObject
         {
             ["uri"] = PathToUri(absPath),
             ["range"] = Range0(line1, col1, line1, col1 + Math.Max(1, len)),
         };
 
-        private JToken DocumentSymbols(JObject p)
+        private JsonNode DocumentSymbols(JsonObject p)
         {
             var path = UriToPath((string)p["textDocument"]["uri"]);
-            if (!_ls.Index.TryGet(path, out var fi)) return new JArray();
+            if (!_ls.Index.TryGet(path, out var fi)) return new JsonArray();
 
-            var arr = new JArray();
+            var arr = new JsonArray();
             foreach (var d in fi.Decls)
             {
                 var node = SymbolNode(d);
                 foreach (var ch in d.Children)
-                    ((JArray)node["children"]).Add(SymbolNode(ch));
+                    ((JsonArray)node["children"]).Add(SymbolNode(ch));
                 arr.Add(node);
             }
             return arr;
         }
 
-        private static JObject SymbolNode(DeclSymbol s)
+        private static JsonObject SymbolNode(DeclSymbol s)
         {
             int kind = s.Kind switch
             {
@@ -646,27 +646,27 @@ namespace Dsl.Tools.Lsp
                 _ => 23, // блок-архетип
             };
             var range = Range0(s.Line, s.Col, s.Line, s.Col + Math.Max(1, s.Name?.Length ?? 1));
-            return new JObject
+            return new JsonObject
             {
                 ["name"] = s.Name ?? "?",
                 ["detail"] = s.Kind,
                 ["kind"] = kind,
                 ["range"] = range,
                 ["selectionRange"] = range,
-                ["children"] = new JArray(),
+                ["children"] = new JsonArray(),
             };
         }
 
-        private JToken WorkspaceSymbols(JObject p)
+        private JsonNode WorkspaceSymbols(JsonObject p)
         {
             string query = ((string)p?["query"] ?? "").ToLowerInvariant();
-            var arr = new JArray();
+            var arr = new JsonArray();
             foreach (var kv in _ls.Index.Files)
             {
                 foreach (var d in kv.Value.Decls)
                 {
                     if (query.Length == 0 || d.Name.ToLowerInvariant().Contains(query))
-                        arr.Add(new JObject
+                        arr.Add(new JsonObject
                         {
                             ["name"] = d.Name,
                             ["kind"] = d.Kind == "enum" ? 10 : 5,
@@ -675,7 +675,7 @@ namespace Dsl.Tools.Lsp
                         });
                     foreach (var ch in d.Children)
                         if (query.Length > 0 && ch.Name.ToLowerInvariant().Contains(query))
-                            arr.Add(new JObject
+                            arr.Add(new JsonObject
                             {
                                 ["name"] = ch.Name,
                                 ["kind"] = ch.Kind == "event" ? 24 : ch.Kind == "field" ? 8 : 12,

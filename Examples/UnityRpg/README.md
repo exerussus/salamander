@@ -20,7 +20,7 @@ Assets/
 
 ## Шаги
 
-1. Установите пакет `com.unity.nuget.newtonsoft-json` (Package Manager → Add by name).
+1. Внешних пакетов не нужно — ядро без зависимостей.
 2. Скопируйте `Dsl.Core` и `Dsl.Unity` в `Assets/`.
 3. Скопируйте `RpgSimulation.cs` в любое место `Assets/`.
 4. Скопируйте папку `StreamingAssets` из этого примера в `Assets/`

@@ -67,7 +67,6 @@ namespace Dsl.Text
     /// Если нужного языка нет, берётся другой: частично переведённый хост не теряет подсказок.
     /// null — справки нет (как раньше null-строка).
     /// </summary>
-    [Newtonsoft.Json.JsonConverter(typeof(Dsl.Compilation.DocTextJsonConverter))]
     public sealed class DocText : IEquatable<DocText>
     {
         public readonly string Ru;

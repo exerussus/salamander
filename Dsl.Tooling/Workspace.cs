@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using Dsl.Compilation;
 using Dsl.Text;
-using Newtonsoft.Json.Linq;
+using Dsl.Json;
 
 namespace Dsl.Tooling
 {
@@ -152,9 +152,10 @@ namespace Dsl.Tooling
                 ws.BuildFile = buildPath;
                 try
                 {
-                    var build = JObject.Parse(File.ReadAllText(buildPath));
+                    var build = JsonRead.Object(JsonNode.Parse(File.ReadAllText(buildPath), language), "salamander-build.json", language)
+                                ?? new JsonObject();
                     // язык — первым: на нём же и сообщения о дальнейших бедах build-файла
-                    string langValue = build["language"]?.Type == JTokenType.String ? (string)build["language"] : null;
+                    string langValue = build["language"]?.AsString;
                     if (langValue != null)
                     {
                         if (Loc.TryParse(langValue, out var fromBuild))
@@ -173,10 +174,11 @@ namespace Dsl.Tooling
                     // пути в build-файле — относительно ЕГО папки: так его можно
                     // положить и в корень проекта, и рядом с модулями
                     string baseDir = Path.GetDirectoryName(Path.GetFullPath(buildPath)) ?? modulesRoot;
-                    foreach (var t in build["modules"] ?? new JArray())
+                    foreach (var t in JsonRead.Array(build["modules"], "salamander-build.json: modules", language) ?? new JsonArray())
                     {
-                        if (t is JObject expanded) AddExpanded(ws, expanded, baseDir, buildPath, onError);
-                        else AddModule(ws, Path.GetFullPath(Path.Combine(baseDir, (string)t)), onError, r);
+                        if (t is JsonObject expanded) AddExpanded(ws, expanded, baseDir, buildPath, onError);
+                        else AddModule(ws, Path.GetFullPath(Path.Combine(baseDir,
+                            JsonRead.String(t, "salamander-build.json: modules[]", language) ?? "")), onError, r);
                     }
                 }
                 catch (Exception ex)
@@ -250,11 +252,11 @@ namespace Dsl.Tooling
         /// перечисленные. Пропавший файл — ошибка загрузки с его путём, модуль
         /// остаётся без него (как карантин по файлу, а не по модулю).
         /// </summary>
-        private static void AddExpanded(WorkspaceModules ws, JObject entry, string baseDir, string buildPath,
+        private static void AddExpanded(WorkspaceModules ws, JsonObject entry, string baseDir, string buildPath,
                                         Action<string, string> onError)
         {
             var language = ws.Language;
-            var manifest = (entry["manifest"] as JObject)?.ToObject<ModuleManifest>();
+            var manifest = entry["manifest"] is JsonObject mo ? ModuleManifest.FromJson(mo, language) : null;
             if (manifest == null || string.IsNullOrEmpty(manifest.Name))
             {
                 onError(buildPath, Loc.T(language, "salamander-build.json: у раскрытого модуля нет manifest.name — модуль пропущен.",
@@ -263,10 +265,10 @@ namespace Dsl.Tooling
             }
 
             var set = new ModuleSourceSet { Manifest = manifest };
-            foreach (var f in entry["files"] as JArray ?? new JArray())
+            foreach (var f in entry["files"] as JsonArray ?? new JsonArray())
             {
-                string logical = (string)f?["logical"];
-                string rel = (string)f?["path"];
+                string logical = f?["logical"]?.AsString;
+                string rel = f?["path"]?.AsString;
                 if (string.IsNullOrEmpty(logical) || string.IsNullOrEmpty(rel))
                 {
                     onError(buildPath, Loc.T(language, $"salamander-build.json: у файла модуля '{manifest.Name}' нет logical или path.",
@@ -287,10 +289,10 @@ namespace Dsl.Tooling
                 set.Files.Add((logical, text));
                 ws.LogicalToPath[logical] = path;
             }
-            set.EmptyIsIntended = set.Files.Count == 0 && entry["files"] is JArray arr && arr.Count == 0;
+            set.EmptyIsIntended = set.Files.Count == 0 && entry["files"] is JsonArray arr && arr.Count == 0;
 
             ws.Modules.Add(set);
-            string dir = (string)entry["dir"];
+            string dir = entry["dir"]?.AsString;
             if (!ws.ModuleDirs.ContainsKey(manifest.Name) && !string.IsNullOrEmpty(dir))
                 ws.ModuleDirs[manifest.Name] = Path.GetFullPath(Path.Combine(baseDir, dir));
         }

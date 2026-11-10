@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Text;
-using Newtonsoft.Json;
+using Dsl.Json;
 
 namespace Dsl.Ide
 {
@@ -61,7 +61,7 @@ namespace Dsl.Ide
             {
                 string json = storage?.Read(StateKey);
                 if (!string.IsNullOrEmpty(json))
-                    return JsonConvert.DeserializeObject<IdeSessionState>(json) ?? new IdeSessionState();
+                    return FromJson(JsonNode.Parse(json)) ?? new IdeSessionState();
             }
             catch { /* битая сессия — начинаем с чистой */ }
             return new IdeSessionState();
@@ -70,7 +70,117 @@ namespace Dsl.Ide
         public static void Save(IIdeStorage storage, IdeSessionState state)
         {
             if (storage == null || state == null) return;
-            storage.Write(StateKey, JsonConvert.SerializeObject(state, Formatting.Indented));
+            storage.Write(StateKey, ToJson(state).ToJson(indented: true));
+        }
+
+        // Ключи — имена полей (так сессию писал Newtonsoft: старые session.json
+        // читаются). Чтение мягкое: поле не того типа пропускается, а не роняет
+        // всю сессию — потерять вкладки из-за одного поля обиднее, чем это поле.
+
+        public static JsonObject ToJson(IdeSessionState st)
+        {
+            var docs = new JsonArray();
+            foreach (var d in st.Docs ?? new List<IdeSessionDoc>())
+            {
+                if (d == null) continue;
+                docs.Add(new JsonObject
+                {
+                    ["Key"] = d.Key, ["Caret"] = d.Caret, ["Select"] = d.Select,
+                    ["ScrollX"] = d.ScrollX, ["ScrollY"] = d.ScrollY,
+                    ["Buffer"] = d.Buffer, ["BaseHash"] = d.BaseHash,
+                });
+            }
+            return new JsonObject
+            {
+                ["SchemaVersion"] = st.SchemaVersion,
+                ["Docs"] = docs,
+                ["Active"] = st.Active,
+                ["SidebarWidth"] = st.SidebarWidth,
+                ["BottomHeight"] = st.BottomHeight,
+                ["SidebarVisible"] = st.SidebarVisible,
+                ["BottomVisible"] = st.BottomVisible,
+                ["SidebarTab"] = st.SidebarTab,
+                ["BottomTab"] = st.BottomTab,
+                ["ProblemsCurrentOnly"] = st.ProblemsCurrentOnly,
+                ["ShowErrors"] = st.ShowErrors,
+                ["ShowWarnings"] = st.ShowWarnings,
+                ["ShowInfos"] = st.ShowInfos,
+                ["ApiManifestPath"] = st.ApiManifestPath,
+                ["WorkspaceRoot"] = st.WorkspaceRoot,
+            };
+        }
+
+        public static IdeSessionState FromJson(JsonNode node)
+        {
+            if (!(node is JsonObject o)) return null;
+            var st = new IdeSessionState();
+            foreach (var kv in o)
+            {
+                var v = kv.Value as JsonValue;
+                switch (JsonRead.Key(kv.Key))
+                {
+                    case "schemaversion": Int(v, ref st.SchemaVersion); break;
+                    case "active": Str(v, ref st.Active); break;
+                    case "sidebarwidth": Float(v, ref st.SidebarWidth); break;
+                    case "bottomheight": Float(v, ref st.BottomHeight); break;
+                    case "sidebarvisible": Bool(v, ref st.SidebarVisible); break;
+                    case "bottomvisible": Bool(v, ref st.BottomVisible); break;
+                    case "sidebartab": Str(v, ref st.SidebarTab); break;
+                    case "bottomtab": Str(v, ref st.BottomTab); break;
+                    case "problemscurrentonly": Bool(v, ref st.ProblemsCurrentOnly); break;
+                    case "showerrors": Bool(v, ref st.ShowErrors); break;
+                    case "showwarnings": Bool(v, ref st.ShowWarnings); break;
+                    case "showinfos": Bool(v, ref st.ShowInfos); break;
+                    case "apimanifestpath": Str(v, ref st.ApiManifestPath); break;
+                    case "workspaceroot": Str(v, ref st.WorkspaceRoot); break;
+                    case "docs":
+                        if (!(kv.Value is JsonArray arr)) break;
+                        foreach (var item in arr)
+                        {
+                            if (!(item is JsonObject dobj)) continue;
+                            var d = new IdeSessionDoc();
+                            foreach (var dk in dobj)
+                            {
+                                var dv = dk.Value as JsonValue;
+                                switch (JsonRead.Key(dk.Key))
+                                {
+                                    case "key": Str(dv, ref d.Key); break;
+                                    case "caret": Int(dv, ref d.Caret); break;
+                                    case "select": Int(dv, ref d.Select); break;
+                                    case "scrollx": Float(dv, ref d.ScrollX); break;
+                                    case "scrolly": Float(dv, ref d.ScrollY); break;
+                                    case "buffer": Str(dv, ref d.Buffer); break;
+                                    case "basehash": Str(dv, ref d.BaseHash); break;
+                                }
+                            }
+                            st.Docs.Add(d);
+                        }
+                        break;
+                }
+            }
+            return st;
+        }
+
+        private static void Str(JsonValue v, ref string field)
+        {
+            if (v == null) return;
+            if (v.IsNull) field = null;
+            else if (v.Kind == JsonKind.String) field = v.AsString;
+        }
+
+        private static void Int(JsonValue v, ref int field)
+        {
+            if (v != null && v.TryGetInt32(out int i)) field = i;
+        }
+
+        private static void Float(JsonValue v, ref float field)
+        {
+            if (v != null && v.Kind == JsonKind.Number) field = (float)v.DoubleValue;
+        }
+
+        private static void Bool(JsonValue v, ref bool field)
+        {
+            if (v != null && v.Kind == JsonKind.Bool) field = (bool)v;
         }
 
         /// <summary>Ключ бэкапа буфера по ключу документа (стабильный хэш — путь может быть длинным).</summary>

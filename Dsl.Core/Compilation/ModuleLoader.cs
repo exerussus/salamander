@@ -33,7 +33,7 @@ namespace Dsl.Compilation
             ModuleManifest manifest;
             try
             {
-                manifest = ModuleManifest.Parse(File.ReadAllText(manifestPath));
+                manifest = ModuleManifest.Parse(File.ReadAllText(manifestPath), language);
             }
             catch (Exception ex)
             {
@@ -43,7 +43,7 @@ namespace Dsl.Compilation
 
             if (manifest == null)
             {
-                // JsonConvert возвращает null на содержимом "null" — без этой
+                // пустой файл или "null" — манифеста нет; без этой
                 // проверки следующий же manifest.Sources даёт NullReferenceException
                 onError?.Invoke(manifestPath, Loc.T(language, "манифест пуст или содержит null.", "the manifest is empty or contains null."));
                 return null;

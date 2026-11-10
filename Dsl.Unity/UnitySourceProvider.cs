@@ -29,8 +29,8 @@ namespace Dsl.Unity
         public static ModuleSourceSet FromTextAssets(TextAsset manifestJson, IReadOnlyList<TextAsset> sources,
                                                      Dsl.Text.Language language = Dsl.Text.Language.Ru)
         {
-            var manifest = ModuleManifest.Parse(manifestJson.text);
-            // JsonConvert возвращает null на содержимом "null" — без проверки
+            var manifest = ModuleManifest.Parse(manifestJson.text, language);
+            // пустой текст или "null" — манифеста нет; без проверки
             // следующий же manifest.Sources даёт NullReferenceException
             if (manifest == null)
                 throw new System.InvalidOperationException(

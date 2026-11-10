@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.IO;
 using Dsl.Compilation;
 using Dsl.Tooling;
-using Newtonsoft.Json;
 using NUnit.Framework;
 
 namespace Dsl.Tests
@@ -55,7 +54,7 @@ namespace Dsl.Tests
             _texts = new Dictionary<string, string> { ["a.sal"] = Code };
             _ls = new LanguageService
             {
-                Api = JsonConvert.DeserializeObject<ApiManifest>(ApiJson),
+                Api = ApiManifest.Parse(ApiJson),
                 TextProvider = k => _texts.TryGetValue(k, out var t) ? t : null,
             };
             _ls.Index.Update("a.sal", Code);

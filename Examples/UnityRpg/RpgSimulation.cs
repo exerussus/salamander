@@ -30,7 +30,7 @@ namespace Dsl.Examples.Rpg
     /// ХОСТ-СТОРОНА примера: чистая симуляция РПГ-боя в консоль.
     ///
     /// Как развернуть:
-    ///  1) Dsl.Core и Dsl.Unity лежат в Assets (плюс пакет Newtonsoft из UPM);
+    ///  1) Dsl.Core и Dsl.Unity лежат в Assets (внешние пакеты не нужны);
     ///  2) этот файл — куда угодно в Assets (asmdef-ы autoReferenced);
     ///  3) папку StreamingAssets из Examples/UnityRpg скопировать в Assets
     ///     (появится Assets/StreamingAssets/Scripts/rpg_demo/...);

@@ -27,6 +27,9 @@ namespace Dsl.Text
         /// </summary>
         public Dictionary<int, string> DocComments { get; private set; }
 
+        /// <summary>Зарезервированное слово языка (имя, которое скрипт не сможет набрать как идентификатор).</summary>
+        internal static bool IsKeyword(string text) => text != null && Keywords.ContainsKey(text);
+
         private static readonly Dictionary<string, TokenKind> Keywords =
             new Dictionary<string, TokenKind>
         {

@@ -4,7 +4,7 @@ using Dsl.Codegen;
 using Dsl.Semantics;
 using Dsl.Syntax;
 using Dsl.Text;
-using Newtonsoft.Json;
+using Dsl.Json;
 
 namespace Dsl.Compilation
 {
@@ -22,11 +22,11 @@ namespace Dsl.Compilation
     /// </summary>
     public sealed class ModuleManifest
     {
-        [JsonProperty("name")] public string Name;
-        [JsonProperty("version")] public string Version = "0.0.0";
-        [JsonProperty("apiVersion")] public int ApiVersion;
-        [JsonProperty("dependencies")] public string[] Dependencies = System.Array.Empty<string>();
-        [JsonProperty("sources")] public string[] Sources = System.Array.Empty<string>();
+        public string Name;
+        public string Version = "0.0.0";
+        public int ApiVersion;
+        public string[] Dependencies = System.Array.Empty<string>();
+        public string[] Sources = System.Array.Empty<string>();
 
         /// <summary>
         /// Режим исполнения модуля:
@@ -38,7 +38,7 @@ namespace Dsl.Compilation
         /// кооперативный не может ждать внутри сущности синхронного (E0252) —
         /// иначе гарантия «всё до конца» протекла бы через чужую wait-функцию.
         /// </summary>
-        [JsonProperty("execution")] public string Execution = "cooperative";
+        public string Execution = "cooperative";
 
         public bool IsSynchronous =>
             string.Equals(Execution, "synchronous", System.StringComparison.OrdinalIgnoreCase);
@@ -53,7 +53,7 @@ namespace Dsl.Compilation
         ///  (E0255). Требует execution: synchronous (E0308) и зависимостей тоже "none"
         ///  (E0309): иначе состояние протекло бы через приостановленный файбер или чужой код.
         /// </summary>
-        [JsonProperty("state")] public string State;
+        public string State;
 
         public bool IsStateless =>
             string.Equals(State, "none", System.StringComparison.OrdinalIgnoreCase);
@@ -61,8 +61,89 @@ namespace Dsl.Compilation
         internal bool HasValidState =>
             State == null || IsStateless || string.Equals(State, "full", System.StringComparison.OrdinalIgnoreCase);
 
-        public static ModuleManifest Parse(string json) =>
-            JsonConvert.DeserializeObject<ModuleManifest>(json);
+        /// <summary>
+        /// Ключи module.json, которых манифест не знает (в том виде, как записаны).
+        /// Не ошибка — компилятор предупреждает W0301: опечатка в ключе иначе
+        /// молча выключает настройку («scripts» вместо «sources» — модуль без файлов).
+        /// Ключи с '$' ("$schema") — служебные и сюда не попадают.
+        /// </summary>
+        public string[] UnknownKeys = System.Array.Empty<string>();
+
+        /// <summary>Ключи, которые понимает манифест, — для подсказки в W0301.</summary>
+        public static readonly string[] KnownKeys =
+            { "name", "version", "apiVersion", "dependencies", "sources", "execution", "state" };
+
+        /// <summary>
+        /// Разобрать module.json. null — документ пуст или равен null (вызывающий
+        /// сообщает «манифест пуст»). Бросает <see cref="JsonException"/> на битом
+        /// JSON и на значении не того типа ("apiVersion": "1" — ошибка, а не 1).
+        /// Ключи — без учёта регистра; комментарии и запятая в конце списка допустимы.
+        /// </summary>
+        public static ModuleManifest Parse(string json) => Parse(json, Language.Ru);
+
+        public static ModuleManifest Parse(string json, Language language)
+        {
+            if (string.IsNullOrWhiteSpace(json) || json.Trim('\uFEFF', ' ', '\t', '\r', '\n').Length == 0) return null;
+            var root = JsonNode.Parse(json, language);
+            return root.IsNull ? null : FromJson(root, language);
+        }
+
+        /// <summary>Из уже разобранного узла (например, раскрытый модуль в salamander-build.json).</summary>
+        public static ModuleManifest FromJson(JsonNode node, Language language = Language.Ru)
+        {
+            if (!(node is JsonObject o))
+                throw new JsonException(Loc.T(language, $"module.json: ожидался объект, а записано: {JsonRead.KindName(node, language)}.",
+                    $"module.json: expected an object, got {JsonRead.KindName(node, language)}."));
+
+            var m = new ModuleManifest();
+            List<string> unknown = null;
+            foreach (var kv in o)
+            {
+                var v = kv.Value;
+                switch (JsonRead.Key(kv.Key))
+                {
+                    case "name": m.Name = JsonRead.String(v, "name", language); break;
+                    case "version": m.Version = JsonRead.String(v, "version", language); break;
+                    case "apiversion": m.ApiVersion = JsonRead.Int(v, "apiVersion", language); break;
+                    case "dependencies": m.Dependencies = JsonRead.StringArray(v, "dependencies", language); break;
+                    case "sources": m.Sources = JsonRead.StringArray(v, "sources", language); break;
+                    case "execution": m.Execution = JsonRead.String(v, "execution", language); break;
+                    case "state": m.State = JsonRead.String(v, "state", language); break;
+                    default:
+                        if (kv.Key.StartsWith("$", System.StringComparison.Ordinal)) break; // "$schema" и т.п.
+                        (unknown ??= new List<string>()).Add(kv.Key);
+                        break;
+                }
+            }
+            if (unknown != null) m.UnknownKeys = unknown.ToArray();
+            return m;
+        }
+
+        /// <summary>Манифест обратно в JSON (ключи — в каноническом виде; неизвестные не пишутся).</summary>
+        public JsonObject ToJson()
+        {
+            var o = new JsonObject
+            {
+                ["name"] = Name,
+                ["version"] = Version,
+                ["apiVersion"] = ApiVersion,
+                ["dependencies"] = JsonRead.Strings(Dependencies),
+                ["sources"] = JsonRead.Strings(Sources),
+                ["execution"] = Execution,
+            };
+            if (State != null) o["state"] = State;
+            return o;
+        }
+
+        /// <summary>Независимая копия: массивы свои, правка копии не трогает оригинал.</summary>
+        public ModuleManifest Clone()
+        {
+            var c = (ModuleManifest)MemberwiseClone();
+            c.Dependencies = (string[])Dependencies?.Clone();
+            c.Sources = (string[])Sources?.Clone();
+            c.UnknownKeys = (string[])UnknownKeys?.Clone();
+            return c;
+        }
     }
 
     /// <summary>Модуль, готовый к компиляции: манифест + загруженные исходники.</summary>
@@ -378,7 +459,7 @@ namespace Dsl.Compilation
                     var ast = new ModuleAst { Name = m.Manifest.Name, Visible = visible, Synchronous = m.Manifest.IsSynchronous, Stateless = m.Manifest.IsStateless };
                     // Модуль без единого исходника компилируется «успешно» и молча ничего не
                     // делает. Самая частая причина — опечатка в ключе манифеста: неизвестные
-                    // ключи JSON игнорируются, список файлов остаётся пустым, а чекер
+                    // ключ пропускается (с W0301), список файлов остаётся пустым, а чекер
                     // отвечает «OK». Это не ошибка (пустой модуль законен), но и не тишина.
                     if (m.Files.Count == 0 && !m.EmptyIsIntended)
                         diag.Warning("W0300",
@@ -387,6 +468,22 @@ namespace Dsl.Compilation
                                 $"Module '{m.Manifest.Name}' has no source files: the \"sources\" list in module.json " +
                                 "is empty or missing (check the key name and paths) — the module does nothing."),
                             SourcePos.None);
+                    // Неизвестный ключ module.json: настройка, которой манифест не знает,
+                    // молча не действует. Самое опасное — опечатка или чужой формат
+                    // ("scripts" вместо "sources"): модуль остаётся без файлов.
+                    foreach (var key in m.Manifest.UnknownKeys ?? System.Array.Empty<string>())
+                    {
+                        string k = key.ToLowerInvariant();
+                        bool isSources = k == "scripts" || k == "files" || k == "source" || k == "src";
+                        string known = string.Join(", ", ModuleManifest.KnownKeys);
+                        diag.Warning("W0301",
+                            Loc.T(language,
+                                $"Модуль '{m.Manifest.Name}': неизвестный ключ \"{key}\" в module.json — игнорируется. " +
+                                (isSources ? "Список исходников задаётся ключом \"sources\"." : $"Допустимые ключи: {known}."),
+                                $"Module '{m.Manifest.Name}': unknown key \"{key}\" in module.json — ignored. " +
+                                (isSources ? "The source list is set by the \"sources\" key." : $"Allowed keys: {known}.")),
+                            SourcePos.None);
+                    }
                     foreach (var (name, text) in m.Files)
                     {
                         // выкинутый карантином файл: модуль жив, а его нет

@@ -4,8 +4,7 @@ using System.IO;
 using System.Text;
 using Dsl.Compilation;
 using Dsl.Text;
-using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
+using Dsl.Json;
 
 namespace Dsl.Tooling
 {
@@ -62,9 +61,8 @@ namespace Dsl.Tooling
     }
 
     /// <summary>
-    /// Читатель по умолчанию: module.json со списком исходников. Ключ списка —
-    /// "scripts", если он в манифесте уже есть, иначе "sources" (что сегодня и
-    /// читает <see cref="ModuleLoader"/>).
+    /// Читатель по умолчанию: module.json со списком исходников "sources" — ровно
+    /// то, что читает <see cref="ModuleLoader"/> (ключ — без учёта регистра).
     /// </summary>
     public sealed class ModuleJsonReader : IModuleReader
     {
@@ -118,19 +116,22 @@ namespace Dsl.Tooling
             string rel = (relativePath ?? "").Replace('\\', '/').TrimStart('/');
             try
             {
-                var jo = JObject.Parse(File.ReadAllText(manifestPath));
-                string key = jo["scripts"] != null ? "scripts" : "sources";
-                if (!(jo[key] is JArray arr)) { arr = new JArray(); jo[key] = arr; }
+                if (!(JsonNode.Parse(File.ReadAllText(manifestPath), Language) is JsonObject jo))
+                    throw new JsonException(Loc.T(Language, "корень манифеста — не объект", "the manifest root is not an object"));
+                // правим дерево, а не пересобираем манифест: чужие ключи и их
+                // порядок остаются как были
+                string key = SourcesKey(jo) ?? "sources";
+                if (!(jo[key] is JsonArray arr)) { arr = new JsonArray(); jo[key] = arr; }
                 foreach (var t in arr)
                 {
-                    string s = ((string)t ?? "").Replace('\\', '/');
+                    string s = (t.AsString ?? "").Replace('\\', '/');
                     // глобы ModuleLoader не раскрывает осознанно (порядок файлов =
                     // порядок обработчиков), так что маска файл не подхватит —
                     // дописываем путь явно
                     if (string.Equals(s, rel, StringComparison.OrdinalIgnoreCase)) return true;
                 }
                 arr.Add(rel);
-                File.WriteAllText(manifestPath, jo.ToString(Formatting.Indented) + "\n", new UTF8Encoding(false));
+                File.WriteAllText(manifestPath, jo.ToJson(indented: true) + "\n", new UTF8Encoding(false));
                 return true;
             }
             catch (Exception e)
@@ -141,15 +142,22 @@ namespace Dsl.Tooling
             }
         }
 
+        /// <summary>Ключ списка исходников в том регистре, как он записан; null — ключа нет.</summary>
+        private static string SourcesKey(JsonObject jo)
+        {
+            foreach (var kv in jo)
+                if (string.Equals(kv.Key, "sources", StringComparison.OrdinalIgnoreCase)) return kv.Key;
+            return null;
+        }
+
         /// <summary>Абсолютные пути из списка манифеста; null — масок список или манифест не читается.</summary>
         private static HashSet<string> ListedPaths(string dir)
         {
             string manifestPath = Path.Combine(dir ?? "", ManifestFileName);
-            JArray arr;
+            string[] arr;
             try
             {
-                var jo = JObject.Parse(File.ReadAllText(manifestPath));
-                arr = (jo["scripts"] ?? jo["sources"]) as JArray;
+                arr = ModuleManifest.Parse(File.ReadAllText(manifestPath))?.Sources;
             }
             catch { return null; }
             if (arr == null) return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -157,7 +165,7 @@ namespace Dsl.Tooling
             var listed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var t in arr)
             {
-                string s = (string)t ?? "";
+                string s = t ?? "";
                 if (s.IndexOf('*') >= 0 || s.IndexOf('?') >= 0) return null;
                 try { listed.Add(Path.GetFullPath(Path.Combine(dir, s))); }
                 catch { /* мусор в списке — просто не совпадёт ни с чем */ }

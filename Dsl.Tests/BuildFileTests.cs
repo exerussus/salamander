@@ -3,7 +3,7 @@ using System.IO;
 using System.Linq;
 using Dsl.Compilation;
 using Dsl.Tooling;
-using Newtonsoft.Json.Linq;
+using Dsl.Json;
 using NUnit.Framework;
 
 namespace Dsl.Tests
@@ -38,17 +38,17 @@ namespace Dsl.Tests
             return p;
         }
 
-        private static JObject Module(string name, string dir, params (string logical, string path)[] files)
+        private static JsonObject Module(string name, string dir, params (string logical, string path)[] files)
         {
-            var arr = new JArray();
-            foreach (var (logical, path) in files) arr.Add(new JObject { ["logical"] = logical, ["path"] = path });
-            return new JObject
+            var arr = new JsonArray();
+            foreach (var (logical, path) in files) arr.Add(new JsonObject { ["logical"] = logical, ["path"] = path });
+            return new JsonObject
             {
                 ["dir"] = dir,
-                ["manifest"] = new JObject
+                ["manifest"] = new JsonObject
                 {
                     ["name"] = name, ["version"] = "1.0.0", ["apiVersion"] = 1,
-                    ["dependencies"] = new JArray(), ["execution"] = "cooperative",
+                    ["dependencies"] = new JsonArray(), ["execution"] = "cooperative",
                 },
                 ["files"] = arr,
             };
@@ -63,15 +63,15 @@ namespace Dsl.Tests
             string b = Write("packs/core/content/b.sal", "class Use { func G() -> int { return Util.F(); } }\n");
             Write("packs/data/module.json", "{ \"name\": \"data\", \"apiVersion\": 1 }");
 
-            var build = new JObject
+            var build = new JsonObject
             {
-                ["modules"] = new JArray
+                ["modules"] = new JsonArray
                 {
                     Module("core", "packs/core", ("core/content/a.sal", "packs/core/content/a.sal"), ("core/content/b.sal", b)),
                     Module("data", "packs/data"),
                 },
             };
-            string buildPath = Write("salamander-build.json", build.ToString());
+            string buildPath = Write("salamander-build.json", build.ToJson(indented: true));
 
             var ws = WorkspaceLoader.Load(_root, buildPath);
             Assert.AreEqual(buildPath, ws.BuildFile);
@@ -92,8 +92,8 @@ namespace Dsl.Tests
         public void Expanded_ErrorsInFileReachTheRightPath()
         {
             string bad = Write("p/m/x.sal", "class X { func F() -> int { return 1 } }\n");
-            var build = new JObject { ["modules"] = new JArray { Module("m", "p/m", ("m/x.sal", bad)) } };
-            string buildPath = Write("salamander-build.json", build.ToString());
+            var build = new JsonObject { ["modules"] = new JsonArray { Module("m", "p/m", ("m/x.sal", bad)) } };
+            string buildPath = Write("salamander-build.json", build.ToJson(indented: true));
 
             var ws = WorkspaceLoader.Load(_root, buildPath);
             var result = ScriptCompiler.Compile(new Dsl.Semantics.HostRegistry(), 1, WorkspaceCompiler.WithOverlays(ws, null));
@@ -107,11 +107,11 @@ namespace Dsl.Tests
         public void Expanded_MissingFile_IsLoadError_ModuleStays()
         {
             string ok = Write("p/m/ok.sal", "class Ok { }\n");
-            var build = new JObject
+            var build = new JsonObject
             {
-                ["modules"] = new JArray { Module("m", "p/m", ("m/ok.sal", ok), ("m/gone.sal", "p/m/gone.sal")) },
+                ["modules"] = new JsonArray { Module("m", "p/m", ("m/ok.sal", ok), ("m/gone.sal", "p/m/gone.sal")) },
             };
-            string buildPath = Write("salamander-build.json", build.ToString());
+            string buildPath = Write("salamander-build.json", build.ToJson(indented: true));
 
             var ws = WorkspaceLoader.Load(_root, buildPath);
             Assert.AreEqual(1, ws.Modules.Count);
@@ -124,8 +124,8 @@ namespace Dsl.Tests
         [Test]
         public void Expanded_WithoutManifestName_IsSkippedWithError()
         {
-            var build = new JObject { ["modules"] = new JArray { new JObject { ["dir"] = "x", ["files"] = new JArray() } } };
-            string buildPath = Write("salamander-build.json", build.ToString());
+            var build = new JsonObject { ["modules"] = new JsonArray { new JsonObject { ["dir"] = "x", ["files"] = new JsonArray() } } };
+            string buildPath = Write("salamander-build.json", build.ToJson(indented: true));
             var ws = WorkspaceLoader.Load(_root, buildPath);
             Assert.AreEqual(0, ws.Modules.Count);
             Assert.AreEqual(1, ws.LoadErrors.Count);
@@ -148,8 +148,8 @@ namespace Dsl.Tests
             Directory.CreateDirectory(Path.Combine(_root, "ProjectSettings"));
             string sal = Write("Assets/StreamingAssets/Core/core/content/a.sal", "class A { }\n");
             Write("Assets/StreamingAssets/Core/core/module.json", "{ \"name\": \"core\", \"apiVersion\": 1, \"scripts\": [\"**\"] }");
-            var build = new JObject { ["modules"] = new JArray { Module("core", Path.GetDirectoryName(Path.GetDirectoryName(sal)), ("core/content/a.sal", sal)) } };
-            string lib = Write("Library/Salamander/salamander-build.json", build.ToString());
+            var build = new JsonObject { ["modules"] = new JsonArray { Module("core", Path.GetDirectoryName(Path.GetDirectoryName(sal)), ("core/content/a.sal", sal)) } };
+            string lib = Write("Library/Salamander/salamander-build.json", build.ToJson(indented: true));
 
             string modulesRoot = Path.Combine(_root, "Assets", "StreamingAssets", "Core");
             Assert.AreEqual(Path.GetFullPath(lib), Path.GetFullPath(WorkspaceLoader.FindBuildFile(modulesRoot)));

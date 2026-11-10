@@ -4,8 +4,6 @@ using System.IO;
 using System.Text;
 using Dsl.Compilation;
 using Dsl.Tooling;
-using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
 
 namespace Dsl.Ide
 {
@@ -359,7 +357,7 @@ namespace Dsl.Ide
                 var copy = WorkspaceCompiler.Copy(m);
                 // манифест — своя копия: создание файла дописывает список исходников,
                 // и чужой объект (модуль игры) при этом трогать нельзя
-                copy.Manifest = JsonConvert.DeserializeObject<ModuleManifest>(JsonConvert.SerializeObject(m.Manifest));
+                copy.Manifest = m.Manifest.Clone();
                 _modules.Add(copy);
                 foreach (var (name, text) in copy.Files) _texts[KeyPrefix + name] = text;
             }

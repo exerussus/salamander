@@ -138,7 +138,7 @@ salamander-lsp: modulesRoot = ...
   `salamander-lsp: запущен, жду initialize по stdio` и будет молча ждать. Если
   вместо этого ошибка .NET — причина перед вами. Частые: нет .NET 8 runtime;
   скопировали одну dll вместо всей папки `publish` (рядом должны лежать
-  `DslLsp.runtimeconfig.json` и `Newtonsoft.Json.dll`).
+  `DslLsp.runtimeconfig.json` и `DslLsp.deps.json`).
 
 - **В Problems только «salamander-api.json не найден» (W0401)** — игру в
   редакторе ещё не запускали, манифест не экспортирован. Подсветка и часть

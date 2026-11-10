@@ -118,6 +118,23 @@ namespace Dsl.Hosting
                 $"Value {x} is not in the registered enum {typeof(TEnum).Name}.");
         }
 
+        /// <summary>Есть ли у C#-типа запись — без исключения.</summary>
+        internal bool TryGetRef(Type type, out TypeRef r)
+        {
+            if (type != null && _entries.TryGetValue(type, out var e)) { r = e.Ref; return true; }
+            r = null;
+            return false;
+        }
+
+        /// <summary>C#-тип, зарегистрированный под этим скриптовым типом (для текста ошибок); null — нет такого.</summary>
+        internal Type FindType(TypeRef r)
+        {
+            if (r == null) return null;
+            foreach (var kv in _entries)
+                if (kv.Value.Ref.Same(r)) return kv.Key;
+            return null;
+        }
+
         // ===== доступ (бросают понятные ошибки на этапе регистрации) =======
 
         public TypeRef RefOf<T>()

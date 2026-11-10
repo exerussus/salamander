@@ -3,7 +3,6 @@ using Dsl.Text;
 using System.IO;
 using Dsl.Compilation;
 using Dsl.Semantics;
-using Newtonsoft.Json;
 
 namespace Dsl.Ide
 {
@@ -42,7 +41,7 @@ namespace Dsl.Ide
         public static ApiModel FromJson(string json, string label)
         {
             var registry = ApiManifest.Import(json, out int version, IdeText.Language);
-            var manifest = JsonConvert.DeserializeObject<ApiManifest>(json);
+            var manifest = ApiManifest.Parse(json, IdeText.Language);
             return new ApiModel(manifest, registry, version, label);
         }
 
@@ -57,7 +56,7 @@ namespace Dsl.Ide
         {
             string json = ApiManifest.Export(registry, apiVersion);
             var stub = ApiManifest.Import(json, out _, IdeText.Language);
-            var manifest = JsonConvert.DeserializeObject<ApiManifest>(json);
+            var manifest = ApiManifest.Parse(json, IdeText.Language);
             return new ApiModel(manifest, stub, apiVersion, label);
         }
     }

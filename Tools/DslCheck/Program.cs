@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using Dsl.Compilation;
 using Dsl.Text;
-using Newtonsoft.Json;
+using Dsl.Json;
 
 namespace Dsl.Tools
 {
@@ -24,12 +24,18 @@ namespace Dsl.Tools
     {
         private sealed class JsonDiag
         {
-            [JsonProperty("file")] public string File;
-            [JsonProperty("line")] public int Line;
-            [JsonProperty("column")] public int Column;
-            [JsonProperty("severity")] public string Severity;
-            [JsonProperty("code")] public string Code;
-            [JsonProperty("message")] public string Message;
+            public string File;
+            public int Line;
+            public int Column;
+            public string Severity;
+            public string Code;
+            public string Message;
+
+            public JsonObject ToJson() => new JsonObject
+            {
+                ["file"] = File, ["line"] = Line, ["column"] = Column,
+                ["severity"] = Severity, ["code"] = Code, ["message"] = Message,
+            };
         }
 
         public static int Main(string[] args)
@@ -82,8 +88,8 @@ namespace Dsl.Tools
             {
                 try
                 {
-                    var b = Newtonsoft.Json.Linq.JObject.Parse(File.ReadAllText(buildPath));
-                    if (Loc.TryParse((string)(b["language"] as Newtonsoft.Json.Linq.JValue), out var fromBuild)) lang = fromBuild;
+                    var b = JsonNode.Parse(File.ReadAllText(buildPath));
+                    if (Loc.TryParse(b["language"]?.AsString, out var fromBuild)) lang = fromBuild;
                 }
                 catch { /* ошибка формата сообщится ниже, при чтении модулей */ }
             }
@@ -128,10 +134,11 @@ namespace Dsl.Tools
             {
                 try
                 {
-                    var build = Newtonsoft.Json.Linq.JObject.Parse(File.ReadAllText(buildPath));
+                    var build = JsonRead.Object(JsonNode.Parse(File.ReadAllText(buildPath), lang), "salamander-build.json", lang)
+                                ?? new JsonObject();
                     var dirs = new List<string>();
-                    foreach (var t in build["modules"] ?? new Newtonsoft.Json.Linq.JArray())
-                        dirs.Add(Path.GetFullPath(Path.Combine(root, (string)t)));
+                    foreach (var t in JsonRead.Array(build["modules"], "salamander-build.json: modules", lang) ?? new JsonArray())
+                        dirs.Add(Path.GetFullPath(Path.Combine(root, JsonRead.String(t, "salamander-build.json: modules[]", lang) ?? "")));
                     modules = ModuleLoader.LoadFromList(dirs, onLoadError, logicalToAbs, lang);
                 }
                 catch (Exception ex)
@@ -204,7 +211,9 @@ namespace Dsl.Tools
 
             if (json)
             {
-                Console.WriteLine(JsonConvert.SerializeObject(all));
+                var arr = new JsonArray();
+                foreach (var d in all) arr.Add(d.ToJson());
+                Console.WriteLine(arr.ToJson());
             }
             else
             {

@@ -6,7 +6,7 @@ using Dsl.Runtime;
 using Dsl.Semantics;
 using Dsl.Text;
 using Dsl.Tooling;
-using Newtonsoft.Json.Linq;
+using Dsl.Json;
 using NUnit.Framework;
 
 namespace Dsl.Tests
@@ -280,11 +280,11 @@ trigger T {
              .Fn("Mp", () => 2, Sig.Doc("Мана."));
             string json = ApiManifest.Export(b.Registry, 1);
 
-            var jo = JObject.Parse(json);
-            var methods = (JArray)jo["apis"][0]["methods"];
-            Assert.AreEqual(JTokenType.Object, methods[0]["summary"].Type, "двуязычная справка — объект");
+            var jo = JsonNode.Parse(json);
+            var methods = (JsonArray)jo["apis"][0]["methods"];
+            Assert.AreEqual(JsonKind.Object, methods[0]["summary"].Kind, "двуязычная справка — объект");
             Assert.AreEqual("Health.", (string)methods[0]["summary"]["en"]);
-            Assert.AreEqual(JTokenType.String, methods[1]["summary"].Type, "одноязычная — строка, как раньше");
+            Assert.AreEqual(JsonKind.String, methods[1]["summary"].Kind, "одноязычная — строка, как раньше");
 
             var back = ApiManifest.Import(json, out _, Language.En);
             back.TryGetApi("Unit", out var unit);
@@ -304,7 +304,7 @@ trigger T {
         {
             var b = new HostBuilder();
             b.Api("Unit").Fn("Hp", () => 1, Sig.Doc(ru: "Здоровье.", en: "Health."));
-            var api = Newtonsoft.Json.JsonConvert.DeserializeObject<ApiManifest>(ApiManifest.Export(b.Registry, 1));
+            var api = ApiManifest.Parse(ApiManifest.Export(b.Registry, 1));
 
             const string code = "class C { func F() { var h = Unit.Hp(); Engine.Log(\"x\"); } }";
             foreach (var (lang, hp, log) in new[] { (Language.Ru, "Здоровье.", "Сообщение в лог."), (Language.En, "Health.", "Message to the log.") })

@@ -362,6 +362,12 @@ namespace Dsl.Semantics
                     "свойством и методом одновременно оно быть не может.",
                         $"Class '{className}' already has a method '{propName}': a name is shared, " +
                         "it cannot be both a property and a method."));
+            if (cls.Props.ContainsKey(propName))
+                throw new System.InvalidOperationException(
+                    T($"Свойство '{propName}' уже зарегистрировано у класса '{className}'. " +
+                    "Молча заменить его нельзя — дайте свойствам разные имена.",
+                        $"Property '{propName}' is already registered on class '{className}'. " +
+                        "It cannot be silently replaced — give the properties different names."));
             int id = _getters.Count;
             _getters.Add(getter);
             _setters.Add(setter); // может быть null для read-only
@@ -616,6 +622,13 @@ namespace Dsl.Semantics
 
         public bool TryGetEnum(string n, out HostEnumInfo e) => _enums.TryGetValue(n, out e);
         public bool TryGetClass(string n, out HostClassInfo c) => _classes.TryGetValue(n, out c);
+
+        /// <summary>
+        /// Объявлен ли хостовый класс с этим именем. Нужен, например, модулю,
+        /// который дописывает методы к классу движка (<c>HostBuilder.ExtendClass</c>)
+        /// только если движок этот класс действительно открыл.
+        /// </summary>
+        public bool HasClass(string name) => name != null && _classes.ContainsKey(name);
         public bool TryGetApi(string n, out HostApiInfo a) => _apis.TryGetValue(n, out a);
         public bool TryGetEvent(string n, out HostEventInfo e) => _events.TryGetValue(n, out e);
 

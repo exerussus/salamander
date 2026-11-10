@@ -3,7 +3,7 @@ using Dsl.Text;
 using System.Collections.Generic;
 using Dsl.Runtime;
 using Dsl.Semantics;
-using Newtonsoft.Json;
+using Dsl.Json;
 
 namespace Dsl.Compilation
 {
@@ -18,20 +18,20 @@ namespace Dsl.Compilation
     /// Импорт строит реестр с делегатами-заглушками: для проверки типов нужны
     /// только сигнатуры, VM в инструментах не запускается.
     /// </summary>
-    public sealed class ApiManifest
+    public sealed partial class ApiManifest
     {
         public sealed class ParamDef
         {
-            [JsonProperty("name")] public string Name;
-            [JsonProperty("type")] public string Type;
-            [JsonProperty("doc", NullValueHandling = NullValueHandling.Ignore)] public DocText Doc;
+            public string Name;
+            public string Type;
+            public DocText Doc;
         }
 
         public sealed class EnumDef
         {
-            [JsonProperty("name")] public string Name;
-            [JsonProperty("summary", NullValueHandling = NullValueHandling.Ignore)] public DocText Summary;
-            [JsonProperty("members")] public string[] Members = Array.Empty<string>();
+            public string Name;
+            public DocText Summary;
+            public string[] Members = Array.Empty<string>();
 
             /// <summary>
             /// Пояснения к элементам ПАРАЛЛЕЛЬНЫМ массивом (той же длины, null
@@ -39,46 +39,45 @@ namespace Dsl.Compilation
             /// {name, doc}: старые манифесты, где ключа нет вовсе, читаются
             /// как раньше, и `members` остаётся простым списком имён.
             /// </summary>
-            [JsonProperty("memberDocs", NullValueHandling = NullValueHandling.Ignore)]
             public DocText[] MemberDocs;
         }
 
         public sealed class PropDef
         {
-            [JsonProperty("name")] public string Name;
-            [JsonProperty("type")] public string Type;
-            [JsonProperty("readOnly")] public bool ReadOnly;
-            [JsonProperty("doc", NullValueHandling = NullValueHandling.Ignore)] public DocText Doc;
+            public string Name;
+            public string Type;
+            public bool ReadOnly;
+            public DocText Doc;
         }
 
         public sealed class ClassDef
         {
-            [JsonProperty("name")] public string Name;
-            [JsonProperty("summary", NullValueHandling = NullValueHandling.Ignore)] public DocText Summary;
-            [JsonProperty("props")] public PropDef[] Props = Array.Empty<PropDef>();
+            public string Name;
+            public DocText Summary;
+            public PropDef[] Props = Array.Empty<PropDef>();
 
             /// <summary>
             /// Методы самого объекта (basket.AddPerk("x")). Params — как их видит
             /// скрипт, без приёмника. Ключ пишется только когда методы есть:
             /// у классов-данных манифест выглядит как раньше.
             /// </summary>
-            [JsonProperty("methods", NullValueHandling = NullValueHandling.Ignore)] public MethodDef[] Methods;
+            public MethodDef[] Methods;
         }
 
         public sealed class MethodDef
         {
-            [JsonProperty("name")] public string Name;
-            [JsonProperty("summary", NullValueHandling = NullValueHandling.Ignore)] public DocText Summary;
-            [JsonProperty("params")] public ParamDef[] Params = Array.Empty<ParamDef>();
-            [JsonProperty("returns")] public string Returns = "void";
+            public string Name;
+            public DocText Summary;
+            public ParamDef[] Params = Array.Empty<ParamDef>();
+            public string Returns = "void";
         }
 
         public sealed class ApiDef
         {
-            [JsonProperty("name")] public string Name;
-            [JsonProperty("summary", NullValueHandling = NullValueHandling.Ignore)] public DocText Summary;
-            [JsonProperty("methods")] public MethodDef[] Methods = Array.Empty<MethodDef>();
-            [JsonProperty("consts", NullValueHandling = NullValueHandling.Ignore)] public ApiConstDef[] Consts;
+            public string Name;
+            public DocText Summary;
+            public MethodDef[] Methods = Array.Empty<MethodDef>();
+            public ApiConstDef[] Consts;
         }
 
         /// <summary>
@@ -88,42 +87,42 @@ namespace Dsl.Compilation
         /// </summary>
         public sealed class ApiNamespaceDef
         {
-            [JsonProperty("name")] public string Name;
-            [JsonProperty("summary")] public DocText Summary;
+            public string Name;
+            public DocText Summary;
         }
 
         /// <summary>Именованное значение у API-класса: читается без скобок.</summary>
         public sealed class ApiConstDef
         {
-            [JsonProperty("name")] public string Name;
-            [JsonProperty("type")] public string Type;
-            [JsonProperty("value")] public object Value;
-            [JsonProperty("doc", NullValueHandling = NullValueHandling.Ignore)] public DocText Doc;
+            public string Name;
+            public string Type;
+            public object Value;
+            public DocText Doc;
         }
 
         /// <summary>Поле структуры хоста.</summary>
         public sealed class StructFieldDef
         {
-            [JsonProperty("name")] public string Name;
-            [JsonProperty("type")] public string Type;
-            [JsonProperty("default")] public object Default;
-            [JsonProperty("doc", NullValueHandling = NullValueHandling.Ignore)] public DocText Doc;
+            public string Name;
+            public string Type;
+            public object Default;
+            public DocText Doc;
         }
 
         public sealed class StructDef
         {
-            [JsonProperty("name")] public string Name;
-            [JsonProperty("summary", NullValueHandling = NullValueHandling.Ignore)] public DocText Summary;
-            [JsonProperty("fields")] public StructFieldDef[] Fields = Array.Empty<StructFieldDef>();
+            public string Name;
+            public DocText Summary;
+            public StructFieldDef[] Fields = Array.Empty<StructFieldDef>();
         }
 
         /// <summary>Ожидаемая константа вида (поле блока-архетипа) — контракт контента.</summary>
         public sealed class ConstDef
         {
-            [JsonProperty("name")] public string Name;
-            [JsonProperty("type")] public string Type;
-            [JsonProperty("required")] public bool Required;
-            [JsonProperty("doc", NullValueHandling = NullValueHandling.Ignore)] public DocText Doc;
+            public string Name;
+            public string Type;
+            public bool Required;
+            public DocText Doc;
 
             /// <summary>
             /// Значение по умолчанию. Присутствие ключа = дефолт есть (в том числе
@@ -131,43 +130,42 @@ namespace Dsl.Compilation
             /// НЕ ставится, а факт наличия читается через hasDefault.
             /// Енум пишется ИМЕНЕМ элемента: перенумеровали енум — дефолт не поехал.
             /// </summary>
-            [JsonProperty("default")] public object Default;
-            [JsonProperty("hasDefault")] public bool HasDefault;
+            public object Default;
+            public bool HasDefault;
         }
 
         public sealed class ArchetypeKindDef
         {
-            [JsonProperty("name")] public string Name;
-            [JsonProperty("summary", NullValueHandling = NullValueHandling.Ignore)] public DocText Summary;
-            [JsonProperty("knownIds", NullValueHandling = NullValueHandling.Ignore)] public string[] KnownIds;
-            [JsonProperty("consts", NullValueHandling = NullValueHandling.Ignore)] public ConstDef[] Consts;
-            [JsonProperty("events")] public EventDef[] Events = Array.Empty<EventDef>();
+            public string Name;
+            public DocText Summary;
+            public string[] KnownIds;
+            public ConstDef[] Consts;
+            public EventDef[] Events = Array.Empty<EventDef>();
 
             /// <summary>
             /// Сущность вида вправе не реализовать ни одного события. Ключ
             /// пишется только когда true: у видов, где ничего не разрешали,
             /// манифест выглядит как раньше.
             /// </summary>
-            [JsonProperty("eventsOptional", DefaultValueHandling = DefaultValueHandling.Ignore)]
             public bool EventsOptional;
         }
 
         public sealed class EventDef
         {
-            [JsonProperty("name")] public string Name;
-            [JsonProperty("summary", NullValueHandling = NullValueHandling.Ignore)] public DocText Summary;
-            [JsonProperty("params")] public ParamDef[] Params = Array.Empty<ParamDef>();
+            public string Name;
+            public DocText Summary;
+            public ParamDef[] Params = Array.Empty<ParamDef>();
         }
 
-        [JsonProperty("apiVersion")] public int ApiVersion;
+        public int ApiVersion;
         // порядок объявления = порядок зависимостей: енумы ← структуры ← классы
-        [JsonProperty("enums")] public EnumDef[] Enums = Array.Empty<EnumDef>();
-        [JsonProperty("structs", NullValueHandling = NullValueHandling.Ignore)] public StructDef[] Structs;
-        [JsonProperty("classes")] public ClassDef[] Classes = Array.Empty<ClassDef>();
-        [JsonProperty("apiNamespaces", NullValueHandling = NullValueHandling.Ignore)] public ApiNamespaceDef[] ApiNamespaces;
-        [JsonProperty("apis")] public ApiDef[] Apis = Array.Empty<ApiDef>();
-        [JsonProperty("events")] public EventDef[] Events = Array.Empty<EventDef>();
-        [JsonProperty("archetypes", NullValueHandling = NullValueHandling.Ignore)] public ArchetypeKindDef[] Archetypes;
+        public EnumDef[] Enums = Array.Empty<EnumDef>();
+        public StructDef[] Structs;
+        public ClassDef[] Classes = Array.Empty<ClassDef>();
+        public ApiNamespaceDef[] ApiNamespaces;
+        public ApiDef[] Apis = Array.Empty<ApiDef>();
+        public EventDef[] Events = Array.Empty<EventDef>();
+        public ArchetypeKindDef[] Archetypes;
 
         // ===================================================================
         // Экспорт: HostRegistry → json
@@ -346,7 +344,7 @@ namespace Dsl.Compilation
                 m.Archetypes = kinds.ToArray();
             }
 
-            return JsonConvert.SerializeObject(m, Formatting.Indented, DocTextJsonConverter.Instance);
+            return m.ToJson().ToJson(indented: true);
         }
 
         /// <summary>Собирает описания параметров; имена синтезируются (argN), если не заданы.</summary>
@@ -379,7 +377,7 @@ namespace Dsl.Compilation
         /// </summary>
         public static HostRegistry Import(string json, out int apiVersion, Language language)
         {
-            var m = JsonConvert.DeserializeObject<ApiManifest>(json, DocTextJsonConverter.Instance)
+            var m = Parse(json, language)
                     ?? throw new FormatException(Loc.T(language, "salamander-api.json: пустой или некорректный документ.",
                         "salamander-api.json: empty or invalid document."));
             apiVersion = m.ApiVersion;
@@ -543,23 +541,49 @@ namespace Dsl.Compilation
         {
             value = Variant.Nil;
             str = null;
-            // Newtonsoft отдаёт числа как long/double — приводим по ОБЪЯВЛЕННОМУ
-            // типу, а не по тому, что угадал json (3 и 3.0 неразличимы в тексте)
+            // Числа приходят как long (целый литерал) или double — приводим по
+            // ОБЪЯВЛЕННОМУ типу (3 и 3.0 в тексте — одно и то же значение). Тип
+            // же самого значения строгий: "3" для int, "true" для bool, 3.5 для
+            // int — ошибка формата, а не молчаливое приведение. null — «по
+            // умолчанию»: 0 / false / пустая строка, как раньше.
+            // значения из памяти (не из текста) приводим к виду парсера
+            if (raw is int i32) raw = (long)i32;
+            else if (raw is float f32) raw = (double)f32;
             switch (type.Kind)
             {
-                case TypeKind.Bool: value = Variant.Bool(Convert.ToBoolean(raw ?? false)); return;
-                case TypeKind.Int: value = Variant.Int(Convert.ToInt32(raw ?? 0)); return;
-                case TypeKind.Float: value = Variant.Float(Convert.ToSingle(raw ?? 0f)); return;
-                case TypeKind.Double: value = Variant.Double(Convert.ToDouble(raw ?? 0d)); return;
-                case TypeKind.Str: str = raw as string; return;
+                case TypeKind.Bool:
+                    if (raw != null && !(raw is bool)) throw LiteralTypeError(r, what, raw, "true или false", "true or false");
+                    value = Variant.Bool(raw is bool b && b); return;
+                case TypeKind.Int:
+                    if (raw == null) { value = Variant.Int(0); return; }
+                    if (raw is long l && l >= int.MinValue && l <= int.MaxValue) { value = Variant.Int((int)l); return; }
+                    if (raw is double di && Math.Floor(di) == di && di >= int.MinValue && di <= int.MaxValue) { value = Variant.Int((int)di); return; }
+                    throw LiteralTypeError(r, what, raw, "целое число в пределах int", "an integer within the int range");
+                case TypeKind.Float:
+                case TypeKind.Double:
+                {
+                    double d;
+                    if (raw == null) d = 0;
+                    else if (raw is long ll) d = ll;
+                    else if (raw is double dd) d = dd;
+                    else throw LiteralTypeError(r, what, raw, "число", "a number");
+                    value = type.Kind == TypeKind.Float ? Variant.Float((float)d) : Variant.Double(d);
+                    return;
+                }
+                case TypeKind.Str:
+                    if (raw != null && !(raw is string)) throw LiteralTypeError(r, what, raw, "строка", "a string");
+                    str = (string)raw; return;
                 case TypeKind.Enum:
                 {
                     if (!r.TryGetEnumById(type.EnumId, out var en))
                         throw new FormatException(
                             r.T($"salamander-api.json: {what} ссылается на неизвестный енум.",
                                 $"salamander-api.json: {what} refers to an unknown enum."));
-                    string member = raw as string;
-                    if (member == null) { value = Variant.Enum(en.Id, 0); return; }
+                    if (raw == null) { value = Variant.Enum(en.Id, 0); return; }
+                    // числом экспорт пишет только значение без имени (вне диапазона имён)
+                    if (raw is long idx && idx >= int.MinValue && idx <= int.MaxValue) { value = Variant.Enum(en.Id, (int)idx); return; }
+                    if (!(raw is string member))
+                        throw LiteralTypeError(r, what, raw, $"имя элемента енума '{en.Name}'", $"a member name of enum '{en.Name}'");
                     if (!en.Members.TryGetValue(member, out int v))
                         throw new FormatException(
                             r.T($"salamander-api.json: '{member}' не является элементом енума '{en.Name}' ({what}).",
@@ -572,6 +596,15 @@ namespace Dsl.Compilation
                         r.T($"salamander-api.json: {what} не может быть типа '{type}'.",
                             $"salamander-api.json: {what} cannot be of type '{type}'."));
             }
+        }
+
+        private static FormatException LiteralTypeError(HostRegistry r, string what, object raw, string expRu, string expEn)
+        {
+            string got = raw is string sv ? $"\"{sv}\"" : raw is bool bv ? (bv ? "true" : "false")
+                       : Convert.ToString(raw, System.Globalization.CultureInfo.InvariantCulture);
+            return new FormatException(
+                r.T($"salamander-api.json: {what} — ожидалось {expRu}, а записано {got}.",
+                    $"salamander-api.json: {what} — expected {expEn}, got {got}."));
         }
 
         private static object EncodeDefault(HostRegistry r, ArchetypeConstInfo c)
@@ -684,58 +717,6 @@ namespace Dsl.Compilation
                 else if (s[i] == ',' && depth == 0) return i;
             }
             return -1;
-        }
-    }
-
-    /// <summary>
-    /// Справка в salamander-api.json: строка (один текст для обоих языков) или
-    /// объект <c>{"ru": "…", "en": "…"}</c>. Старые манифесты (только строки) читаются как раньше.
-    /// </summary>
-    public sealed class DocTextJsonConverter : JsonConverter<DocText>
-    {
-        public static readonly DocTextJsonConverter Instance = new DocTextJsonConverter();
-
-        public override void WriteJson(JsonWriter writer, DocText value, JsonSerializer serializer)
-        {
-            if (value == null || value.IsEmpty) { writer.WriteNull(); return; }
-            if (!value.IsBilingual) { writer.WriteValue(value.Ru); return; }
-            writer.WriteStartObject();
-            if (!string.IsNullOrEmpty(value.Ru)) { writer.WritePropertyName("ru"); writer.WriteValue(value.Ru); }
-            if (!string.IsNullOrEmpty(value.En)) { writer.WritePropertyName("en"); writer.WriteValue(value.En); }
-            writer.WriteEndObject();
-        }
-
-        public override DocText ReadJson(JsonReader reader, System.Type objectType, DocText existingValue,
-                                         bool hasExistingValue, JsonSerializer serializer)
-        {
-            switch (reader.TokenType)
-            {
-                case JsonToken.Null:
-                case JsonToken.Undefined:
-                    return null;
-                case JsonToken.String:
-                    return (string)reader.Value;
-                case JsonToken.StartObject:
-                {
-                    string ru = null, en = null;
-                    while (reader.Read() && reader.TokenType != JsonToken.EndObject)
-                    {
-                        if (reader.TokenType != JsonToken.PropertyName) continue;
-                        string key = ((string)reader.Value)?.ToLowerInvariant();
-                        reader.Read();
-                        string val = reader.TokenType == JsonToken.Null ? null : reader.Value?.ToString();
-                        if (key == "ru") ru = val;
-                        else if (key == "en") en = val;
-                        else if (reader.TokenType == JsonToken.StartObject || reader.TokenType == JsonToken.StartArray)
-                            reader.Skip();
-                    }
-                    return ru == null && en == null ? null : new DocText(ru, en);
-                }
-                default:
-                    throw new JsonSerializationException(
-                        $"salamander-api.json: doc/summary must be a string or {{\"ru\", \"en\"}} object, got {reader.TokenType}. / " +
-                        $"doc/summary должны быть строкой или объектом {{\"ru\", \"en\"}}, встречено {reader.TokenType}.");
-            }
         }
     }
 }
